@@ -23,12 +23,24 @@ class ObserveStatsData {
     bitrate = fresh ? valid(metrics['receive_mbps']) : null;
     delay = fresh ? valid(metrics['capture_to_surface_ms_p50']) : null;
     uncertainty = fresh ? valid(metrics['clock_uncertainty_ms']) : null;
+    codec = live ? codecLabel(metrics) : null;
   }
+
+  /// Negotiated session codec, e.g. "H.265 · 60 fps max". Fixed for the
+  /// session, so it is shown even between metric samples.
+  static String? codecLabel(Map<String, dynamic> metrics) {
+    final name = metrics['codec'];
+    if (name is! String || name.isEmpty) return null;
+    final cap = metrics['fps_cap'];
+    return cap is num && cap > 0 ? '$name · ${cap.toInt()} fps max' : name;
+  }
+
   final String mode;
   final bool live;
   final double? fps;
   late final String resolution;
   late final double? bitrate, delay, uncertainty;
+  late final String? codec;
 
   static double? valid(dynamic value) {
     if (value is! num || !value.isFinite || value < 0) return null;
@@ -55,7 +67,15 @@ class ObserveStatsPanel extends StatelessWidget {
                 style: const TextStyle(color: Color(0xffbacbd7)),
               ),
             ),
-            Text(value, style: const TextStyle(fontWeight: FontWeight.w600)),
+            Flexible(
+              child: Text(
+                value,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.right,
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+            ),
           ],
         ),
       ),
@@ -63,7 +83,7 @@ class ObserveStatsPanel extends StatelessWidget {
     final fps = data.live ? ObserveStatsData.valid(data.fps) : null;
     return IgnorePointer(
       child: Container(
-        width: 206,
+        width: 236,
         padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 10),
         decoration: BoxDecoration(
           color: const Color(0xd9192936),
@@ -113,6 +133,11 @@ class ObserveStatsPanel extends StatelessWidget {
                     ? 'Control · Locked'
                     : 'Control',
                 'Acknowledged session input mode',
+              ),
+              row(
+                'Codec',
+                data.codec ?? '—',
+                'Video codec and frame-rate ceiling negotiated for this session from both machines\' hardware',
               ),
               row('Resolution', data.resolution, 'Decoded video resolution'),
               row(

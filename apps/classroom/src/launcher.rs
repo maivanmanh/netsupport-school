@@ -58,6 +58,26 @@ pub fn show_settings_diagnostic(
     )
 }
 #[allow(clippy::too_many_lines)]
+/// Keyboard focus targets in Tab order.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Focus {
+    Teacher,
+    Student,
+    Address,
+    Submit,
+}
+const FOCUS_ORDER: [Focus; 4] = [
+    Focus::Teacher,
+    Focus::Student,
+    Focus::Address,
+    Focus::Submit,
+];
+fn next_focus(current: Focus, back: bool) -> Focus {
+    let at = FOCUS_ORDER.iter().position(|f| *f == current).unwrap_or(0);
+    let n = FOCUS_ORDER.len();
+    FOCUS_ORDER[if back { (at + n - 1) % n } else { (at + 1) % n }]
+}
+#[allow(clippy::too_many_lines)] // one native event loop; keyboard and pointer share state
 fn show_impl(
     initial_role: &str,
     initial_ip: Ipv4Addr,
@@ -72,7 +92,8 @@ fn show_impl(
     }
     .to_string();
     let mut input_selected = false;
-    let mut input_focused = false;
+    // Enter starts/saves immediately; Tab moves between roles, address, button.
+    let mut focus = Focus::Submit;
     let mut error = String::new();
     let callback_buffer = Arc::new(Mutex::new(Vec::new()));
     let mut canvas = super::dashboard_view::Canvas::new(WIDTH, HEIGHT);
@@ -86,6 +107,7 @@ fn show_impl(
         None,
         false,
         settings,
+        None,
     );
     let mut window = Window::new(
         if settings {
@@ -116,6 +138,7 @@ fn show_impl(
         None,
         false,
         settings,
+        None,
     );
     window.update_with_buffer(&canvas.pixels, canvas.pixel_width(), canvas.pixel_height())?;
     window.set_visible(true);
@@ -147,14 +170,17 @@ fn show_impl(
                 click.or_else(|| window.get_mouse_pos(MouseMode::Discard))
             {
                 let (x, y) = pointer_pixel(mouse_x, mouse_y);
-                let was_input_focused = input_focused;
+                let was_input_focused = focus == Focus::Address;
                 if (64..=286).contains(&x) && (142..=200).contains(&y) {
                     role = Role::Teacher;
+                    focus = Focus::Teacher;
                 } else if (314..=536).contains(&x) && (142..=200).contains(&y) {
                     role = Role::Student;
+                    focus = Focus::Student;
+                } else if (64..=536).contains(&x) && (285..=335).contains(&y) {
+                    focus = Focus::Address;
                 }
-                input_focused = (64..=536).contains(&x) && (285..=335).contains(&y);
-                if input_focused && !was_input_focused {
+                if focus == Focus::Address && !was_input_focused {
                     input_selected = true;
                     error.clear();
                 }
@@ -174,6 +200,48 @@ fn show_impl(
         if keys.contains(&Key::Escape) {
             return Ok(None);
         }
+        if keys.contains(&Key::Tab) {
+            let back = window.is_key_down(Key::LeftShift) || window.is_key_down(Key::RightShift);
+            focus = next_focus(focus, back);
+            if focus == Focus::Address {
+                input_selected = true;
+                error.clear();
+            }
+        }
+        let activate = keys.contains(&Key::Enter)
+            || keys.contains(&Key::NumPadEnter)
+            || (focus != Focus::Address && keys.contains(&Key::Space));
+        match focus {
+            Focus::Teacher | Focus::Student => {
+                if keys.contains(&Key::Left) || keys.contains(&Key::Right) {
+                    focus = if focus == Focus::Teacher {
+                        Focus::Student
+                    } else {
+                        Focus::Teacher
+                    };
+                    role = if focus == Focus::Teacher {
+                        Role::Teacher
+                    } else {
+                        Role::Student
+                    };
+                } else if activate {
+                    role = if focus == Focus::Teacher {
+                        Role::Teacher
+                    } else {
+                        Role::Student
+                    };
+                }
+            }
+            Focus::Submit if activate => match ip_text.parse::<Ipv4Addr>() {
+                Ok(teacher_ip) => {
+                    save_teacher_ip(teacher_ip)?;
+                    return Ok(Some(LaunchSelection { role, teacher_ip }));
+                }
+                Err(_) => "Enter a valid IPv4 address".clone_into(&mut error),
+            },
+            _ => {}
+        }
+        let input_focused = focus == Focus::Address;
         if input_focused {
             if keys.contains(&Key::Backspace) || keys.contains(&Key::Delete) {
                 if input_selected {
@@ -184,7 +252,7 @@ fn show_impl(
                 }
                 error.clear();
             }
-            if keys.contains(&Key::Enter) {
+            if keys.contains(&Key::Enter) || keys.contains(&Key::NumPadEnter) {
                 match ip_text.parse::<Ipv4Addr>() {
                     Ok(teacher_ip) => {
                         save_teacher_ip(teacher_ip)?;
@@ -221,6 +289,7 @@ fn show_impl(
             window.get_mouse_pos(MouseMode::Discard),
             mouse_down,
             settings,
+            Some(focus),
         );
         window
             .update_with_buffer(&canvas.pixels, canvas.pixel_width(), canvas.pixel_height())
@@ -281,6 +350,7 @@ fn draw_screen(
     pointer: Option<(f32, f32)>,
     down: bool,
     settings: bool,
+    focus: Option<Focus>,
 ) {
     canvas.pixels.fill(0x00f1_f4f8);
     canvas.fill_rect([0, 0, WIDTH, 104], 0x001c_4d85);
@@ -315,6 +385,14 @@ fn draw_screen(
         );
         canvas.text(x + 18, 161, if chosen { "●" } else { "○" }, 0x001c_4d85, 2);
         canvas.text(x + 51, 161, label, 0x0024_3348, 2);
+        let target = if x == 64 {
+            Focus::Teacher
+        } else {
+            Focus::Student
+        };
+        if focus == Some(target) {
+            canvas.focus_ring([x, 142, 222, 58]);
+        }
     }
     canvas.text(
         64,
@@ -348,6 +426,9 @@ fn draw_screen(
     }
     let hovered = hover(225, 356, 150, 51);
     canvas.button([225, 356, 150, 51], 0x0025_63eb, hovered, hovered && down);
+    if focus == Some(Focus::Submit) {
+        canvas.focus_ring([225, 356, 150, 51]);
+    }
     canvas.text(
         if settings { 241 } else { 275 },
         372,

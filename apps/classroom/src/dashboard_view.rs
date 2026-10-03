@@ -252,6 +252,16 @@ impl Canvas {
         self.fill_rect([x, y + h.saturating_sub(1), w, 1], border);
         self.fill_rect([x + w.saturating_sub(1), y, 1, h], border);
     }
+    /// Keyboard-focus indicator drawn just outside `area`.
+    pub(crate) fn focus_ring(&mut self, area: [usize; 4]) {
+        const RING: u32 = 0x0025_63eb;
+        let [x, y, w, h] = area;
+        let (x, y, w, h) = (x.saturating_sub(3), y.saturating_sub(3), w + 6, h + 6);
+        self.fill_rect([x, y, w, 2], RING);
+        self.fill_rect([x, y + h - 2, w, 2], RING);
+        self.fill_rect([x, y, 2, h], RING);
+        self.fill_rect([x + w - 2, y, 2, h], RING);
+    }
     fn rect(&mut self, r: Rect, color: u32) {
         let stride = self.pixel_width();
         let x = r.x.min(self.width) * self.density;
@@ -288,6 +298,28 @@ impl Canvas {
                 }
             }
         }
+    }
+    /// Logical width of `value` as drawn by [`Canvas::text`] at `scale`.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    pub(crate) fn text_width(&self, value: &str, scale: usize) -> usize {
+        let Some(font) = self.font.as_ref() else {
+            return value.chars().count() * 6 * scale;
+        };
+        let size = if scale == 1 { 14.0 } else { 20.0 };
+        let mut width = 0.0_f32;
+        let mut previous = None;
+        for c in value.chars() {
+            if let Some(left) = previous {
+                width += font.horizontal_kern(left, c, size).unwrap_or(0.0);
+            }
+            previous = Some(c);
+            width += font.metrics(c, size).advance_width;
+        }
+        width.ceil().max(0.0) as usize
     }
     #[allow(
         clippy::cast_precision_loss,

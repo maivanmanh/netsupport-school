@@ -22,8 +22,8 @@ pub struct PresentationPacer {
 impl PresentationPacer {
     pub fn new(max_fps: u32, _now: Instant) -> Self {
         Self {
-            minimum_gap: Duration::from_secs_f64(0.9 / f64::from(max_fps.clamp(1, 30))),
-            max_fps: max_fps.clamp(1, 30) as usize,
+            minimum_gap: Duration::from_secs_f64(0.9 / f64::from(max_fps.clamp(1, 60))),
+            max_fps: max_fps.clamp(1, 60) as usize,
             admitted: VecDeque::new(),
             pending: None,
             replaced_frames: 0,
@@ -179,7 +179,7 @@ mod tests {
             .is_some());
     }
     #[test]
-    fn bursty_source_never_exceeds_thirty_in_a_rolling_second() {
+    fn bursty_source_never_exceeds_sixty_in_a_rolling_second() {
         let start = Instant::now();
         let mut pacer = PresentationPacer::new(120, start);
         let mut rendered = VecDeque::new();
@@ -194,7 +194,9 @@ mod tests {
                     rendered.pop_front();
                 }
                 rendered.push_back(now);
-                assert!(rendered.len() <= 30);
+                // Hard ceiling for enhanced one-to-one sessions; broadcast
+                // sessions are configured at 30.
+                assert!(rendered.len() <= 60);
             }
         }
         assert!(pacer.replaced_frames() > 2800);

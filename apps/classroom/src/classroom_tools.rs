@@ -70,8 +70,19 @@ fn nonce() -> Result<String> {
     Ok(result)
 }
 fn terminal(s: &str) -> bool {
-    ["complete", "replied", "dismissed", "cancelled", "error"].contains(&s)
+    [
+        "complete",
+        "skipped",
+        "replied",
+        "dismissed",
+        "cancelled",
+        "error",
+    ]
+    .contains(&s)
 }
+/// The Teacher's original filename, made safe for every Student OS: path
+/// separators/reserved characters are replaced and Windows device names
+/// (CON, NUL, COM1…) get a trailing underscore. Nothing is prefixed.
 pub fn safe_name(s: &str) -> String {
     let name: String = s
         .chars()
@@ -86,10 +97,97 @@ pub fn safe_name(s: &str) -> String {
         .collect();
     let name = name.trim_matches([' ', '.']);
     if name.is_empty() {
-        "file".into()
-    } else {
-        format!("received-{name}")
+        return "file".into();
     }
+    let (stem, extension) = split_name(name);
+    let device = stem.trim_end().to_ascii_uppercase();
+    let reserved = ["CON", "PRN", "AUX", "NUL"].contains(&device.as_str())
+        || (device.len() == 4
+            && (device.starts_with("COM") || device.starts_with("LPT"))
+            && device.as_bytes()[3].is_ascii_digit());
+    if reserved {
+        join_name(&format!("{stem}_"), extension)
+    } else {
+        name.into()
+    }
+}
+/// Splits `lesson.notes.pdf` into (`lesson.notes`, Some(`pdf`)); dotfiles keep
+/// their leading dot in the stem.
+fn split_name(name: &str) -> (&str, Option<&str>) {
+    match name.rfind('.') {
+        Some(i) if i > 0 && i + 1 < name.len() => (&name[..i], Some(&name[i + 1..])),
+        _ => (name, None),
+    }
+}
+fn join_name(stem: &str, extension: Option<&str>) -> String {
+    extension.map_or_else(|| stem.to_owned(), |ext| format!("{stem}.{ext}"))
+}
+/// `name.ext`, then `name-1.ext`, `name-2.ext`, …
+fn numbered_name(name: &str, index: u32) -> String {
+    if index == 0 {
+        return name.to_owned();
+    }
+    let (stem, extension) = split_name(name);
+    join_name(&format!("{stem}-{index}"), extension)
+}
+fn sha256_file(path: &Path, cancel: &AtomicBool) -> Result<String> {
+    let mut file = File::open(path)?;
+    let mut hash = Sha256::new();
+    let mut buffer = vec![0; CHUNK];
+    loop {
+        anyhow::ensure!(!cancel.load(Ordering::Acquire), "Hashing cancelled");
+        let n = file.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        hash.update(&buffer[..n]);
+    }
+    Ok(format!("{:x}", hash.finalize()))
+}
+/// True when `path` is a regular file with exactly `size` bytes and `hash`.
+fn same_content(path: &Path, size: u64, hash: &str, cancel: &AtomicBool) -> bool {
+    !hash.is_empty()
+        && fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() == size)
+        && sha256_file(path, cancel).is_ok_and(|h| h == hash)
+}
+/// Another receiver sharing the folder (e.g. a VM's redirected Desktop) may
+/// still be writing the same name; wait briefly for its size to settle.
+fn same_content_settled(path: &Path, size: u64, hash: &str, cancel: &AtomicBool) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut last = None;
+    loop {
+        let len = fs::metadata(path).map(|m| m.len()).ok();
+        if len == Some(size) || (len.is_some() && len == last) || Instant::now() >= deadline {
+            return same_content(path, size, hash, cancel);
+        }
+        last = len;
+        thread::sleep(Duration::from_millis(200));
+    }
+}
+/// Where the received file will be published, or that an identical copy is
+/// already on the Desktop (`Ok(None)`): `name`, `name-1`, … are checked in order.
+enum Destination {
+    /// First free `name` / `name-N` index.
+    Free(u32),
+    /// An identical file is already present here.
+    Identical(PathBuf),
+}
+fn choose_destination(folder: &Path, p: &ToolPacket, cancel: &AtomicBool) -> Result<Destination> {
+    let name = safe_name(&p.name);
+    for index in 0..10_000 {
+        let candidate = folder.join(numbered_name(&name, index));
+        match fs::symlink_metadata(&candidate) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Destination::Free(index));
+            }
+            Err(e) => return Err(e).context("Could not inspect the Desktop folder"),
+            Ok(_) => {}
+        }
+        if same_content(&candidate, p.size, &p.hash, cancel) {
+            return Ok(Destination::Identical(candidate));
+        }
+    }
+    anyhow::bail!("Could not choose a unique Desktop filename")
 }
 struct Source(PathBuf);
 impl Drop for Source {
@@ -121,10 +219,47 @@ pub struct Hub(Mutex<State>);
 impl Hub {
     pub fn snapshot(&self) -> Value {
         let s = self.0.lock().unwrap();
-        json!({"ready":s.peers.keys().collect::<Vec<_>>(),"jobs":s.jobs.iter().map(|j|json!({"id":j.packet.id,"kind":j.packet.action,"name":j.packet.name,"size":j.packet.size,"targets":j.targets.iter().map(|(id,t)|json!({"id":id,"status":t.status,"done":t.done,"reply":t.reply,"error":t.error})).collect::<Vec<_>>()})).collect::<Vec<_>>()})
+        json!({"ready":s.peers.keys().collect::<Vec<_>>(),"jobs":s.jobs.iter().map(|j|json!({"id":j.packet.id,"kind":j.packet.action,"name":j.packet.name,"size":j.packet.size,"text":j.packet.text.chars().take(240).collect::<String>(),"targets":j.targets.iter().map(|(id,t)|json!({"id":id,"status":t.status,"done":t.done,"reply":t.reply,"error":t.error})).collect::<Vec<_>>()})).collect::<Vec<_>>()})
+    }
+    /// Hashes a staged file off the caller's thread, then offers it to every
+    /// recipient that has not been cancelled meanwhile. The hash lets Students
+    /// skip files they already hold with identical content.
+    fn prepare_file(self: &Arc<Self>, id: String, path: PathBuf, cancel: Arc<AtomicBool>) {
+        let hub = Arc::clone(self);
+        thread::spawn(move || {
+            let result = sha256_file(&path, &cancel);
+            let mut s = hub.0.lock().unwrap();
+            let State { jobs, queues, .. } = &mut *s;
+            let Some(job) = jobs.iter_mut().find(|j| j.packet.id == id) else {
+                return;
+            };
+            match result {
+                Ok(hash) => {
+                    job.packet.hash = hash;
+                    for (student, target) in &mut job.targets {
+                        if target.status == "preparing" {
+                            target.status = "queued".into();
+                            queues
+                                .entry(student.clone())
+                                .or_default()
+                                .push_back(job.packet.clone());
+                        }
+                    }
+                    info!(job_id=%id,"Classroom file prepared");
+                }
+                Err(error) => {
+                    for target in job.targets.values_mut() {
+                        if target.status == "preparing" {
+                            target.status = "error".into();
+                            target.error = format!("Could not read file: {error:#}");
+                        }
+                    }
+                }
+            }
+        });
     }
     pub fn submit(
-        &self,
+        self: &Arc<Self>,
         action: &str,
         recipients: &[String],
         input: &Value,
@@ -199,13 +334,18 @@ impl Hub {
             retained.saturating_add(p.size) <= 8 * 1024 * 1024 * 1024,
             "Outgoing files exceed 8 GiB queue budget"
         );
+        let initial = if source.is_some() {
+            "preparing"
+        } else {
+            "queued"
+        };
         let targets = recipients
             .iter()
             .map(|id| {
                 (
                     id.clone(),
                     Target {
-                        status: "queued".into(),
+                        status: initial.into(),
                         done: 0,
                         reply: String::new(),
                         error: String::new(),
@@ -213,16 +353,26 @@ impl Hub {
                 )
             })
             .collect();
-        for id in recipients {
-            s.queues.entry(id.clone()).or_default().push_back(p.clone());
+        if source.is_none() {
+            for id in recipients {
+                s.queues.entry(id.clone()).or_default().push_back(p.clone());
+            }
         }
         info!(job_id=%p.id,kind=%action,recipients=recipients.len(),bytes=p.size,"Classroom tools job queued");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let prepare = source
+            .as_ref()
+            .map(|src| (p.id.clone(), src.0.clone(), Arc::clone(&cancel)));
         s.jobs.push_back(Job {
             packet: p,
             source,
             targets,
-            cancel: Arc::new(AtomicBool::new(false)),
+            cancel,
         });
+        drop(s);
+        if let Some((id, path, cancel)) = prepare {
+            self.prepare_file(id, path, cancel);
+        }
         Ok(())
     }
     pub fn cancel(&self, id: &str) -> Result<()> {
@@ -249,7 +399,7 @@ impl Hub {
         info!(job_id = id, "Classroom tools job cancelled");
         Ok(())
     }
-    pub fn retry(&self, id: &str, outbox: &Path) -> Result<()> {
+    pub fn retry(self: &Arc<Self>, id: &str, outbox: &Path) -> Result<()> {
         let (targets, input) = {
             let s = self.0.lock().unwrap();
             let j = s
@@ -303,11 +453,16 @@ impl Hub {
                 "waiting",
                 "receiving",
                 "complete",
+                "skipped",
                 "error",
                 "cancelled"
             ]
             .contains(&p.status.as_str()),
             "Invalid tools status"
+        );
+        anyhow::ensure!(
+            p.status != "skipped" || j.packet.action == "file",
+            "Only files can be skipped"
         );
         anyhow::ensure!(
             p.done <= j.packet.size && p.text.chars().count() <= 2000,
@@ -328,7 +483,10 @@ impl Hub {
         if terminal(&t.status) {
             info!(job_id=%p.id,student_id=student,status=%t.status,bytes=t.done,"Classroom tools recipient finished");
         }
-        if j.targets.values().all(|t| t.status == "complete") {
+        if j.targets
+            .values()
+            .all(|t| t.status == "complete" || t.status == "skipped")
+        {
             j.source = None;
         }
         Ok(())
@@ -556,6 +714,10 @@ fn serve_file(
     let mut finish = packet("checksum");
     finish.hash = format!("{:x}", hash.finalize());
     send(s, &finish)?;
+    // The Student copies the verified file onto its Desktop before acking;
+    // a large file (or a first-use OS folder-access prompt) takes far longer
+    // than the 4-second control timeout.
+    s.set_read_timeout(Some(publish_timeout(total)))?;
     let ack = read(s)?;
     anyhow::ensure!(
         ack.action == "stored" && ack.hash == finish.hash,
@@ -568,16 +730,99 @@ fn serve_file(
     hub.event(&p.student, &event)?;
     Ok(())
 }
+/// 2 minutes plus 10 MiB/s of local copy time.
+fn publish_timeout(size: u64) -> Duration {
+    Duration::from_secs(120 + size / (10 * 1024 * 1024))
+}
 #[derive(Default)]
 pub struct Inbox {
     messages: Mutex<VecDeque<ToolPacket>>,
     events: Mutex<VecDeque<ToolPacket>>,
+    transfers: Mutex<VecDeque<Transfer>>,
 }
+/// Student-side view of one incoming file, for the local progress window.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TransferState {
+    Waiting,
+    Receiving,
+    Saved(PathBuf),
+    AlreadyPresent(PathBuf),
+    Failed(String),
+    Cancelled,
+}
+impl TransferState {
+    pub fn active(&self) -> bool {
+        matches!(self, Self::Waiting | Self::Receiving)
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Transfer {
+    pub id: String,
+    pub name: String,
+    pub size: u64,
+    pub done: u64,
+    pub state: TransferState,
+}
+const MAX_TRANSFERS: usize = 32;
 impl Inbox {
     pub fn take(&self) -> Option<ToolPacket> {
         self.messages.lock().unwrap().pop_front()
     }
+    /// Snapshot, oldest first.
+    pub fn transfers(&self) -> Vec<Transfer> {
+        self.transfers.lock().unwrap().iter().cloned().collect()
+    }
+    /// Removes finished transfers the Student has acknowledged.
+    pub fn forget_finished(&self) {
+        self.transfers.lock().unwrap().retain(|t| t.state.active());
+    }
+    fn track_file(&self, p: &ToolPacket) {
+        let mut q = self.transfers.lock().unwrap();
+        if q.iter().any(|t| t.id == p.id) {
+            return;
+        }
+        while q.len() >= MAX_TRANSFERS {
+            match q.iter().position(|t| !t.state.active()) {
+                Some(i) => {
+                    q.remove(i);
+                }
+                None => return,
+            }
+        }
+        q.push_back(Transfer {
+            id: p.id.clone(),
+            name: safe_name(&p.name),
+            size: p.size,
+            done: 0,
+            state: TransferState::Waiting,
+        });
+    }
+    fn set_transfer(&self, id: &str, state: TransferState, done: Option<u64>) {
+        if let Some(t) = self
+            .transfers
+            .lock()
+            .unwrap()
+            .iter_mut()
+            .find(|t| t.id == id)
+        {
+            if let Some(done) = done {
+                t.done = done.min(t.size);
+            }
+            t.state = state;
+        }
+    }
     pub fn event(&self, id: &str, status: &str, text: &str, done: u64) {
+        match status {
+            "waiting" => self.set_transfer(id, TransferState::Waiting, None),
+            "receiving" => self.set_transfer(id, TransferState::Receiving, Some(done)),
+            "error" => self.set_transfer(
+                id,
+                TransferState::Failed(text.chars().take(200).collect()),
+                None,
+            ),
+            "cancelled" => self.set_transfer(id, TransferState::Cancelled, None),
+            _ => {}
+        }
         let mut q = self.events.lock().unwrap();
         let mut p = packet("event");
         p.id = id.into();
@@ -695,6 +940,7 @@ pub fn student(address: SocketAddrV4, identity: String, inbox: Arc<Inbox>) -> Cl
                                 }
                             }
                             "file" => {
+                                inbox.track_file(&p);
                                 if download.is_some() {
                                     if pending_downloads.len() < 8 {
                                         inbox.event(&p.id, "waiting", "", 0);
@@ -720,6 +966,9 @@ pub fn student(address: SocketAddrV4, identity: String, inbox: Arc<Inbox>) -> Cl
                             "cancel" => {
                                 if let Some(d) = download.as_ref().filter(|d| d.id == p.id) {
                                     d.cancel.store(true, Ordering::Release);
+                                }
+                                if pending_downloads.iter().any(|queued| queued.id == p.id) {
+                                    inbox.set_transfer(&p.id, TransferState::Cancelled, None);
                                 }
                                 pending_downloads.retain(|queued| queued.id != p.id);
                                 inbox.messages.lock().unwrap().retain(|m| m.id != p.id);
@@ -774,8 +1023,11 @@ fn receive_file(
     stop: &AtomicBool,
 ) -> Result<()> {
     let folder = desktop_folder()?;
-    receive_file_to_folder(address, student, p, inbox, cancel, stop, &folder)
+    // Stage outside the Desktop so a transfer in progress never shows up there.
+    let staging = std::env::temp_dir().join("Classroom-incoming");
+    receive_file_to_folder(address, student, p, inbox, cancel, stop, &folder, &staging)
 }
+#[allow(clippy::too_many_arguments)]
 fn receive_file_to_folder(
     address: SocketAddrV4,
     student: &str,
@@ -784,6 +1036,7 @@ fn receive_file_to_folder(
     cancel: &AtomicBool,
     stop: &AtomicBool,
     folder: &Path,
+    staging: &Path,
 ) -> Result<()> {
     anyhow::ensure!(p.size <= MAX_FILE, "File exceeds 4 GiB limit");
     anyhow::ensure!(
@@ -791,32 +1044,28 @@ fn receive_file_to_folder(
         "Invalid file job id"
     );
     fs::create_dir_all(folder)?;
-    let safe_name = safe_name(&p.name);
-    let requested = Path::new(&safe_name);
-    let prefix = format!(
-        "{}-{}",
-        &p.id[..12],
-        requested.file_stem().unwrap_or_default().to_string_lossy()
-    );
-    let extension = requested
-        .extension()
-        .map(|v| v.to_string_lossy().into_owned());
-    let (_dest, partial_path) = (0_u32..)
-        .find_map(|suffix| {
-            let base = if suffix == 0 {
-                prefix.clone()
-            } else {
-                format!("{prefix}-{suffix}")
-            };
-            let name = extension
-                .as_ref()
-                .map_or_else(|| base.clone(), |ext| format!("{base}.{ext}"));
-            let dest = folder.join(name);
-            let partial = folder.join(format!(".{}.part", dest.file_name()?.to_string_lossy()));
-            (!dest.exists() && !partial.exists()).then_some((dest, partial))
-        })
-        .context("Could not choose a unique Desktop filename")?;
-    let partial = Partial(partial_path);
+    // Touch the Desktop before downloading: on macOS this is where a first-use
+    // folder-access prompt appears, and a denial fails here, not after transfer.
+    fs::read_dir(folder).context("Desktop folder is not accessible")?;
+    fs::create_dir_all(staging)?;
+    let name = safe_name(&p.name);
+    // An identical file (same name or numbered copy, same SHA-256) means
+    // there is nothing to transfer.
+    let first_free = match choose_destination(folder, p, cancel)? {
+        Destination::Free(index) => index,
+        Destination::Identical(path) => {
+            inbox.event(
+                &p.id,
+                "skipped",
+                "Identical file already on Desktop",
+                p.size,
+            );
+            inbox.set_transfer(&p.id, TransferState::AlreadyPresent(path), Some(p.size));
+            info!(job_id=%p.id,"Student classroom file already present; skipped");
+            return Ok(());
+        }
+    };
+    let partial = Partial(staging.join(format!("{}.part", p.id)));
     let mut s = loop {
         anyhow::ensure!(
             !stop.load(Ordering::Acquire) && !cancel.load(Ordering::Acquire),
@@ -843,8 +1092,10 @@ fn receive_file_to_folder(
     };
     let mut file = OpenOptions::new()
         .write(true)
-        .create_new(true)
-        .open(&partial.0)?;
+        .create(true)
+        .truncate(true)
+        .open(&partial.0)
+        .context("Could not create temporary download file")?;
     let mut done = 0;
     let mut hash = Sha256::new();
     let mut b = vec![0; CHUNK];
@@ -877,20 +1128,12 @@ fn receive_file_to_folder(
     );
     file.sync_all()?;
     drop(file);
-    // Publish with create_new + copy instead of hard links: redirected Windows
-    // Desktop folders and some macOS-managed folders reject hard-link creation.
-    // create_new guarantees that a same-named file is never overwritten.
-    let mut suffix = 0_u32;
-    loop {
-        let base = if suffix == 0 {
-            prefix.clone()
-        } else {
-            format!("{prefix}-{suffix}")
-        };
-        let name = extension
-            .as_ref()
-            .map_or_else(|| base.clone(), |ext| format!("{base}.{ext}"));
-        let candidate = folder.join(name);
+    // Publish with create_new + copy instead of hard links/rename: redirected
+    // Windows Desktops (e.g. a Parallels shared folder) reject hard links with
+    // error 87, and rename could overwrite. create_new never replaces a file.
+    let mut index = first_free;
+    let published = loop {
+        let candidate = folder.join(numbered_name(&name, index));
         let mut output = match OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -898,8 +1141,14 @@ fn receive_file_to_folder(
         {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                suffix = suffix
+                // Possibly a peer sharing this folder publishing the same file.
+                if same_content_settled(&candidate, p.size, &digest, cancel) {
+                    info!(job_id=%p.id,"Identical file appeared on Desktop; not duplicated");
+                    break TransferState::AlreadyPresent(candidate);
+                }
+                index = index
                     .checked_add(1)
+                    .filter(|i| *i < 10_000)
                     .context("No unique Desktop filename remains")?;
                 continue;
             }
@@ -916,14 +1165,38 @@ fn receive_file_to_folder(
             let _ = fs::remove_file(&candidate);
             return Err(error).context("Could not publish verified file to Desktop");
         }
-        fs::remove_file(&partial.0)?;
-        break;
-    }
+        break TransferState::Saved(candidate);
+    };
+    drop(partial);
     let mut ack = packet("stored");
     ack.hash = digest;
+    // The file is on the Desktop either way; a lost ack only affects the
+    // Teacher's status, so show the Student the local result first.
+    inbox.set_transfer(&p.id, published, Some(p.size));
     send(&mut s, &ack)?;
     info!(job_id=%p.id,bytes=done,"Student classroom file saved and verified");
     Ok(())
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn desktop_folder() -> Result<PathBuf> {
+    use windows::Win32::{
+        System::Com::CoTaskMemFree,
+        UI::Shell::{FOLDERID_Desktop, SHGetKnownFolderPath, KF_FLAG_DEFAULT},
+    };
+    // SAFETY: Shell returns a CoTaskMem-allocated UTF-16 path for this user's
+    // Desktop (including OneDrive redirection). Copy it and free exactly once.
+    unsafe {
+        let path = SHGetKnownFolderPath(&FOLDERID_Desktop, KF_FLAG_DEFAULT, None)?;
+        let text = path.to_string();
+        CoTaskMemFree(Some(path.0.cast()));
+        Ok(PathBuf::from(text?))
+    }
+}
+#[cfg(not(windows))]
+fn desktop_folder() -> Result<PathBuf> {
+    Ok(PathBuf::from(std::env::var_os("HOME").context("User home missing")?).join("Desktop"))
 }
 #[cfg(test)]
 mod tests {
@@ -965,94 +1238,204 @@ mod tests {
     }
 
     #[test]
-    fn teacher_to_student_file_is_checksummed_and_published_without_partial_file() {
-        let temp = TestFolder(test_folder());
-        let outbox = temp.0.join("outbox");
-        let desktop = temp.0.join("Desktop");
-        fs::create_dir_all(&outbox).unwrap();
-        fs::create_dir_all(&desktop).unwrap();
-        let payload: Vec<u8> = (0..190_000).map(|n| (n % 251) as u8).collect();
-        let source = outbox.join("teacher-source");
-        fs::write(&source, &payload).unwrap();
-        let hub = Arc::new(Hub::default());
+    fn received_names_keep_the_original_and_number_collisions() {
+        assert_eq!(safe_name("Meeting 29 Sept.pdf"), "Meeting 29 Sept.pdf");
+        assert_eq!(safe_name("con.txt"), "con_.txt");
+        assert_eq!(safe_name("COM1"), "COM1_");
+        assert_eq!(safe_name("COMPUTER.txt"), "COMPUTER.txt");
+        assert_eq!(numbered_name("lesson.notes.pdf", 0), "lesson.notes.pdf");
+        assert_eq!(numbered_name("lesson.notes.pdf", 2), "lesson.notes-2.pdf");
+        assert_eq!(numbered_name("README", 1), "README-1");
+        assert_eq!(numbered_name(".env", 1), ".env-1");
+    }
+
+    fn staged_offer(hub: &Arc<Hub>, outbox: &Path, name: &str, payload: &[u8]) -> ToolPacket {
+        let source = outbox.join(nonce().unwrap());
+        fs::write(&source, payload).unwrap();
         hub.0.lock().unwrap().peers.insert("student-a".into(), 1);
         hub.submit(
             "file",
             &["student-a".into()],
-            &json!({"path":source,"name":"lesson notes.txt"}),
-            &outbox,
+            &json!({"path":source,"name":name}),
+            outbox,
         )
         .unwrap();
-        let offer = hub
-            .0
-            .lock()
-            .unwrap()
-            .queues
-            .get_mut("student-a")
-            .unwrap()
-            .pop_front()
-            .unwrap();
-        let preexisting = desktop.join(format!("{}-received-lesson notes.txt", &offer.id[..12]));
-        fs::write(&preexisting, b"keep the existing Desktop file").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let offer = hub
+                .0
+                .lock()
+                .unwrap()
+                .queues
+                .get_mut("student-a")
+                .and_then(VecDeque::pop_front);
+            if let Some(offer) = offer {
+                return offer;
+            }
+            assert!(Instant::now() < deadline, "file was never prepared");
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Runs one Teacher download server (if the Student connects) and the
+    /// Student receive path; returns the Student result and its events.
+    fn transfer(
+        hub: &Arc<Hub>,
+        offer: &ToolPacket,
+        desktop: &Path,
+        staging: &Path,
+    ) -> (Result<()>, Vec<String>) {
         let listener =
             TcpListener::bind(SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
         let address = SocketAddrV4::new(
             std::net::Ipv4Addr::LOCALHOST,
             listener.local_addr().unwrap().port(),
         );
         let stop = Arc::new(AtomicBool::new(false));
-        let slots = Arc::new(AtomicUsize::new(0));
-        let server_hub = Arc::clone(&hub);
-        let server_stop = Arc::clone(&stop);
-        let server_slots = Arc::clone(&slots);
-        let client_offer = offer.clone();
+        let done = Arc::new(AtomicBool::new(false));
+        let server_hub = Arc::clone(hub);
+        let (server_stop, server_done) = (Arc::clone(&stop), Arc::clone(&done));
         let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            configure(&stream).unwrap();
-            let request = read(&mut stream).unwrap();
-            serve_file(
-                &mut stream,
-                &request,
-                &server_hub,
-                &server_stop,
-                &server_slots,
-            )
-            .unwrap();
+            while !server_done.load(Ordering::Acquire) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        configure(&stream).unwrap();
+                        let request = read(&mut stream).unwrap();
+                        let slots = Arc::new(AtomicUsize::new(0));
+                        serve_file(&mut stream, &request, &server_hub, &server_stop, &slots)
+                            .unwrap();
+                    }
+                    Err(_) => thread::sleep(Duration::from_millis(5)),
+                }
+            }
         });
         let inbox = Inbox::default();
-        receive_file_to_folder(
+        inbox.track_file(offer);
+        let result = receive_file_to_folder(
             address,
             "student-a",
-            &client_offer,
+            offer,
             &inbox,
             &AtomicBool::new(false),
             &stop,
-            &desktop,
-        )
-        .unwrap();
-        server.join().unwrap();
-        let entries = fs::read_dir(&desktop)
-            .unwrap()
-            .collect::<std::io::Result<Vec<_>>>()
-            .unwrap();
-        assert_eq!(entries.len(), 2);
-        assert_eq!(
-            fs::read(&preexisting).unwrap(),
-            b"keep the existing Desktop file"
+            desktop,
+            staging,
         );
-        assert!(entries
+        done.store(true, Ordering::Release);
+        server.join().unwrap();
+        let mut events: Vec<String> = inbox
+            .events
+            .lock()
+            .unwrap()
             .iter()
-            .any(|entry| fs::read(entry.path()).unwrap() == payload));
+            .map(|e| e.status.clone())
+            .collect();
+        // Append the Student-visible final state for assertions.
+        events.push(match &inbox.transfers()[0].state {
+            TransferState::Saved(p) => {
+                format!("saved:{}", p.file_name().unwrap().to_string_lossy())
+            }
+            TransferState::AlreadyPresent(p) => {
+                format!("present:{}", p.file_name().unwrap().to_string_lossy())
+            }
+            other => format!("{other:?}"),
+        });
+        (result, events)
+    }
+
+    #[test]
+    fn file_keeps_its_name_and_skips_identical_copies() {
+        let temp = TestFolder(test_folder());
+        let (outbox, desktop, staging) = (
+            temp.0.join("outbox"),
+            temp.0.join("Desktop"),
+            temp.0.join("staging"),
+        );
+        fs::create_dir_all(&outbox).unwrap();
+        let payload: Vec<u8> = (0..190_000_u32).map(|n| (n % 251) as u8).collect();
+        let hub = Arc::new(Hub::default());
+
+        let offer = staged_offer(&hub, &outbox, "lesson notes.txt", &payload);
+        assert_eq!(offer.hash.len(), 64);
+        let (result, _) = transfer(&hub, &offer, &desktop, &staging);
+        result.unwrap();
+        assert_eq!(fs::read(desktop.join("lesson notes.txt")).unwrap(), payload);
+        assert_eq!(
+            fs::read_dir(&staging).unwrap().count(),
+            0,
+            "partial removed"
+        );
         assert_eq!(
             hub.snapshot()["jobs"][0]["targets"][0]["status"],
             "complete"
         );
+
+        // Same name, same content: nothing is transferred or duplicated.
+        let again = staged_offer(&hub, &outbox, "lesson notes.txt", &payload);
+        let (result, events) = transfer(&hub, &again, &desktop, &staging);
+        result.unwrap();
+        assert_eq!(events, ["skipped", "present:lesson notes.txt"]);
+        assert_eq!(fs::read_dir(&desktop).unwrap().count(), 1);
+
+        // Same name, different content: published as name-1, original kept.
+        let mut changed = payload.clone();
+        changed[0] ^= 1;
+        let v2 = staged_offer(&hub, &outbox, "lesson notes.txt", &changed);
+        let (result, events) = transfer(&hub, &v2, &desktop, &staging);
+        result.unwrap();
+        assert_eq!(events.last().unwrap(), "saved:lesson notes-1.txt");
+        assert_eq!(fs::read(desktop.join("lesson notes.txt")).unwrap(), payload);
+        assert_eq!(
+            fs::read(desktop.join("lesson notes-1.txt")).unwrap(),
+            changed
+        );
+
+        // The changed version is now present as name-1: skipped too.
+        let v2_again = staged_offer(&hub, &outbox, "lesson notes.txt", &changed);
+        let (_, events) = transfer(&hub, &v2_again, &desktop, &staging);
+        assert_eq!(events, ["skipped", "present:lesson notes-1.txt"]);
+        assert_eq!(fs::read_dir(&desktop).unwrap().count(), 2);
+
+        // A third version takes the next free number.
+        changed[1] ^= 1;
+        let v3 = staged_offer(&hub, &outbox, "lesson notes.txt", &changed);
+        transfer(&hub, &v3, &desktop, &staging).0.unwrap();
+        assert_eq!(
+            fs::read(desktop.join("lesson notes-2.txt")).unwrap(),
+            changed
+        );
+    }
+
+    #[test]
+    fn identical_file_published_by_a_folder_peer_is_not_duplicated() {
+        let temp = TestFolder(test_folder());
+        let desktop = temp.0.join("Desktop");
+        fs::create_dir_all(&desktop).unwrap();
+        let payload = b"shared desktop".to_vec();
+        let digest = format!("{:x}", Sha256::digest(&payload));
+        let path = desktop.join("notes.txt");
+        // Peer published while this receiver was downloading.
+        fs::write(&path, &payload).unwrap();
+        assert!(same_content_settled(
+            &path,
+            payload.len() as u64,
+            &digest,
+            &AtomicBool::new(false)
+        ));
+        assert!(!same_content_settled(
+            &path,
+            payload.len() as u64,
+            "other",
+            &AtomicBool::new(false)
+        ));
     }
 
     #[test]
     fn rejected_file_checksum_removes_partial_desktop_file() {
         let temp = TestFolder(test_folder());
         let desktop = temp.0.join("Desktop");
+        let staging = temp.0.join("staging");
         let listener =
             TcpListener::bind(SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
         let address = SocketAddrV4::new(
@@ -1082,10 +1465,12 @@ mod tests {
             &AtomicBool::new(false),
             &AtomicBool::new(false),
             &desktop,
+            &staging,
         );
         server.join().unwrap();
         assert!(result.is_err());
         assert_eq!(fs::read_dir(desktop).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(staging).unwrap().count(), 0);
     }
 
     #[test]
@@ -1093,7 +1478,7 @@ mod tests {
         let temp = TestFolder(test_folder());
         let outbox = temp.0.join("outbox");
         fs::create_dir_all(&outbox).unwrap();
-        let hub = Hub::default();
+        let hub = Arc::new(Hub::default());
         hub.0.lock().unwrap().peers.insert("student-a".into(), 1);
         hub.submit(
             "message",
@@ -1121,7 +1506,7 @@ mod tests {
         let temp = TestFolder(test_folder());
         let outbox = temp.0.join("outbox");
         fs::create_dir_all(&outbox).unwrap();
-        let hub = Hub::default();
+        let hub = Arc::new(Hub::default());
         hub.0.lock().unwrap().peers.insert("student-a".into(), 9);
         hub.submit(
             "message",
@@ -1135,25 +1520,4 @@ mod tests {
         hub.disconnected("student-a", 9);
         assert_eq!(hub.snapshot()["jobs"][0]["targets"][0]["status"], "error");
     }
-}
-
-#[cfg(windows)]
-#[allow(unsafe_code)]
-fn desktop_folder() -> Result<PathBuf> {
-    use windows::Win32::{
-        System::Com::CoTaskMemFree,
-        UI::Shell::{FOLDERID_Desktop, SHGetKnownFolderPath, KF_FLAG_DEFAULT},
-    };
-    // SAFETY: Shell returns a CoTaskMem-allocated UTF-16 path for this user's
-    // Desktop (including OneDrive redirection). Copy it and free exactly once.
-    unsafe {
-        let path = SHGetKnownFolderPath(&FOLDERID_Desktop, KF_FLAG_DEFAULT, None)?;
-        let text = path.to_string();
-        CoTaskMemFree(Some(path.0.cast()));
-        Ok(PathBuf::from(text?))
-    }
-}
-#[cfg(not(windows))]
-fn desktop_folder() -> Result<PathBuf> {
-    Ok(PathBuf::from(std::env::var_os("HOME").context("User home missing")?).join("Desktop"))
 }

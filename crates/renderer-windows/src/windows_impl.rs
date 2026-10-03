@@ -35,6 +35,8 @@ pub struct NativeRenderer {
     timer_period_active: bool,
     gpu: Option<crate::gpu::GpuRenderer>,
     diagnostics: media_core::diagnostics::StageMetrics,
+    /// O1 pointer; also blended on the CPU when the GDI fallback is active.
+    pointer: Option<media_core::PointerOverlay>,
 }
 
 impl NativeRenderer {
@@ -168,6 +170,7 @@ impl NativeRenderer {
                 // Only while this presentation is alive; balance on this thread.
                 timer_period_active: timeBeginPeriod(1) == 0,
                 gpu,
+                pointer: None,
                 diagnostics: media_core::diagnostics::StageMetrics::default(),
             })
         }
@@ -238,6 +241,31 @@ impl NativeRenderer {
 }
 
 impl Renderer for NativeRenderer {
+    fn set_pointer(&mut self, pointer: Option<media_core::PointerOverlay>) {
+        if let Some(gpu) = self.gpu.as_mut() {
+            gpu.set_pointer(pointer.clone());
+        }
+        self.pointer = pointer;
+    }
+    fn redraw(&mut self) -> Result<bool, MediaError> {
+        self.pump_messages();
+        if !self.open {
+            return Ok(false);
+        }
+        let Some(gpu) = self.gpu.as_mut() else {
+            return Ok(false); // GDI fallback draws the pointer on the next frame
+        };
+        let mut client = RECT::default();
+        // SAFETY: valid window handle owned by this thread.
+        unsafe { GetClientRect(self.window, ptr::addr_of_mut!(client)) }
+            .map_err(|error| win_error("read preview client rectangle", error))?;
+        let (w, h) = (
+            u32::try_from((client.right - client.left).max(0)).unwrap_or(0),
+            u32::try_from((client.bottom - client.top).max(0)).unwrap_or(0),
+        );
+        gpu.redraw(w, h)
+            .map_err(|error| MediaError::Operation(format!("pointer redraw failed: {error}")))
+    }
     fn take_diagnostics(&mut self) -> media_core::diagnostics::StageMetrics {
         if let Some(gpu) = &mut self.gpu {
             gpu.take_diagnostics()
@@ -281,7 +309,10 @@ impl Renderer for NativeRenderer {
                 }
             }
             let conversion_started = Instant::now();
-            let bgra = frame.bgra()?;
+            let mut bgra = frame.bgra()?;
+            if let Some(pointer) = self.pointer.as_ref() {
+                pointer.blend_into_bgra(bgra.to_mut(), frame.width, frame.height);
+            }
             self.diagnostics
                 .record("render_color_conversion_cpu", conversion_started.elapsed());
             let frame = DecodedFrameRef {

@@ -142,6 +142,7 @@ class _ConsoleState extends State<Console> with WindowListener {
   final selected = <String>{};
   int request = 0;
   Agent get agent => widget.agent;
+  late final ToolActivity toolActivity = ToolActivity(agent);
 
   List<String> get toolRecipients {
     final ready = Set<String>.from(
@@ -230,6 +231,8 @@ class _ConsoleState extends State<Console> with WindowListener {
   @override
   void initState() {
     super.initState();
+    // Baseline existing agent jobs now so old results are never re-announced.
+    toolActivity;
     wasSharing = agent.state['phase'] == 'sharing';
     havePresentationState = agent.state.containsKey('phase');
     agent.addListener(changed);
@@ -301,6 +304,7 @@ class _ConsoleState extends State<Console> with WindowListener {
   @override
   void dispose() {
     agent.removeListener(changed);
+    toolActivity.dispose();
     windowManager.removeListener(this);
     super.dispose();
   }
@@ -518,6 +522,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                             tooltip: selectionMode && onlineSelected.isNotEmpty
                                 ? 'Message selected students'
                                 : 'Message the class',
+                            visualDensity: VisualDensity.compact,
                             onPressed: !agent.commandBusy && canUseTools
                                 ? sendClassMessage
                                 : null,
@@ -527,10 +532,30 @@ class _ConsoleState extends State<Console> with WindowListener {
                             tooltip: selectionMode && onlineSelected.isNotEmpty
                                 ? 'Send file to selected students'
                                 : 'Send file to the class',
+                            visualDensity: VisualDensity.compact,
                             onPressed: !agent.commandBusy && canUseTools
                                 ? sendClassFile
                                 : null,
                             icon: const Icon(Icons.attach_file, size: 18),
+                          ),
+                          AnimatedBuilder(
+                            animation: toolActivity,
+                            builder: (context, _) => IconButton(
+                              visualDensity: VisualDensity.compact,
+                              tooltip: toolActivity.unread == 0
+                                  ? 'Student replies'
+                                  : '${toolActivity.unread} new replies',
+                              onPressed: () =>
+                                  showRepliesDialog(context, toolActivity),
+                              icon: Badge(
+                                isLabelVisible: toolActivity.unread > 0,
+                                label: Text('${toolActivity.unread}'),
+                                child: const Icon(
+                                  Icons.forum_outlined,
+                                  size: 18,
+                                ),
+                              ),
+                            ),
                           ),
                         ],
                         SizedBox(
@@ -852,7 +877,9 @@ class _ConsoleState extends State<Console> with WindowListener {
             bottom: 58,
             child: ClassroomToolsOverlay(
               agent: agent,
+              activity: toolActivity,
               preparingFile: preparingFile,
+              onOpenReplies: () => showRepliesDialog(context, toolActivity),
             ),
           ),
         ],

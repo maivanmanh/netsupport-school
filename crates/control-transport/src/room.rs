@@ -300,6 +300,7 @@ async fn handle_authorized(
         client_id: id,
         endpoint,
         hostname: hello.hostname.chars().take(64).collect(),
+        pointer_overlay: hello.pointer_overlay,
     };
     roster.lock().unwrap().register(RoomStudent {
         client_id: id,
@@ -480,6 +481,7 @@ mod tests {
             selected_local_ip: Ipv4Addr::LOCALHOST,
             media_udp_port: 47810,
             feedback_udp_port: 47811,
+            pointer_overlay: false,
         };
         let (selected, _, initial) =
             register_student_for_presentation(address, registration("selected"))
@@ -544,6 +546,7 @@ mod tests {
                 selected_local_ip: Ipv4Addr::LOCALHOST,
                 media_udp_port: 47810,
                 feedback_udp_port: 47811,
+                pointer_overlay: false,
             },
         )
         .await
@@ -611,6 +614,7 @@ mod tests {
                 selected_local_ip: "127.0.0.1".into(),
                 media_udp_port: 47810,
                 feedback_udp_port: 47811,
+                pointer_overlay: false,
             }),
         )
         .await
@@ -691,6 +695,7 @@ mod tests {
             selected_local_ip: Ipv4Addr::LOCALHOST,
             media_udp_port: 47810,
             feedback_udp_port: 47811,
+            pointer_overlay: false,
         };
         assert!(
             register_student_for_presentation(address, reg("wrong-session"))

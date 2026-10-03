@@ -776,6 +776,39 @@ impl Window {
     }
 
     #[inline]
+    pub fn outer_frame(&self) -> [isize; 4] {
+        let mut r = windef::RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        unsafe { winuser::GetWindowRect(self.hwnd, &mut r) };
+        [r.left as isize, r.top as isize, (r.right - r.left) as isize, (r.bottom - r.top) as isize]
+    }
+
+    pub fn set_outer_origin(&mut self, x: isize, y: isize) {
+        unsafe {
+            winuser::SetWindowPos(
+                self.hwnd,
+                std::ptr::null_mut(),
+                x as i32,
+                y as i32,
+                0,
+                0,
+                winuser::SWP_NOSIZE | winuser::SWP_NOZORDER | winuser::SWP_NOACTIVATE,
+            );
+        }
+    }
+
+    pub fn work_area(&self) -> [isize; 4] {
+        unsafe {
+            let monitor = winuser::MonitorFromWindow(self.hwnd, winuser::MONITOR_DEFAULTTOPRIMARY);
+            let mut info: winuser::MONITORINFO = std::mem::zeroed();
+            info.cbSize = std::mem::size_of::<winuser::MONITORINFO>() as u32;
+            if winuser::GetMonitorInfoW(monitor, &mut info) == 0 {
+                return [0, 0, 1280, 720];
+            }
+            let r = info.rcWork;
+            [r.left as isize, r.top as isize, (r.right - r.left) as isize, (r.bottom - r.top) as isize]
+        }
+    }
+
     pub fn get_position(&self) -> (isize, isize) {
         let (mut x, mut y) = (0, 0);
 
@@ -921,6 +954,7 @@ impl Window {
         unsafe { winuser::ShowWindow(self.hwnd, if visible {winuser::SW_RESTORE} else {winuser::SW_HIDE}); }
         if visible { unsafe {winuser::SetForegroundWindow(self.hwnd);} }
     }
+    pub fn show_inactive(&mut self) { unsafe { winuser::ShowWindow(self.hwnd, winuser::SW_SHOWNOACTIVATE); } }
     pub fn is_visible(&self) -> bool { unsafe {winuser::IsWindowVisible(self.hwnd) != 0} }
     pub fn set_close_to_hide(&mut self, enabled: bool) { self.close_to_hide = enabled; }
 

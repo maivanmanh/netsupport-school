@@ -27,6 +27,7 @@ message HelloStudent {
   string selected_local_ip = 3;
   uint32 media_udp_port = 4;
   uint32 feedback_udp_port = 5;
+  bool pointer_overlay = 6;   // receiver draws the pointer channel itself
 }
 
 message WelcomeStudent {
@@ -90,4 +91,7 @@ message ObserveMessage {
  string key = 7;
  bool down = 8;
  string error = 9;
+ repeated string codecs = 10;  // start: Teacher hardware decoders, preferred first
+ uint32 max_fps = 11;          // start: requested fps ceiling, 0 = default profile
+ string codec = 12;            // reply: chosen profile, e.g. "h265@60"
 }

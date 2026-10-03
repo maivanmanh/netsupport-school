@@ -39,18 +39,23 @@ mod classroom_tools;
 mod compact_log;
 mod dashboard_view;
 mod desktop_tray;
+mod keyframe_gate;
 mod launcher;
 mod media_activity;
 mod media_session;
 mod monitoring;
 mod observation;
 mod observe_coordinator;
+mod pointer_channel;
 mod presentation_ids;
 mod presentation_pacer;
 mod process_metrics;
 mod quality;
+mod refinement;
 mod remote_input;
 mod startup;
+mod stream_profile;
+mod student_file_ui;
 mod student_presentation;
 mod student_tools_ui;
 mod teacher_agent;
@@ -68,8 +73,6 @@ const MEDIA_ROUTE_PROBE_MAGIC: [u8; 4] = *b"CLUP";
 const MEDIA_ROUTE_PROBE_BYTES: usize = 12;
 const MEDIA_ROUTE_PROBE_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_MEDIA_ROUTE_PROBES_PER_TICK: usize = 64;
-#[cfg(target_os = "macos")]
-const MACOS_KEYFRAME_REBUILD_COOLDOWN: Duration = Duration::from_millis(250);
 
 #[cfg(target_os = "macos")]
 use capture_macos_sck::ScreenCaptureKitCapture as PlatformCapture;
@@ -1126,26 +1129,80 @@ fn run_teacher_media_inner(
     let runtime = MediaFoundationRuntime::new().context("failed to initialize media runtime")?;
     let mut codec_config = h264_config(&config.video);
     (codec_config.width, codec_config.height) = output_dimensions;
+    let video_codec = stream_profile::session_codec(&config.video);
     #[cfg(not(target_os = "macos"))]
-    let mut encoder = PlatformH264Encoder::new(&runtime, codec_config)
-        .context("failed to initialize native H.264 encoder")?;
+    let mut encoder = {
+        anyhow::ensure!(
+            video_codec == media_core::VideoCodec::H264,
+            "{video_codec} encoding is not available on this platform"
+        );
+        PlatformH264Encoder::new(&runtime, codec_config)
+            .context("failed to initialize native H.264 encoder")?
+    };
     #[cfg(target_os = "macos")]
-    let mut encoder = PlatformH264Encoder::new(codec_config)
-        .context("failed to initialize native H.264 encoder")?;
+    let mut encoder = PlatformH264Encoder::with_codec(codec_config, video_codec)
+        .with_context(|| format!("failed to initialize native {video_codec} encoder"))?;
     encoder.request_keyframe()?;
     let encoder_descriptor = encoder.descriptor();
-    let mut packetizer = H264Packetizer::new(protocol::presentation_ssrc(stream_id));
+    info!(codec = %video_codec, max_fps = config.video.max_fps, bitrate_kbps = config.video.target_bitrate_kbps, encoder = %encoder_descriptor.name, "media session codec profile");
+    let mut packetizer =
+        H264Packetizer::with_codec(protocol::presentation_ssrc(stream_id), video_codec);
+    // O1: separate pointer channel. Capture keeps compositing the pointer until
+    // every registered receiver says it draws the channel itself.
+    let pointer_composite = std::sync::Arc::new(AtomicBool::new(true));
+    let pointer = if config.video.pointer_channel {
+        match (capture.pointer_source(), socket.try_clone()) {
+            (Some(source), Ok(pointer_socket)) => {
+                capture.set_cursor_policy(std::sync::Arc::clone(&pointer_composite));
+                Some(pointer_channel::PointerBroadcaster::start(
+                    pointer_socket,
+                    source,
+                    protocol::presentation_ssrc(stream_id) ^ 0x504f_494e,
+                ))
+            }
+            (_, Err(error)) => {
+                warn!(%error, "pointer channel unavailable; pointer stays in video");
+                None
+            }
+            (None, _) => None,
+        }
+    } else {
+        None
+    };
+    // O2: one sharper burst of repeat frames after content settles.
+    let mut refine = refinement::Refinement::new(
+        if config.video.adaptive {
+            config.video.refine_bitrate_percent
+        } else {
+            0
+        },
+        20_000_000,
+    );
+    let mut previous_refine = refine.stats;
+    let mut refine_qp_supported = None::<bool>;
+    let mut overlay_clients = HashSet::<u64>::new();
+    let mut pointer_endpoints: Vec<SocketAddrV4> = Vec::new();
+    let mut pointer_mode_changes = 0_u64;
+    let mut previous_pointer_state_packets = 0_u64;
+    let mut previous_pointer_image_packets = 0_u64;
+    let mut previous_pointer_moves = 0_u64;
+    let mut previous_pointer_skipped = 0_u64;
     let mut endpoints = HashMap::new();
     let mut udp_ready_clients = HashSet::new();
     let mut endpoint_send_warning_at = HashMap::new();
     let mut last_sent_capture = None;
-    #[cfg(target_os = "macos")]
-    let mut last_keyframe_rebuild = None;
+    // O3: one IDR per coalescing window for joins/repairs; deferred, not dropped.
+    let mut keyframes = keyframe_gate::KeyframeGate::new(Duration::from_millis(u64::from(
+        config.video.keyframe_request_coalesce_ms.max(100),
+    )));
+    let mut previous_keyframes = keyframes.stats;
     let mut process_metrics = ProcessMetrics::new()?;
     let started = Instant::now();
     let ends = share_seconds.map(|seconds| started + Duration::from_secs(seconds));
     let mut quality = QualityController::new(&config.video, started);
     let mut next_tick = started;
+    let mut last_encode_at: Option<Instant> = None;
+    let mut interval_aligned_encodes = 0_u64;
     let mut latest_frame: Option<VideoFrame> = None;
     let mut fresh_frame_pending = false;
     let mut media_slot_replacements = 0_u64;
@@ -1202,6 +1259,11 @@ fn run_teacher_media_inner(
             teacher_stages.record("teacher_control_dispatch", arrived.elapsed());
             match event {
                 TeacherMediaEvent::Registered(student) => {
+                    if student.pointer_overlay {
+                        overlay_clients.insert(student.client_id);
+                    } else {
+                        overlay_clients.remove(&student.client_id);
+                    }
                     endpoints.insert(student.client_id, student.endpoint);
                     udp_ready_clients.remove(&student.client_id);
                     quality.register_receiver(student.client_id);
@@ -1212,6 +1274,7 @@ fn run_teacher_media_inner(
                     endpoint,
                 } => {
                     repair.remove(client_id);
+                    overlay_clients.remove(&client_id);
                     endpoints.remove(&client_id);
                     udp_ready_clients.remove(&client_id);
                     endpoint_send_warning_at.remove(&client_id);
@@ -1272,12 +1335,7 @@ fn run_teacher_media_inner(
                     let first_probe = udp_ready_clients.insert(client_id);
                     repair.ready(client_id, source);
                     if first_probe || endpoint_changed {
-                        #[cfg(not(target_os = "macos"))]
-                        encoder.request_keyframe()?;
-                        #[cfg(target_os = "macos")]
-                        if take_keyframe_rebuild_slot(&mut last_keyframe_rebuild, Instant::now()) {
-                            encoder.request_keyframe()?;
-                        }
+                        keyframes.request(Instant::now());
                         info!(client_id, endpoint = %source, endpoint_changed, "teacher established Student UDP media route and requested IDR");
                     }
                 }
@@ -1286,6 +1344,29 @@ fn run_teacher_media_inner(
                     warn!(%error, "teacher could not receive Student UDP route probe");
                     break;
                 }
+            }
+        }
+        if let Some(pointer) = pointer.as_ref() {
+            let composite =
+                !pointer_channel::all_receivers_overlay(endpoints.keys(), &overlay_clients);
+            if pointer_composite.swap(composite, Ordering::AcqRel) != composite {
+                pointer_mode_changes += 1;
+                info!(
+                    pointer_mode = if composite { "composited" } else { "overlay" },
+                    connected_students = endpoints.len(),
+                    overlay_students = overlay_clients.len(),
+                    "teacher pointer mode changed"
+                );
+            }
+            let mut ready: Vec<SocketAddrV4> = udp_ready_clients
+                .iter()
+                .filter(|id| overlay_clients.contains(id))
+                .filter_map(|id| endpoints.get(id).copied())
+                .collect();
+            ready.sort_unstable();
+            if ready != pointer_endpoints {
+                pointer.set_endpoints(ready.clone());
+                pointer_endpoints = ready;
             }
         }
         let deadline = (Instant::now() + Duration::from_millis(2))
@@ -1312,11 +1393,59 @@ fn run_teacher_media_inner(
             "teacher_tick_lateness",
             now.saturating_duration_since(next_tick),
         );
-        let frame_interval = Duration::from_secs_f64(1.0 / f64::from(quality.target_fps(now)));
+        let target_fps = quality.target_fps(now);
+        if let Some(action) = refine.tick(
+            target_fps <= config.video.adaptive_idle_fps,
+            quality.bitrate_bps(),
+            now,
+        ) {
+            apply_refinement(&mut encoder, action, &mut refine_qp_supported);
+            if refine.refining() {
+                next_tick = now; // start the refinement burst right away
+            }
+        }
+        let frame_interval = if refine.refining() {
+            Duration::from_secs_f64(1.0 / f64::from(refinement::REFINE_FPS.max(target_fps)))
+        } else {
+            Duration::from_secs_f64(1.0 / f64::from(target_fps))
+        };
+        // Capture-aligned encode: a fresh frame is encoded as soon as the fps
+        // cap allows (85 % of the interval since the last encode) instead of
+        // waiting for a free-running tick that is out of phase with capture.
+        let earliest = last_encode_at.map_or(now, |at: Instant| at + frame_interval.mul_f64(0.85));
+        if config.video.capture_aligned_encode && fresh_frame_pending {
+            let aligned = earliest.max(now);
+            if aligned < next_tick {
+                next_tick = aligned;
+                interval_aligned_encodes += 1;
+            }
+        }
         if now < next_tick {
-            // NACK retransmission runs independently during this wait. Do not
-            // repeatedly capture/copy full frames while waiting for an encode tick.
-            thread::sleep(next_tick - now);
+            // NACK retransmission runs independently during this wait.
+            if config.video.capture_aligned_encode && !fresh_frame_pending {
+                // Block on capture until the tick; wake early for a new frame.
+                let captured = capture.next_frame(next_tick)?;
+                if let Some(frame) = captured {
+                    if quality.observe_frame(&frame, Instant::now()) {
+                        next_tick = Instant::now();
+                    }
+                    teacher_stages.record("capture_api", frame.capture_latency);
+                    bounded_sample(&mut capture_latencies, frame.capture_latency);
+                    dirty_ratio_sum += f64::from(frame.dirty_region_ratio);
+                    frames_consumed += 1;
+                    latest_frame = Some(frame);
+                    fresh_frame_pending = true;
+                    let aligned = earliest.max(Instant::now());
+                    if aligned < next_tick {
+                        next_tick = aligned;
+                        interval_aligned_encodes += 1;
+                    }
+                }
+            }
+            let remaining = next_tick.saturating_duration_since(Instant::now());
+            if !remaining.is_zero() {
+                thread::sleep(remaining);
+            }
             teacher_stages.record("publisher_pacing_wait", now.elapsed());
             teacher_stages.record(
                 "publisher_pacing_overshoot",
@@ -1347,9 +1476,12 @@ fn run_teacher_media_inner(
             let encode_p95 = percentile(&interval_encode_latencies, 95);
             let quality_update =
                 quality.evaluate_interval(encode_p95, process.cpu_percent, Instant::now());
+            // Adaptive bitrate waits while a refinement burst owns the encoder rate.
             match quality.apply_bitrate(
                 &mut encoder,
-                quality_update.bitrate_change_bps,
+                quality_update
+                    .bitrate_change_bps
+                    .filter(|_| !refine.refining()),
                 Instant::now(),
             ) {
                 Ok(Some(bitrate_bps)) => {
@@ -1413,6 +1545,65 @@ fn run_teacher_media_inner(
                 send_mbps = (interval_bytes + repair_interval_bytes) as f64 * 8.0 / interval_seconds / 1_000_000.0,
                 "teacher M3 media interval"
             );
+            info!(
+                target: "telemetry",
+                refinements = refine.stats.refinements - previous_refine.refinements,
+                refinement_frames = refine.stats.frames - previous_refine.frames,
+                refinement_bytes = refine.stats.bytes - previous_refine.bytes,
+                refinements_cancelled = refine.stats.cancelled - previous_refine.cancelled,
+                refinement_last_ms = refine.last_duration_ms,
+                refine_bitrate_percent = config.video.refine_bitrate_percent,
+                refine_qp_supported = ?refine_qp_supported,
+                "teacher refinement interval"
+            );
+            previous_refine = refine.stats;
+            info!(
+                target: "telemetry",
+                keyframe_requests = keyframes.stats.requests - previous_keyframes.requests,
+                keyframe_requests_coalesced = keyframes.stats.coalesced - previous_keyframes.coalesced,
+                keyframes_forced = keyframes.stats.forced - previous_keyframes.forced,
+                keyframes_emitted = keyframes.stats.emitted - previous_keyframes.emitted,
+                keyframes_periodic_or_rebuild = (keyframes.stats.emitted - previous_keyframes.emitted)
+                    .saturating_sub(keyframes.stats.forced - previous_keyframes.forced),
+                keyframe_max_bytes = keyframes.interval_max_keyframe_bytes,
+                keyframe_interval_ms = config.video.keyframe_interval_ms,
+                keyframe_gate_window_ms = keyframes.window().as_millis(),
+                "teacher keyframe interval"
+            );
+            info!(
+                target: "telemetry",
+                capture_aligned_encode = config.video.capture_aligned_encode,
+                aligned_encodes = interval_aligned_encodes,
+                "teacher encode scheduling interval"
+            );
+            interval_aligned_encodes = 0;
+            previous_keyframes = keyframes.stats;
+            keyframes.interval_max_keyframe_bytes = 0;
+            if let Some(pointer) = pointer.as_ref() {
+                let state = pointer.stats.state_packets.load(Ordering::Relaxed);
+                let image = pointer.stats.image_packets.load(Ordering::Relaxed);
+                let moves = pointer.stats.moves.load(Ordering::Relaxed);
+                info!(
+                    target: "telemetry",
+                    pointer_mode = if pointer_composite.load(Ordering::Acquire) {
+                        "composited"
+                    } else {
+                        "overlay"
+                    },
+                    pointer_receivers = pointer_endpoints.len(),
+                    pointer_state_packets = state - previous_pointer_state_packets,
+                    pointer_image_packets = image - previous_pointer_image_packets,
+                    pointer_moves_per_second = (moves - previous_pointer_moves) as f64 / interval_seconds,
+                    pointer_only_updates_skipped = capture_statistics.pointer_only_updates_skipped - previous_pointer_skipped,
+                    pointer_mode_changes,
+                    pointer_send_errors = pointer.stats.send_errors.load(Ordering::Relaxed),
+                    "teacher pointer channel interval"
+                );
+                previous_pointer_state_packets = state;
+                previous_pointer_image_packets = image;
+                previous_pointer_moves = moves;
+                previous_pointer_skipped = capture_statistics.pointer_only_updates_skipped;
+            }
             log_stages("teacher", encoder.take_diagnostics());
             log_stages("teacher", std::mem::take(&mut teacher_stages));
             interval_started = Instant::now();
@@ -1440,14 +1631,13 @@ fn run_teacher_media_inner(
         // The dispatcher coalesces recovery requests independently of the media
         // event queue. Only this thread owns/calls the codec.
         if repair.stats.keyframe_pending.swap(false, Ordering::AcqRel) {
-            #[cfg(not(target_os = "macos"))]
+            keyframes.request(Instant::now());
+        }
+        if keyframes.poll(Instant::now()) {
             encoder.request_keyframe()?;
-            #[cfg(target_os = "macos")]
-            if take_keyframe_rebuild_slot(&mut last_keyframe_rebuild, Instant::now()) {
-                encoder.request_keyframe()?;
-            }
         }
         let encode_started = Instant::now();
+        last_encode_at = Some(encode_started);
         if fresh_input {
             teacher_stages.record(
                 "fresh_capture_to_encode_age",
@@ -1479,6 +1669,12 @@ fn run_teacher_media_inner(
             interval_encoded_bytes += access_unit_bytes;
             interval_max_access_unit_bytes = interval_max_access_unit_bytes.max(access_unit_bytes);
             encoded_keyframes += u64::from(access_unit.is_keyframe);
+            if access_unit.is_keyframe {
+                keyframes.emitted(access_unit.bytes.len(), Instant::now());
+            }
+            if let Some(action) = refine.encoded(access_unit.bytes.len(), Instant::now()) {
+                apply_refinement(&mut encoder, action, &mut refine_qp_supported);
+            }
             let packetize_started = Instant::now();
             let send_us = media_core::unix_us();
             let source = encoder.take_source_timing(access_unit.timestamp);
@@ -1658,6 +1854,8 @@ async fn run_student_media(
         selected_local_ip: media_endpoint_ip,
         media_udp_port: config.network.media_port,
         feedback_udp_port: config.network.feedback_port,
+        // Visible Students draw the Teacher pointer channel themselves.
+        pointer_overlay: !headless && config.video.pointer_channel,
     };
     let mut desktop = if headless {
         None
@@ -1925,7 +2123,20 @@ fn run_student_media_loop(
             let mut last_capture_us = 0_u64;
             let preview_started = Instant::now();
             let mut first_present = true;
+            // O1: pointer drawn locally over the latest frame.
+            let mut pointer_dirty = false;
+            let mut pointer_redraws = 0_u64;
+            let mut pointer_updates = 0_u64;
+            let mut last_present = Instant::now();
             while !worker.is_finished() {
+                if renderer.is_some() {
+                    let update = ingress.lock().unwrap().pointer.take_update();
+                    if let (Some(overlay), Some(renderer)) = (update, renderer.as_mut()) {
+                        renderer.set_pointer(overlay);
+                        pointer_dirty = true;
+                        pointer_updates += 1;
+                    }
+                }
                 if let Some(desktop) = desktop.as_mut() {
                     desktop.pump("Watching Teacher presentation", true);
                     if desktop.exit_requested {
@@ -1993,9 +2204,37 @@ fn run_student_media_loop(
                             ready_at,
                             Instant::now(),
                         );
+                        pointer_dirty = false;
+                        last_present = Instant::now();
                     }
                 }
+                // Pointer-only motion: re-present the latest frame, at most
+                // once per ~4 ms, without waiting for (or causing) video.
+                if pointer_dirty && last_present.elapsed() >= Duration::from_millis(4) {
+                    if let Some(renderer) = renderer.as_mut() {
+                        if renderer.redraw()? {
+                            pointer_redraws += 1;
+                        }
+                    }
+                    pointer_dirty = false;
+                    last_present = Instant::now();
+                }
                 if last_render_metrics.elapsed() >= Duration::from_secs(1) {
+                    if renderer.is_some() {
+                        let ingress = ingress.lock().unwrap();
+                        info!(
+                            target: "telemetry",
+                            pointer_updates,
+                            pointer_redraws,
+                            pointer_state_packets = ingress.pointer.state_packets,
+                            pointer_image_packets = ingress.pointer.image_packets,
+                            pointer_images = ingress.pointer.images_completed,
+                            pointer_malformed = ingress.pointer.malformed,
+                            "student pointer channel interval"
+                        );
+                        pointer_updates = 0;
+                        pointer_redraws = 0;
+                    }
                     if let (Some(output), Some(metrics)) =
                         (observation.as_mut(), observe_metrics.as_ref())
                     {
@@ -2060,10 +2299,17 @@ fn run_student_receiver(
     ingress: &Mutex<udp_ingress::IngressState>,
     observe_metrics: Option<&Mutex<observation::ReceiverMetrics>>,
 ) -> Result<StudentSessionOutcome> {
-    if presentation.rtp_payload_type != u32::from(H264_PAYLOAD_TYPE)
-        || presentation.rtp_clock_hz != RTP_VIDEO_CLOCK_HZ
-    {
-        bail!("teacher announced unsupported RTP/H.264 parameters");
+    let Some(video_codec) =
+        media_core::VideoCodec::from_rtp_payload_type(presentation.rtp_payload_type)
+            .filter(|&codec| stream_profile::local_decodable(codec))
+    else {
+        bail!(
+            "publisher announced unsupported RTP payload type {}",
+            presentation.rtp_payload_type
+        );
+    };
+    if presentation.rtp_clock_hz != RTP_VIDEO_CLOCK_HZ {
+        bail!("publisher announced unsupported RTP clock rate");
     }
     let codec_config = H264Config {
         width: presentation.width,
@@ -2081,13 +2327,14 @@ fn run_student_receiver(
     #[cfg(not(target_os = "macos"))]
     let mut decoder = PlatformH264Decoder::new(&runtime, codec_config)?;
     #[cfg(target_os = "macos")]
-    let mut decoder = PlatformH264Decoder::new(codec_config)?;
+    let mut decoder = PlatformH264Decoder::with_codec(codec_config, video_codec)?;
+    info!(codec = %video_codec, max_fps = presentation.max_fps, "receiver codec selected");
     socket.set_read_timeout(Some(Duration::from_millis(5)))?;
     let mut jitter = JitterBuffer::with_repair_budget(
         Duration::from_millis(u64::from(config.video.jitter_buffer_ms)),
         Duration::from_millis(u64::from(config.video.nack_repair_ms)),
     );
-    let mut depacketizer = H264Depacketizer::default();
+    let mut depacketizer = H264Depacketizer::for_codec(video_codec);
     let mut process_metrics = ProcessMetrics::new()?;
     let started = Instant::now();
     let mut received_packets = 0_u64;
@@ -2148,6 +2395,19 @@ fn run_student_receiver(
             );
             break;
         }
+        // Repair budget follows the measured control RTT (Wi-Fi RTT can exceed
+        // the configured floor several-fold, making every repair "late"). While
+        // frozen waiting for a keyframe there is nothing to lose by waiting
+        // longer, so the IDR itself gets its retransmissions.
+        let rtt_us = control.rtt_sample().1;
+        let floor = Duration::from_millis(u64::from(config.video.nack_repair_ms));
+        let rtt_budget = Duration::from_micros(rtt_us.saturating_mul(3) / 2 + 5_000)
+            .clamp(floor, floor.max(Duration::from_millis(150)));
+        jitter.set_repair_budget(if waiting_for_keyframe {
+            rtt_budget.max(Duration::from_millis(250))
+        } else {
+            rtt_budget
+        });
         let mut drained = false;
         // Drain bounded batches independently of codec cost; the ingest worker
         // timestamps arrivals even while decode is busy.
@@ -2268,14 +2528,15 @@ fn run_student_receiver(
             match depacketizer.push(&packet) {
                 Ok(Some(access_unit)) => {
                     received_access_units += 1;
-                    received_keyframes += u64::from(access_unit_is_keyframe(&access_unit));
+                    received_keyframes +=
+                        u64::from(access_unit_is_keyframe(&access_unit, video_codec));
                     let access_unit_completed_at = Instant::now();
                     if let Some(previous) = last_access_unit_completed_at {
                         interval_access_unit_gaps
                             .push(access_unit_completed_at.saturating_duration_since(previous));
                     }
                     last_access_unit_completed_at = Some(access_unit_completed_at);
-                    if waiting_for_keyframe && !access_unit_is_keyframe(&access_unit) {
+                    if waiting_for_keyframe && !access_unit_is_keyframe(&access_unit, video_codec) {
                         pre_keyframe_frames_discarded += 1;
                         continue;
                     }
@@ -2310,6 +2571,7 @@ fn run_student_receiver(
                     match decode_remote_access_unit(
                         &mut decoder,
                         &access_unit,
+                        video_codec,
                         &mut decode_latencies,
                     ) {
                         Ok(mut frames) => {
@@ -2423,7 +2685,7 @@ fn run_student_receiver(
             let clock = control.clock_estimate();
             info!(target: "telemetry", clock_synchronized = clock.is_some(), clock_offset_us = ?clock.map(|value| value.teacher_minus_student_us),
                 clock_uncertainty_us = ?clock.map(|value| value.uncertainty_us),
-                jitter_queue_depth = jitter.queued_packets(), repaired_gaps = jitter.statistics().repaired_gaps, fast_released_frames = jitter.statistics().fast_released_frames, nack_repair_ms = config.video.nack_repair_ms, late_packets = jitter.statistics().late_packets,
+                jitter_queue_depth = jitter.queued_packets(), repaired_gaps = jitter.statistics().repaired_gaps, nack_retries = jitter.statistics().nack_retries, repair_budget_ms = jitter.repair_budget().as_millis(), fast_released_frames = jitter.statistics().fast_released_frames, nack_repair_ms = config.video.nack_repair_ms, late_packets = jitter.statistics().late_packets,
                 missing_sequences = jitter.statistics().missing_sequences, duplicate_packets = jitter.statistics().duplicate_packets,
                 reordered_packets = jitter.statistics().reordered_packets, jitter_overflow_packets = jitter.statistics().overflow_packets,
                 recovery_episodes, recovery_peak_ms, stale_backlog_packets, ingress_reference_loss_events, repeated_source_frames, unmapped_decoded_frames,
@@ -2673,6 +2935,7 @@ fn send_media_route_probe(
 fn decode_remote_access_unit(
     decoder: &mut PlatformH264Decoder,
     access_unit: &DepacketizedAccessUnit,
+    codec: media_core::VideoCodec,
     decode_latencies: &mut Vec<Duration>,
 ) -> Result<Vec<DecodedFrame>> {
     let decode_started = Instant::now();
@@ -2682,34 +2945,53 @@ fn decode_remote_access_unit(
     let frames = decoder.decode(EncodedAccessUnitRef {
         bytes: &access_unit.bytes,
         timestamp,
-        is_keyframe: access_unit_is_keyframe(access_unit),
+        is_keyframe: access_unit_is_keyframe(access_unit, codec),
     })?;
     bounded_sample(decode_latencies, decode_started.elapsed());
     Ok(frames)
 }
 
-fn access_unit_is_keyframe(access_unit: &DepacketizedAccessUnit) -> bool {
-    annex_b_contains_idr(&access_unit.bytes)
-}
-
-fn annex_b_contains_idr(bytes: &[u8]) -> bool {
-    bytes
-        .windows(5)
-        .any(|value| value[..4] == [0, 0, 0, 1] && value[4] & 0x1f == 5)
-        || bytes
-            .windows(4)
-            .any(|value| value[..3] == [0, 0, 1] && value[3] & 0x1f == 5)
-}
-
-#[cfg(target_os = "macos")]
-fn take_keyframe_rebuild_slot(last: &mut Option<Instant>, now: Instant) -> bool {
-    if last.is_some_and(|previous| {
-        now.saturating_duration_since(previous) < MACOS_KEYFRAME_REBUILD_COOLDOWN
-    }) {
-        return false;
+/// O2: applies a refinement begin/end to the encoder (bitrate + optional QP cap).
+fn apply_refinement<E: VideoEncoder>(
+    encoder: &mut E,
+    action: refinement::Action,
+    qp_supported: &mut Option<bool>,
+) {
+    let (bitrate_bps, active) = match action {
+        refinement::Action::Begin(bps) => (bps, true),
+        refinement::Action::End(bps) => (bps, false),
+    };
+    if let Err(error) = encoder.set_bitrate(bitrate_bps) {
+        warn!(%error, bitrate_bps, active, "encoder rejected refinement bitrate");
     }
-    *last = Some(now);
-    true
+    if (active && *qp_supported != Some(false)) || (!active && *qp_supported == Some(true)) {
+        match encoder.set_refinement(active) {
+            Ok(supported) => *qp_supported = Some(supported),
+            Err(error) => warn!(%error, active, "encoder refinement QP change failed"),
+        }
+    }
+    info!(bitrate_bps, active, qp_cap = ?qp_supported, "teacher refinement");
+}
+
+fn access_unit_is_keyframe(
+    access_unit: &DepacketizedAccessUnit,
+    codec: media_core::VideoCodec,
+) -> bool {
+    annex_b_contains_random_access(&access_unit.bytes, codec)
+}
+
+#[cfg(test)]
+fn annex_b_contains_idr(bytes: &[u8]) -> bool {
+    annex_b_contains_random_access(bytes, media_core::VideoCodec::H264)
+}
+
+/// True when any NAL unit after a 3- or 4-byte start code begins decoding
+/// (H.264 IDR, H.265 IRAP).
+fn annex_b_contains_random_access(bytes: &[u8], codec: media_core::VideoCodec) -> bool {
+    bytes
+        .windows(3)
+        .enumerate()
+        .any(|(i, w)| w == [0, 0, 1] && codec.is_random_access(&bytes[i + 3..]))
 }
 
 fn h264_config(video: &classroom_config::VideoConfig) -> H264Config {
@@ -2891,6 +3173,7 @@ mod tests {
                     client_id: 1,
                     endpoint,
                     hostname: "synthetic-loss-test".to_owned(),
+                    pointer_overlay: false,
                 },
             ))
             .unwrap();
@@ -3084,21 +3367,5 @@ mod tests {
         assert!(annex_b_contains_idr(&[0, 0, 0, 1, 0x25, 1, 2]));
         assert!(annex_b_contains_idr(&[0, 0, 1, 0x45, 1, 2]));
         assert!(!annex_b_contains_idr(&[0, 0, 0, 1, 0x61, 1, 2]));
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn keyframe_rebuild_requests_are_rate_limited() {
-        let start = Instant::now();
-        let mut last = None;
-        assert!(take_keyframe_rebuild_slot(&mut last, start));
-        assert!(!take_keyframe_rebuild_slot(
-            &mut last,
-            start + Duration::from_millis(100)
-        ));
-        assert!(take_keyframe_rebuild_slot(
-            &mut last,
-            start + MACOS_KEYFRAME_REBUILD_COOLDOWN
-        ));
     }
 }

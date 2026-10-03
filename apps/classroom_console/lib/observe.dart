@@ -29,6 +29,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
   static const native = MethodChannel('classroom/observe');
   static const files = MethodChannel('classroom/files');
   Timer? tick, inputHeartbeat;
+  late final ToolActivity toolActivity = ToolActivity(widget.agent);
   bool checkingFocus = false;
   bool started = false, closing = false, attaching = false;
   String? path, nativeError, requestedMode;
@@ -177,6 +178,11 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
       view['phase'] == 'live' &&
       (stats['sequence'] as num? ?? 0) > 0;
   bool get canSwitchMode => live;
+
+  /// Negotiated codec for the footer (also shown in Session stats).
+  String? get sessionCodec => ObserveStatsData.codecLabel(
+    Map<String, dynamic>.from(view['metrics'] as Map? ?? const {}),
+  );
   bool get controls =>
       windowFocused && live && mode != 'observe' && requestedMode == null;
 
@@ -297,6 +303,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
   @override
   void initState() {
     super.initState();
+    toolActivity;
     windowManager.addListener(this);
     windowManager.setPreventClose(true);
     widget.agent.addListener(changed);
@@ -592,6 +599,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
 
   @override
   void dispose() {
+    toolActivity.dispose();
     tick?.cancel();
     inputHeartbeat?.cancel();
     chromeTimer?.cancel();
@@ -1071,6 +1079,21 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                       style: const TextStyle(fontSize: 12),
                     ),
                   ),
+                  if (live && sessionCodec != null) ...[
+                    Text(
+                      sessionCodec!,
+                      key: const ValueKey('observe-footer-codec'),
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.blueGrey,
+                      ),
+                    ),
+                    const Text(
+                      '  ·  ',
+                      style: TextStyle(fontSize: 12, color: Colors.blueGrey),
+                    ),
+                  ],
                   Text(
                     live
                         ? '${stats['width']} × ${stats['height']}'
@@ -1107,7 +1130,9 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
             bottom: chromeVisible ? 58 : 12,
             child: ClassroomToolsOverlay(
               agent: widget.agent,
+              activity: toolActivity,
               preparingFile: preparingFile,
+              onOpenReplies: () => showRepliesDialog(context, toolActivity),
             ),
           ),
         ],

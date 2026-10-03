@@ -216,6 +216,9 @@ name = "capture-macos-sck"
 version = "0.1.0"
 dependencies = [
  "media-core",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
  "screencapturekit",
  "tracing",
 ]

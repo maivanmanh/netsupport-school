@@ -4,7 +4,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use media_core::{CaptureConfig, CaptureSource, CaptureStatistics, MediaError, VideoFrame};
+use media_core::{
+    CaptureConfig, CaptureSource, CaptureStatistics, MediaError, PointerImage, PointerSample,
+    PointerSource, VideoFrame,
+};
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use tracing::{info, warn};
 use windows::{
@@ -31,12 +35,62 @@ use windows::{
     },
 };
 
-use crate::cursor::{compose_cursor, PointerShape, PointerShapeKind};
+use crate::cursor::{compose_cursor, to_image, PointerShape, PointerShapeKind};
 use crate::scale::{fit_even, resize_bgra};
+
+/// Pointer image and output geometry shared with the independent sampler.
+#[derive(Default)]
+struct SharedPointer {
+    image: Option<Arc<PointerImage>>,
+    /// Output rectangle in virtual-desktop pixels: left, top, width, height.
+    output: [i32; 4],
+}
+
+/// Samples position/visibility with `GetCursorInfo` at any rate; the image
+/// comes from Desktop Duplication shape updates on the capture thread.
+struct DxgiPointerSource {
+    shared: Arc<Mutex<SharedPointer>>,
+}
+impl PointerSource for DxgiPointerSource {
+    #[allow(clippy::cast_precision_loss)]
+    fn sample(&mut self) -> Option<PointerSample> {
+        use windows::Win32::UI::WindowsAndMessaging::{GetCursorInfo, CURSORINFO, CURSOR_SHOWING};
+        let (image, [left, top, width, height]) = {
+            let shared = self.shared.lock().ok()?;
+            (shared.image.clone(), shared.output)
+        };
+        if width <= 0 || height <= 0 {
+            return None;
+        }
+        let mut info = CURSORINFO {
+            cbSize: u32::try_from(size_of::<CURSORINFO>()).unwrap_or_default(),
+            ..Default::default()
+        };
+        // SAFETY: cbSize is initialized and the struct is writable.
+        unsafe { GetCursorInfo(std::ptr::addr_of_mut!(info)) }.ok()?;
+        let x = info.ptScreenPos.x - left;
+        let y = info.ptScreenPos.y - top;
+        let inside = (0..width).contains(&x) && (0..height).contains(&y);
+        let visible = inside && (info.flags.0 & CURSOR_SHOWING.0) != 0 && image.is_some();
+        Some(PointerSample {
+            visible,
+            x: x as f32 / width as f32,
+            y: y as f32 / height as f32,
+            width_fraction: image
+                .as_ref()
+                .map_or(0.0, |image| f32::from(image.width) / width as f32),
+            image,
+        })
+    }
+}
 
 #[derive(Default)]
 pub struct DxgiCapture {
     cursor_policy: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    pointer: Arc<Mutex<SharedPointer>>,
+    published_shape: u64,
+    pointer_serial: u32,
+    last_include_cursor: Option<bool>,
     config: Option<CaptureConfig>,
     session: Option<DxgiSession>,
     statistics: CaptureStatistics,
@@ -107,9 +161,39 @@ impl DxgiCapture {
     }
 }
 
+impl DxgiCapture {
+    /// Publishes a changed DXGI pointer shape as an image for the sampler.
+    fn publish_pointer(&mut self) {
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let mut shared = self.pointer.lock().unwrap();
+        shared.output = [
+            session.output_left,
+            session.output_top,
+            i32::try_from(session.width).unwrap_or(0),
+            i32::try_from(session.height).unwrap_or(0),
+        ];
+        if session.pointer.generation == self.published_shape {
+            return;
+        }
+        self.published_shape = session.pointer.generation;
+        let Some((shape, hotspot)) = session.pointer.shape() else {
+            return;
+        };
+        self.pointer_serial = self.pointer_serial.wrapping_add(1);
+        shared.image = to_image(shape, self.pointer_serial, hotspot).map(Arc::new);
+    }
+}
+
 impl CaptureSource for DxgiCapture {
     fn set_cursor_policy(&mut self, visible: std::sync::Arc<std::sync::atomic::AtomicBool>) {
         self.cursor_policy = Some(visible);
+    }
+    fn pointer_source(&self) -> Option<Box<dyn PointerSource>> {
+        Some(Box::new(DxgiPointerSource {
+            shared: Arc::clone(&self.pointer),
+        }))
     }
     fn start(&mut self, config: CaptureConfig) -> Result<(), MediaError> {
         let session = Self::initialize_session(config)?;
@@ -150,11 +234,16 @@ impl CaptureSource for DxgiCapture {
             .cursor_policy
             .as_ref()
             .is_none_or(|v| v.load(std::sync::atomic::Ordering::Acquire));
+        // A policy change must produce one frame (with/without the pointer)
+        // even if only the pointer moved.
+        let skip_pointer_only = !include_cursor && self.last_include_cursor == Some(include_cursor);
+        self.last_include_cursor = Some(include_cursor);
         let result = self
             .session
             .as_mut()
             .ok_or_else(|| MediaError::Operation("capture was not started".to_owned()))?
-            .capture(deadline, include_cursor);
+            .capture(deadline, include_cursor, skip_pointer_only);
+        self.publish_pointer();
         match result {
             Ok(acquired) => {
                 let mut frame = acquired.frame;
@@ -188,6 +277,12 @@ impl CaptureSource for DxgiCapture {
                 self.statistics.no_change_timeouts += 1;
                 Ok(None)
             }
+            Err(CaptureAttemptError::PointerOnly) => {
+                // Receivers draw the pointer; no desktop copy or encode needed.
+                self.statistics.pointer_updates += 1;
+                self.statistics.pointer_only_updates_skipped += 1;
+                Ok(None)
+            }
             Err(CaptureAttemptError::AccessLost) => {
                 self.session = None;
                 self.recovery_started = Some(Instant::now());
@@ -207,6 +302,8 @@ impl CaptureSource for DxgiCapture {
 
 #[derive(Debug, Error)]
 enum CaptureAttemptError {
+    #[error("only the pointer changed")]
+    PointerOnly,
     #[error("no desktop update arrived before the capture deadline")]
     Timeout,
     #[error("DXGI duplication access was lost")]
@@ -239,6 +336,7 @@ impl CaptureAttemptError {
     fn into_media_error(self) -> MediaError {
         match self {
             Self::Timeout => MediaError::Operation("capture deadline elapsed".to_owned()),
+            Self::PointerOnly => MediaError::Operation("only the pointer changed".to_owned()),
             Self::AccessLost => {
                 MediaError::Operation("DXGI duplication access was lost".to_owned())
             }
@@ -370,6 +468,7 @@ impl DxgiSession {
         &mut self,
         deadline: Instant,
         include_cursor: bool,
+        skip_pointer_only: bool,
     ) -> Result<AcquiredFrame, CaptureAttemptError> {
         let started = Instant::now();
         let timeout_ms = u32::try_from(
@@ -396,8 +495,12 @@ impl DxgiSession {
                 })?;
         }
 
-        let result =
-            self.process_acquired_frame(frame_info, desktop_resource, started, include_cursor);
+        let result = if skip_pointer_only && frame_info.LastPresentTime == 0 {
+            self.update_pointer(&frame_info)
+                .and(Err(CaptureAttemptError::PointerOnly))
+        } else {
+            self.process_acquired_frame(frame_info, desktop_resource, started, include_cursor)
+        };
         // SAFETY: AcquireNextFrame succeeded, so exactly one matching ReleaseFrame is required.
         let release_result = unsafe { self.duplication.ReleaseFrame() }.map_err(|error| {
             CaptureAttemptError::from_windows("release acquired desktop frame", error)
@@ -558,6 +661,7 @@ impl DxgiSession {
                 .min(self.pointer.bytes.len()),
         );
         self.pointer.shape_info = Some(shape_info);
+        self.pointer.generation += 1;
         Ok(())
     }
 
@@ -631,9 +735,40 @@ struct PointerState {
     y: i32,
     bytes: Vec<u8>,
     shape_info: Option<DXGI_OUTDUPL_POINTER_SHAPE_INFO>,
+    /// Incremented on every shape update.
+    generation: u64,
 }
 
 impl PointerState {
+    fn kind(info: &DXGI_OUTDUPL_POINTER_SHAPE_INFO) -> Option<PointerShapeKind> {
+        let is = |value: i32| info.Type == u32::try_from(value).unwrap_or_default();
+        if is(DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR.0) {
+            Some(PointerShapeKind::Color)
+        } else if is(DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MASKED_COLOR.0) {
+            Some(PointerShapeKind::MaskedColor)
+        } else if is(DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME.0) {
+            Some(PointerShapeKind::Monochrome)
+        } else {
+            None
+        }
+    }
+    /// Current shape and hotspot, if one has been received.
+    fn shape(&self) -> Option<(PointerShape<'_>, (u32, u32))> {
+        let info = self.shape_info?;
+        Some((
+            PointerShape {
+                kind: Self::kind(&info)?,
+                width: info.Width,
+                height: info.Height,
+                pitch: info.Pitch,
+                bytes: &self.bytes,
+            },
+            (
+                u32::try_from(info.HotSpot.x).unwrap_or(0),
+                u32::try_from(info.HotSpot.y).unwrap_or(0),
+            ),
+        ))
+    }
     fn composite(&self, frame: &mut [u8], width: u32, height: u32, row_pitch: u32) -> bool {
         if !self.visible {
             return false;

@@ -14,7 +14,8 @@ use apple_cf::{
 };
 use media_core::{
     CodecBackendKind, CodecDescriptor, DecodedFrame as CoreDecodedFrame, EncodedAccessUnit,
-    EncodedAccessUnitRef, H264Config, MediaError, VideoDecoder, VideoEncoder, VideoFrameRef,
+    EncodedAccessUnitRef, H264Config, MediaError, VideoCodec, VideoDecoder, VideoEncoder,
+    VideoFrameRef,
 };
 use tracing::{info, warn};
 use videotoolbox::{ffi, Codec, CompressionSession, DecompressionSession, ProfileLevel};
@@ -40,6 +41,23 @@ extern "C" {
         nal_unit_header_length: i32,
         format_description_out: *mut *mut c_void,
     ) -> i32;
+    fn CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
+        video_format_description: *mut c_void,
+        parameter_set_index: usize,
+        parameter_set_pointer_out: *mut *const u8,
+        parameter_set_size_out: *mut usize,
+        parameter_set_count_out: *mut usize,
+        nal_unit_header_length_out: *mut i32,
+    ) -> i32;
+    fn CMVideoFormatDescriptionCreateFromHEVCParameterSets(
+        allocator: *const c_void,
+        parameter_set_count: usize,
+        parameter_set_pointers: *const *const u8,
+        parameter_set_sizes: *const usize,
+        nal_unit_header_length: i32,
+        extensions: *const c_void,
+        format_description_out: *mut *mut c_void,
+    ) -> i32;
     fn CMSampleBufferCreateReady(
         allocator: *const c_void,
         data_buffer: *mut c_void,
@@ -54,14 +72,46 @@ extern "C" {
     static kCFAllocatorDefault: *const c_void;
 }
 
+/// True when this Mac has a hardware encoder for `codec` (cached).
+#[must_use]
+pub fn hardware_encode_supported(codec: VideoCodec) -> bool {
+    use std::sync::OnceLock;
+    static H264: OnceLock<bool> = OnceLock::new();
+    static H265: OnceLock<bool> = OnceLock::new();
+    let cell = match codec {
+        VideoCodec::H264 => &H264,
+        VideoCodec::H265 => &H265,
+    };
+    *cell.get_or_init(|| {
+        let wanted = vt_codec(codec).as_cm_codec_type();
+        videotoolbox::encoder_list::available_video_encoder_details().is_ok_and(|list| {
+            list.iter().any(|encoder| {
+                encoder.base.codec_type == wanted && encoder.is_hardware_accelerated == Some(true)
+            })
+        })
+    })
+}
+/// True when this Mac advertises hardware decode for `codec`.
+#[must_use]
+pub fn hardware_decode_supported(codec: VideoCodec) -> bool {
+    DecompressionSession::is_hardware_decode_supported(vt_codec(codec))
+}
+const fn vt_codec(codec: VideoCodec) -> Codec {
+    match codec {
+        VideoCodec::H264 => Codec::H264,
+        VideoCodec::H265 => Codec::HEVC,
+    }
+}
+
 pub struct VideoToolboxH264Encoder {
     config: H264Config,
+    codec: VideoCodec,
     session: CompressionSession,
     surface: IOSurface,
     frame_index: i64,
     rebuild_before_next_frame: bool,
-    sps: Option<Vec<u8>>,
-    pps: Option<Vec<u8>>,
+    /// Parameter sets in stream order (H.264 SPS, PPS; H.265 VPS, SPS, PPS).
+    parameters: Vec<Vec<u8>>,
     nal_length_bytes: usize,
     source_timeline: media_core::source_timing::SourceTimeline,
     last_bitrate_update_live: bool,
@@ -84,18 +134,26 @@ impl VideoToolboxH264Encoder {
     /// # Errors
     /// Returns an error when the configuration is invalid or `VideoToolbox` cannot initialize.
     pub fn new(config: H264Config) -> Result<Self, MediaError> {
+        Self::with_codec(config, VideoCodec::H264)
+    }
+
+    /// Creates a real-time encoder for `codec` (H.264 or H.265).
+    ///
+    /// # Errors
+    /// Returns an error when the configuration is invalid or `VideoToolbox` cannot initialize.
+    pub fn with_codec(config: H264Config, codec: VideoCodec) -> Result<Self, MediaError> {
         validate_config(config)?;
-        let session = build_encoder(config)?;
+        let session = build_encoder(config, codec)?;
         let surface = IOSurface::create(config.width as usize, config.height as usize, BGRA, 4)
             .ok_or_else(|| MediaError::Operation("failed to allocate BGRA IOSurface".to_owned()))?;
         Ok(Self {
             config,
+            codec,
             session,
             surface,
             frame_index: 0,
             rebuild_before_next_frame: false,
-            sps: None,
-            pps: None,
+            parameters: Vec::new(),
             nal_length_bytes: 4,
             source_timeline: media_core::source_timing::SourceTimeline::default(),
             last_bitrate_update_live: false,
@@ -106,17 +164,21 @@ impl VideoToolboxH264Encoder {
     #[must_use]
     pub fn descriptor(&self) -> CodecDescriptor {
         CodecDescriptor {
-            name: "Apple VideoToolbox H.264 encoder".to_owned(),
+            name: format!("Apple VideoToolbox {} encoder", self.codec),
             kind: encoder_backend(&self.session),
             asynchronous: false,
         }
     }
 
+    #[must_use]
+    pub const fn codec(&self) -> VideoCodec {
+        self.codec
+    }
+
     fn rebuild(&mut self) -> Result<(), MediaError> {
-        self.session = build_encoder(self.config)?;
+        self.session = build_encoder(self.config, self.codec)?;
         self.rebuild_before_next_frame = false;
-        self.sps = None;
-        self.pps = None;
+        self.parameters.clear();
         self.source_timeline = media_core::source_timing::SourceTimeline::default();
         Ok(())
     }
@@ -158,29 +220,29 @@ impl VideoToolboxH264Encoder {
             MediaError::Operation("VideoToolbox output sample is unexpectedly missing".to_owned())
         })?;
         let format = sample.format_description().ok_or_else(|| {
-            MediaError::Operation("VideoToolbox H.264 sample has no format description".to_owned())
+            MediaError::Operation("VideoToolbox sample has no format description".to_owned())
         })?;
-        let (sps, pps, nal_length_bytes) = h264_parameter_sets(&format)?;
-        if self.sps.as_deref() != Some(sps.as_slice()) {
+        let (parameters, nal_length_bytes) = parameter_sets(&format, self.codec)?;
+        if self.parameters != parameters {
             // Parameter sets describe codec configuration, never screen pixels.
-            let mut sps_hex = String::with_capacity(sps.len().min(64) * 2);
-            for byte in sps.iter().take(64) {
-                let _ = write!(sps_hex, "{byte:02x}");
+            let mut hex = String::new();
+            for byte in parameters.iter().flatten().take(64) {
+                let _ = write!(hex, "{byte:02x}");
             }
-            info!(sps_hex, profile_idc = ?sps.get(1), "VideoToolbox H.264 sequence configuration");
+            info!(codec = %self.codec, parameter_sets = parameters.len(), parameters_hex = hex, "VideoToolbox sequence configuration");
         }
-        self.sps = Some(sps);
-        self.pps = Some(pps);
+        self.parameters = parameters;
         self.nal_length_bytes = nal_length_bytes;
-        let (mut bytes, is_keyframe) = avcc_to_annex_b(&encoded.data, self.nal_length_bytes)?;
+        let (mut bytes, is_keyframe) =
+            avcc_to_annex_b(&encoded.data, self.nal_length_bytes, self.codec)?;
         if is_keyframe {
+            // Cached parameter sets precede every keyframe for clean joins.
             let mut with_parameters = Vec::with_capacity(
-                bytes.len()
-                    + self.sps.as_ref().map_or(0, |value| value.len() + 4)
-                    + self.pps.as_ref().map_or(0, |value| value.len() + 4),
+                bytes.len() + self.parameters.iter().map(|p| p.len() + 4).sum::<usize>(),
             );
-            append_annex_b(&mut with_parameters, self.sps.as_deref());
-            append_annex_b(&mut with_parameters, self.pps.as_deref());
+            for parameter in &self.parameters {
+                append_annex_b(&mut with_parameters, Some(parameter));
+            }
             with_parameters.append(&mut bytes);
             bytes = with_parameters;
         }
@@ -340,12 +402,11 @@ impl VideoEncoder for VideoToolboxH264Encoder {
         // turn the next encode into a fatal error for the whole presentation.
         let mut next_config = self.config;
         next_config.bitrate = bits_per_second;
-        let next_session = build_encoder(next_config)?;
+        let next_session = build_encoder(next_config, self.codec)?;
         self.session = next_session;
         self.config = next_config;
         self.rebuild_before_next_frame = false;
-        self.sps = None;
-        self.pps = None;
+        self.parameters.clear();
         self.source_timeline = media_core::source_timing::SourceTimeline::default();
         Ok(())
     }
@@ -354,14 +415,33 @@ impl VideoEncoder for VideoToolboxH264Encoder {
         self.rebuild_before_next_frame = true;
         Ok(())
     }
+
+    fn set_refinement(&mut self, active: bool) -> Result<bool, MediaError> {
+        // QP 51 is the H.264/H.265 maximum (no cap); 22 keeps text crisp.
+        let qp = CFNumber::from_i64(if active { 22 } else { 51 });
+        // SAFETY: SDK-owned key; the CFNumber outlives the call.
+        match unsafe {
+            self.session.set_property(
+                ffi::kVTCompressionPropertyKey_MaxAllowedFrameQP,
+                qp.as_ptr().cast(),
+            )
+        } {
+            Ok(()) => Ok(true),
+            Err(error) => {
+                warn!(%error, active, "VideoToolbox MaxAllowedFrameQP unsupported; bitrate-only refinement");
+                Ok(false)
+            }
+        }
+    }
 }
 
 pub struct VideoToolboxH264Decoder {
     config: H264Config,
+    codec: VideoCodec,
     session: Option<DecompressionSession>,
     receiver: Option<Receiver<videotoolbox::DecodedFrame>>,
-    sps: Option<Vec<u8>>,
-    pps: Option<Vec<u8>>,
+    /// Latest parameter sets by role: H.264 [-, SPS, PPS]; H.265 [VPS, SPS, PPS].
+    parameters: [Option<Vec<u8>>; 3],
     diagnostics: media_core::diagnostics::StageMetrics,
     output_pixel_format: Option<u32>,
 }
@@ -393,13 +473,21 @@ impl VideoToolboxH264Decoder {
     /// # Errors
     /// Returns an error when the configuration is invalid.
     pub fn new(config: H264Config) -> Result<Self, MediaError> {
+        Self::with_codec(config, VideoCodec::H264)
+    }
+
+    /// Creates a lazy decoder for `codec` that initializes after parameter sets arrive.
+    ///
+    /// # Errors
+    /// Returns an error when the configuration is invalid.
+    pub fn with_codec(config: H264Config, codec: VideoCodec) -> Result<Self, MediaError> {
         validate_config(config)?;
         Ok(Self {
             config,
+            codec,
             session: None,
             receiver: None,
-            sps: None,
-            pps: None,
+            parameters: [None, None, None],
             diagnostics: media_core::diagnostics::StageMetrics::default(),
             output_pixel_format: None,
         })
@@ -408,7 +496,7 @@ impl VideoToolboxH264Decoder {
     #[must_use]
     pub fn descriptor(&self) -> CodecDescriptor {
         CodecDescriptor {
-            name: "Apple VideoToolbox H.264 decoder".to_owned(),
+            name: format!("Apple VideoToolbox {} decoder", self.codec),
             kind: self
                 .session
                 .as_ref()
@@ -421,13 +509,7 @@ impl VideoToolboxH264Decoder {
         if self.session.is_some() {
             return Ok(());
         }
-        let sps = self.sps.as_deref().ok_or_else(|| {
-            MediaError::Operation("decoder is waiting for an H.264 SPS".to_owned())
-        })?;
-        let pps = self.pps.as_deref().ok_or_else(|| {
-            MediaError::Operation("decoder is waiting for an H.264 PPS".to_owned())
-        })?;
-        let format = make_h264_format_description(sps, pps)?;
+        let format = self.format_description()?;
         let (sender, receiver) = mpsc::channel();
         // Ask VideoToolbox for the renderer's BGRA format, avoiding the scalar
         // per-pixel NV12 conversion. Keep the existing NV12 path as a fallback.
@@ -460,10 +542,45 @@ impl VideoToolboxH264Decoder {
         })
         .map_err(operation)?;
         session.set_real_time(true).map_err(operation)?;
-        info!(decoder = "Apple VideoToolbox H.264 decoder", decoder_backend = %decoder_backend(&session), native_bgra_requested = native_bgra, "selected VideoToolbox H.264 decoder");
+        info!(codec = %self.codec, decoder_backend = %decoder_backend(&session), native_bgra_requested = native_bgra, "selected VideoToolbox decoder");
         self.session = Some(session);
         self.receiver = Some(receiver);
         Ok(())
+    }
+}
+
+impl VideoToolboxH264Decoder {
+    fn format_description(&self) -> Result<CMFormatDescription, MediaError> {
+        let needed = match self.codec {
+            VideoCodec::H264 => &self.parameters[1..],
+            VideoCodec::H265 => &self.parameters[..],
+        };
+        let sets = needed
+            .iter()
+            .map(|p| p.as_deref())
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| {
+                MediaError::Operation(format!(
+                    "decoder is waiting for {} parameter sets",
+                    self.codec
+                ))
+            })?;
+        make_format_description(self.codec, &sets)
+    }
+    /// Parameter-set role for a NAL type, if it is one.
+    const fn parameter_role(codec: VideoCodec, kind: u8) -> Option<usize> {
+        match (codec, kind) {
+            (VideoCodec::H264, 7) | (VideoCodec::H265, 33) => Some(1),
+            (VideoCodec::H264, 8) | (VideoCodec::H265, 34) => Some(2),
+            (VideoCodec::H265, 32) => Some(0),
+            _ => None,
+        }
+    }
+    const fn is_slice(codec: VideoCodec, kind: u8) -> bool {
+        match codec {
+            VideoCodec::H264 => matches!(kind, 1 | 5),
+            VideoCodec::H265 => kind <= 31,
+        }
     }
 }
 
@@ -480,30 +597,19 @@ impl VideoDecoder for VideoToolboxH264Decoder {
         let mut parameter_changed = false;
         let mut avcc = Vec::with_capacity(access_unit.bytes.len());
         for unit in units {
-            let Some(kind) = unit.first().map(|value| value & 0x1f) else {
+            let Some(kind) = self.codec.nal_type(unit) else {
                 continue;
             };
-            match kind {
-                7 => {
-                    if self.sps.as_deref() != Some(unit) {
-                        self.sps = Some(unit.to_vec());
-                        parameter_changed = true;
-                    }
+            if let Some(role) = Self::parameter_role(self.codec, kind) {
+                if self.parameters[role].as_deref() != Some(unit) {
+                    self.parameters[role] = Some(unit.to_vec());
+                    parameter_changed = true;
                 }
-                8 => {
-                    if self.pps.as_deref() != Some(unit) {
-                        self.pps = Some(unit.to_vec());
-                        parameter_changed = true;
-                    }
-                }
-                1 | 5 => {
-                    let length = u32::try_from(unit.len()).map_err(|_| {
-                        MediaError::Operation("H.264 NAL unit is too large".to_owned())
-                    })?;
-                    avcc.extend_from_slice(&length.to_be_bytes());
-                    avcc.extend_from_slice(unit);
-                }
-                _ => {}
+            } else if Self::is_slice(self.codec, kind) {
+                let length = u32::try_from(unit.len())
+                    .map_err(|_| MediaError::Operation("NAL unit is too large".to_owned()))?;
+                avcc.extend_from_slice(&length.to_be_bytes());
+                avcc.extend_from_slice(unit);
             }
         }
         if parameter_changed {
@@ -514,10 +620,7 @@ impl VideoDecoder for VideoToolboxH264Decoder {
             return Ok(Vec::new());
         }
         self.ensure_session()?;
-        let format = make_h264_format_description(
-            self.sps.as_deref().expect("validated by ensure_session"),
-            self.pps.as_deref().expect("validated by ensure_session"),
-        )?;
+        let format = self.format_description()?;
         let sample = make_sample_buffer(&avcc, &format, access_unit.timestamp)?;
         let session = self
             .session
@@ -599,9 +702,9 @@ fn validate_config(config: H264Config) -> Result<(), MediaError> {
     Ok(())
 }
 
-fn build_encoder(config: H264Config) -> Result<CompressionSession, MediaError> {
+fn build_encoder(config: H264Config, codec: VideoCodec) -> Result<CompressionSession, MediaError> {
     if std::env::var("CLASSROOM_VT_LOW_LATENCY").as_deref() != Ok("0") {
-        match build_encoder_mode(config, true, true) {
+        match build_encoder_mode(config, codec, true, true) {
             Ok(session) => {
                 info!(
                     low_latency_rate_control = true,
@@ -614,7 +717,7 @@ fn build_encoder(config: H264Config) -> Result<CompressionSession, MediaError> {
             }
         }
     }
-    match build_encoder_mode(config, false, true) {
+    match build_encoder_mode(config, codec, false, true) {
         Ok(session) => {
             info!(
                 low_latency_rate_control = false,
@@ -625,7 +728,7 @@ fn build_encoder(config: H264Config) -> Result<CompressionSession, MediaError> {
         }
         Err(error) => {
             warn!(%error, "VideoToolbox hardware-enabled session unavailable; falling back to default encoder selection");
-            let session = build_encoder_mode(config, false, false)?;
+            let session = build_encoder_mode(config, codec, false, false)?;
             info!(
                 low_latency_rate_control = false,
                 hardware_encoder_allowed = false,
@@ -638,6 +741,7 @@ fn build_encoder(config: H264Config) -> Result<CompressionSession, MediaError> {
 
 fn build_encoder_mode(
     config: H264Config,
+    codec: VideoCodec,
     low_latency: bool,
     hardware_allowed: bool,
 ) -> Result<CompressionSession, MediaError> {
@@ -646,17 +750,22 @@ fn build_encoder_mode(
             .map_err(|_| MediaError::Operation("encoder width is too large".to_owned()))?,
         i32::try_from(config.height)
             .map_err(|_| MediaError::Operation("encoder height is too large".to_owned()))?,
-        Codec::H264,
+        vt_codec(codec),
     )
     .with_real_time(true)
     .with_allow_frame_reordering(false)
     .with_average_bit_rate(i32::try_from(config.bitrate).unwrap_or(i32::MAX))
     .with_expected_frame_rate(f64::from(config.frames_per_second))
     .with_max_keyframe_interval(i32::try_from(config.keyframe_interval_frames).unwrap_or(i32::MAX));
-    let builder = match std::env::var("CLASSROOM_VT_PROFILE").as_deref() {
-        Ok("baseline") => builder.with_profile_level(ProfileLevel::H264BaselineAutoLevel),
-        Ok("main") => builder.with_profile_level(ProfileLevel::H264MainAutoLevel),
-        _ => builder,
+    let builder = match (codec, std::env::var("CLASSROOM_VT_PROFILE").as_deref()) {
+        (VideoCodec::H265, _) => builder.with_profile_level(ProfileLevel::HEVCMainAutoLevel),
+        (VideoCodec::H264, Ok("baseline")) => {
+            builder.with_profile_level(ProfileLevel::H264BaselineAutoLevel)
+        }
+        (VideoCodec::H264, Ok("main")) => {
+            builder.with_profile_level(ProfileLevel::H264MainAutoLevel)
+        }
+        (VideoCodec::H264, _) => builder,
     };
     // Explicitly allow VideoToolbox to select hardware. Without this encoder
     // specification some macOS versions create a software session even when
@@ -709,8 +818,50 @@ fn build_encoder_mode(
             (None, None) => builder,
         };
     let session = builder.build().map_err(operation)?;
-    info!(encoder = "Apple VideoToolbox H.264 encoder", encoder_backend = %encoder_backend(&session), "selected VideoToolbox H.264 encoder");
+    let speed = apply_latency_properties(&session);
+    info!(codec = %codec, encoder_backend = %encoder_backend(&session), speed_priority = speed, "selected VideoToolbox encoder");
     Ok(session)
+}
+
+/// Latency over power/quality: encode each frame as fast as the hardware
+/// can and emit it immediately (no frame delay). Best effort; disable for
+/// A/B with `CLASSROOM_VT_SPEED_PRIORITY=0`. Returns whether it was attempted.
+fn apply_latency_properties(session: &CompressionSession) -> bool {
+    let speed = std::env::var("CLASSROOM_VT_SPEED_PRIORITY").as_deref() != Ok("0");
+    if speed {
+        let zero = CFNumber::from_i64(0);
+        // SAFETY: SDK-owned keys; CFBoolean constants are process-lifetime and
+        // the CFNumber outlives the call.
+        let results = unsafe {
+            [
+                session
+                    .set_property(
+                        ffi::kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
+                        ffi::kCFBooleanTrue.cast(),
+                    )
+                    .is_ok(),
+                session
+                    .set_property(
+                        ffi::kVTCompressionPropertyKey_MaximizePowerEfficiency,
+                        ffi::kCFBooleanFalse.cast(),
+                    )
+                    .is_ok(),
+                session
+                    .set_property(
+                        ffi::kVTCompressionPropertyKey_MaxFrameDelayCount,
+                        zero.as_ptr().cast(),
+                    )
+                    .is_ok(),
+            ]
+        };
+        info!(
+            prioritize_speed = results[0],
+            power_efficiency_off = results[1],
+            max_frame_delay_zero = results[2],
+            "VideoToolbox latency properties"
+        );
+    }
+    speed
 }
 
 fn encoder_backend(session: &CompressionSession) -> CodecBackendKind {
@@ -753,90 +904,139 @@ fn hardware_kind(property: Option<CFType>) -> CodecBackendKind {
     }
 }
 
-fn h264_parameter_sets(
+/// Parameter sets in stream order plus the AVCC/HVCC NAL length-field width.
+fn parameter_sets(
     format: &CMFormatDescription,
-) -> Result<(Vec<u8>, Vec<u8>, usize), MediaError> {
-    let mut values = Vec::with_capacity(2);
-    let mut nal_length_bytes = None;
-    for index in 0..2 {
+    codec: VideoCodec,
+) -> Result<(Vec<Vec<u8>>, usize), MediaError> {
+    let mut values = Vec::new();
+    let mut nal_length_bytes = 4;
+    let mut index = 0_usize;
+    loop {
         let mut pointer = std::ptr::null();
         let mut size = 0_usize;
         let mut count = 0_usize;
         let mut header_length = 0_i32;
+        // SAFETY: CoreMedia writes borrowed pointers into the format
+        // description, which outlives this copy.
         let status = unsafe {
-            CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
-                format.as_ptr(),
-                index,
-                &raw mut pointer,
-                &raw mut size,
-                &raw mut count,
-                &raw mut header_length,
-            )
+            match codec {
+                VideoCodec::H264 => CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+                    format.as_ptr(),
+                    index,
+                    &raw mut pointer,
+                    &raw mut size,
+                    &raw mut count,
+                    &raw mut header_length,
+                ),
+                VideoCodec::H265 => CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
+                    format.as_ptr(),
+                    index,
+                    &raw mut pointer,
+                    &raw mut size,
+                    &raw mut count,
+                    &raw mut header_length,
+                ),
+            }
         };
         if status != 0 || pointer.is_null() || size == 0 {
             return Err(MediaError::Operation(format!(
-                "failed to read H.264 parameter set {index}: status {status}"
+                "failed to read {codec} parameter set {index}: status {status}"
             )));
         }
         let parameter_set = unsafe { std::slice::from_raw_parts(pointer, size) }.to_vec();
-        validate_parameter_set(index, &parameter_set)?;
-        values.push(parameter_set);
         if index == 0 {
             if !(1..=4).contains(&header_length) {
                 return Err(MediaError::Operation(format!(
-                    "unsupported H.264 NAL length field size {header_length}"
+                    "unsupported NAL length field size {header_length}"
                 )));
             }
-            // CoreMedia returns the length-field width used by the sample's AVCC NAL units.
-            nal_length_bytes = Some(
-                usize::try_from(header_length).expect("positive NAL length field size checked"),
-            );
+            nal_length_bytes =
+                usize::try_from(header_length).expect("positive NAL length field size checked");
+        }
+        values.push(parameter_set);
+        index += 1;
+        if index >= count.min(8) {
+            break;
         }
     }
-    Ok((
-        values.remove(0),
-        values.remove(0),
-        nal_length_bytes.expect("NAL length field read with SPS"),
-    ))
+    // Keep only the decoder-required parameter sets (drop e.g. SEI entries).
+    let required: &[u8] = match codec {
+        VideoCodec::H264 => &[7, 8],
+        VideoCodec::H265 => &[32, 33, 34],
+    };
+    values.retain(|set| {
+        codec
+            .nal_type(set)
+            .is_some_and(|kind| required.contains(&kind))
+    });
+    let refs: Vec<&[u8]> = values.iter().map(Vec::as_slice).collect();
+    validate_parameter_sets(codec, &refs)?;
+    Ok((values, nal_length_bytes))
 }
 
-fn validate_parameter_set(index: usize, bytes: &[u8]) -> Result<(), MediaError> {
-    let expected_type = if index == 0 { 7 } else { 8 };
-    if bytes
-        .first()
-        .is_none_or(|header| header & 0x1f != expected_type)
-    {
+fn validate_parameter_sets(codec: VideoCodec, sets: &[&[u8]]) -> Result<(), MediaError> {
+    let expected: &[u8] = match codec {
+        VideoCodec::H264 => &[7, 8],
+        VideoCodec::H265 => &[32, 33, 34],
+    };
+    let mut seen = Vec::new();
+    for set in sets {
+        let kind = codec.nal_type(set).unwrap_or(u8::MAX);
+        if !expected.contains(&kind) {
+            return Err(MediaError::Operation(format!(
+                "invalid {codec} parameter set: NAL type {kind}, {} bytes",
+                set.len()
+            )));
+        }
+        seen.push(kind);
+    }
+    if expected.iter().any(|kind| !seen.contains(kind)) {
         return Err(MediaError::Operation(format!(
-            "invalid H.264 parameter set {index}: expected NAL type {expected_type}, got {} bytes",
-            bytes.len()
+            "incomplete {codec} parameter sets"
         )));
     }
     Ok(())
 }
 
-fn make_h264_format_description(sps: &[u8], pps: &[u8]) -> Result<CMFormatDescription, MediaError> {
-    validate_parameter_set(0, sps)?;
-    validate_parameter_set(1, pps)?;
-    let pointers = [sps.as_ptr(), pps.as_ptr()];
-    let sizes = [sps.len(), pps.len()];
+fn make_format_description(
+    codec: VideoCodec,
+    sets: &[&[u8]],
+) -> Result<CMFormatDescription, MediaError> {
+    validate_parameter_sets(codec, sets)?;
+    let pointers: Vec<*const u8> = sets.iter().map(|set| set.as_ptr()).collect();
+    let sizes: Vec<usize> = sets.iter().map(|set| set.len()).collect();
     let mut raw = std::ptr::null_mut();
+    // SAFETY: pointers/sizes describe live slices for the duration of the call;
+    // CoreMedia copies the parameter sets into the new description.
     let status = unsafe {
-        CMVideoFormatDescriptionCreateFromH264ParameterSets(
-            kCFAllocatorDefault,
-            pointers.len(),
-            pointers.as_ptr(),
-            sizes.as_ptr(),
-            4,
-            &raw mut raw,
-        )
+        match codec {
+            VideoCodec::H264 => CMVideoFormatDescriptionCreateFromH264ParameterSets(
+                kCFAllocatorDefault,
+                pointers.len(),
+                pointers.as_ptr(),
+                sizes.as_ptr(),
+                4,
+                &raw mut raw,
+            ),
+            VideoCodec::H265 => CMVideoFormatDescriptionCreateFromHEVCParameterSets(
+                kCFAllocatorDefault,
+                pointers.len(),
+                pointers.as_ptr(),
+                sizes.as_ptr(),
+                4,
+                std::ptr::null(),
+                &raw mut raw,
+            ),
+        }
     };
     if status != 0 || raw.is_null() {
         return Err(MediaError::Operation(format!(
-            "failed to create H.264 format description: status {status}"
+            "failed to create {codec} format description: status {status}"
         )));
     }
     unsafe { CMFormatDescription::from_raw(raw) }.ok_or_else(|| {
-        MediaError::Operation("H.264 format description was unexpectedly null".to_owned())
+        MediaError::Operation(format!("{codec} format description was unexpectedly null"))
     })
 }
 
@@ -977,7 +1177,11 @@ fn clamp_u8(value: i32) -> u8 {
     u8::try_from(value.clamp(0, 255)).unwrap_or(0)
 }
 
-fn avcc_to_annex_b(bytes: &[u8], length_bytes: usize) -> Result<(Vec<u8>, bool), MediaError> {
+fn avcc_to_annex_b(
+    bytes: &[u8],
+    length_bytes: usize,
+    codec: VideoCodec,
+) -> Result<(Vec<u8>, bool), MediaError> {
     if !(1..=4).contains(&length_bytes) {
         return Err(MediaError::Operation(format!(
             "unsupported AVCC NAL length field size {length_bytes}"
@@ -1011,13 +1215,14 @@ fn avcc_to_annex_b(bytes: &[u8], length_bytes: usize) -> Result<(Vec<u8>, bool),
         if length == 0 || end > bytes.len() {
             return Err(MediaError::Operation("invalid AVCC NAL length".to_owned()));
         }
-        let nal_type = bytes[offset] & 0x1f;
-        if !(1..=23).contains(&nal_type) {
+        let unit = &bytes[offset..end];
+        if !codec.is_elementary(unit) {
             return Err(MediaError::Operation(format!(
-                "invalid H.264 NAL unit type {nal_type} in VideoToolbox output"
+                "invalid {codec} NAL unit type {:?} in VideoToolbox output",
+                codec.nal_type(unit)
             )));
         }
-        keyframe |= nal_type == 5;
+        keyframe |= codec.is_random_access(unit);
         output.extend_from_slice(&[0, 0, 0, 1]);
         output.extend_from_slice(&bytes[offset..offset + length]);
         offset = end;
@@ -1089,7 +1294,7 @@ mod tests {
     #[test]
     fn converts_avcc_to_annex_b_and_detects_idr() {
         let input = [0, 0, 0, 2, 0x65, 9, 0, 0, 0, 2, 0x41, 7];
-        let (output, keyframe) = avcc_to_annex_b(&input, 4).unwrap();
+        let (output, keyframe) = avcc_to_annex_b(&input, 4, VideoCodec::H264).unwrap();
         assert!(keyframe);
         assert_eq!(output, [0, 0, 0, 1, 0x65, 9, 0, 0, 0, 1, 0x41, 7]);
     }
@@ -1100,7 +1305,7 @@ mod tests {
         let mut input = vec![0, 0, 1, 2];
         input.push(0x41);
         input.resize(4 + 258, 0x55);
-        let (output, keyframe) = avcc_to_annex_b(&input, 4).unwrap();
+        let (output, keyframe) = avcc_to_annex_b(&input, 4, VideoCodec::H264).unwrap();
         assert!(!keyframe);
         assert_eq!(&output[..5], &[0, 0, 0, 1, 0x41]);
         assert_eq!(output.len(), input.len());
@@ -1109,7 +1314,7 @@ mod tests {
     #[test]
     fn converts_avcc_with_non_four_byte_lengths() {
         let input = [2, 0x65, 9];
-        let (output, keyframe) = avcc_to_annex_b(&input, 1).unwrap();
+        let (output, keyframe) = avcc_to_annex_b(&input, 1, VideoCodec::H264).unwrap();
         assert!(keyframe);
         assert_eq!(output, [0, 0, 0, 1, 0x65, 9]);
     }
@@ -1119,6 +1324,100 @@ mod tests {
         let input = [0, 0, 0, 1, 0x67, 1, 0, 0, 1, 0x68, 2];
         let units = annex_b_units(&input);
         assert_eq!(units, [&[0x67, 1][..], &[0x68, 2][..]]);
+    }
+
+    #[test]
+    #[ignore = "measurement: run with --ignored --nocapture on a Mac"]
+    fn data_rate_limit_caps_full_motion_overshoot() {
+        let config = H264Config {
+            width: 1280,
+            height: 720,
+            frames_per_second: 30,
+            bitrate: 2_000_000,
+            keyframe_interval_frames: 120,
+        };
+        let mut encoder = VideoToolboxH264Encoder::new(config).unwrap();
+        let mut seed = 1_u32;
+        let mut pixels = vec![0_u8; (config.width * config.height * 4) as usize];
+        let mut per_second = [0_usize; 2];
+        for index in 0..60 {
+            for value in &mut pixels {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                *value = seed as u8;
+            }
+            let frame = VideoFrameRef {
+                bytes: &pixels,
+                captured_at: Instant::now(),
+                width: config.width,
+                height: config.height,
+            };
+            if let Some(unit) = encoder.encode(frame).unwrap() {
+                per_second[index / 30] += unit.bytes.len();
+            }
+        }
+        let target = config.bitrate as usize / 8;
+        println!(
+            "target_bytes_per_s={target} first_s={} second_s={}",
+            per_second[0], per_second[1]
+        );
+        // Recorded 2026-10-03 (M1 Pro): low-latency RC ≈ 2.57 MB then 98 KB;
+        // DataRateLimits made no difference in either RC mode, so it is not used.
+        assert!(
+            per_second[1] < target * 3,
+            "steady-state second within 3x of target"
+        );
+    }
+
+    #[test]
+    fn hevc_hardware_round_trip_when_available() {
+        if !hardware_encode_supported(VideoCodec::H265) {
+            println!("hevc_hardware_encoder=unavailable; skipped");
+            return;
+        }
+        assert!(hardware_decode_supported(VideoCodec::H265));
+        let config = H264Config {
+            width: 640,
+            height: 360,
+            frames_per_second: 60,
+            bitrate: 1_500_000,
+            keyframe_interval_frames: 120,
+        };
+        let mut encoder = VideoToolboxH264Encoder::with_codec(config, VideoCodec::H265).unwrap();
+        let mut decoder = VideoToolboxH264Decoder::with_codec(config, VideoCodec::H265).unwrap();
+        println!("{:?}", encoder.descriptor());
+        let mut pixels = vec![0x40_u8; (config.width * config.height * 4) as usize];
+        let mut decoded = 0;
+        for index in 0..10_u8 {
+            pixels[usize::from(index) * 4096] = 0xff;
+            let frame = VideoFrameRef {
+                bytes: &pixels,
+                captured_at: Instant::now(),
+                width: config.width,
+                height: config.height,
+            };
+            let Some(unit) = encoder.encode(frame).unwrap() else {
+                continue;
+            };
+            if index == 0 {
+                assert!(unit.is_keyframe);
+                let kinds: Vec<_> = annex_b_units(&unit.bytes)
+                    .iter()
+                    .filter_map(|u| VideoCodec::H265.nal_type(u))
+                    .collect();
+                assert_eq!(&kinds[..3], &[32, 33, 34], "VPS/SPS/PPS precede IRAP");
+            }
+            decoded += decoder
+                .decode(EncodedAccessUnitRef {
+                    bytes: &unit.bytes,
+                    timestamp: unit.timestamp,
+                    is_keyframe: unit.is_keyframe,
+                })
+                .unwrap()
+                .len();
+        }
+        assert!(decoded >= 8, "decoded {decoded} HEVC frames");
     }
 
     #[test]

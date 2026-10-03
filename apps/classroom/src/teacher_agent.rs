@@ -244,7 +244,12 @@ pub(super) fn run(
     let outbox = parent.join("outbox");
     fs::create_dir_all(&outbox)?;
     cleanup_staged_files(&outbox);
-    let observe_jobs = Arc::new(super::monitoring::ObserveRequests::default());
+    let offer = super::stream_profile::teacher_offer(
+        &config.observe,
+        super::stream_profile::local_decodable,
+    );
+    info!(offered = ?offer, "Observe enhanced-profile offer");
+    let observe_jobs = Arc::new(super::monitoring::ObserveRequests::with_offer(offer));
     let monitor = config
         .monitoring
         .enabled

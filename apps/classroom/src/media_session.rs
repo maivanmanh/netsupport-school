@@ -1,8 +1,7 @@
 //! Role-independent publisher orchestration; all topologies use the same media hot path.
 use super::{
     bind_teacher_media_socket, run_teacher_media_session, AtomicBool, CaptureConfig, CaptureSource,
-    Config, Context, Ipv4Addr, Ordering, PlatformCapture, Result, H264_PAYLOAD_TYPE,
-    RTP_VIDEO_CLOCK_HZ,
+    Config, Context, Ipv4Addr, Ordering, PlatformCapture, Result, RTP_VIDEO_CLOCK_HZ,
 };
 use control_transport::room::RoomPresentation;
 use std::sync::Arc;
@@ -70,7 +69,9 @@ pub(super) fn publish_with_cursor_policy(
                 height: dimensions.1,
                 max_fps: config.video.max_fps,
                 bitrate_bps: config.video.target_bitrate_kbps.saturating_mul(1000),
-                rtp_payload_type: u32::from(H264_PAYLOAD_TYPE),
+                rtp_payload_type: u32::from(
+                    super::stream_profile::session_codec(&config.video).rtp_payload_type(),
+                ),
                 rtp_clock_hz: RTP_VIDEO_CLOCK_HZ,
                 teacher_media_udp_port: u32::from(media_port),
             },

@@ -46,11 +46,15 @@ class Agent extends ChangeNotifier {
       if (r['online'] == true) {
         seenOnlineIds.add(id);
       }
+      // scripts/simulate-class.py Students (sim-*) are shown while online
+      // but never remembered, so test runs leave no offline roster entries.
+      final simulated = '${r['name'] ?? ''}'.startsWith('sim-');
       final old = known[id];
-      if (old == null || old['name'] != r['name'] || old['ip'] != r['ip']) {
+      if (!simulated &&
+          (old == null || old['name'] != r['name'] || old['ip'] != r['ip'])) {
         dirty = true;
       }
-      known[id] = {'id': id, 'name': r['name'], 'ip': r['ip']};
+      if (!simulated) known[id] = {'id': id, 'name': r['name'], 'ip': r['ip']};
       final thumbnail = r['thumbnail'] as Map<String, dynamic>?;
       if (thumbnail != null) {
         images[id] = base64Decode(thumbnail['jpeg'] as String);

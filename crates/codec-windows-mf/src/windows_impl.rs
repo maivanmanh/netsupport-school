@@ -261,6 +261,16 @@ impl VideoEncoder for MfH264Encoder {
         Ok(())
     }
 
+    fn set_refinement(&mut self, active: bool) -> Result<bool, MediaError> {
+        // Optional MFT capability; absent support keeps bitrate-only refinement.
+        Ok(set_codec_u32(
+            &self.codec_api,
+            &windows::Win32::Media::MediaFoundation::CODECAPI_AVEncVideoMaxQP,
+            if active { 22 } else { 51 },
+        )
+        .is_ok())
+    }
+
     fn request_keyframe(&mut self) -> Result<(), MediaError> {
         set_codec_u32(&self.codec_api, &CODECAPI_AVEncVideoForceKeyFrame, 1)?;
         self.keyframe_pending.get_or_insert((

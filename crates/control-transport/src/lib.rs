@@ -31,6 +31,8 @@ pub struct StudentRegistration {
     pub selected_local_ip: Ipv4Addr,
     pub media_udp_port: u16,
     pub feedback_udp_port: u16,
+    /// This receiver renders the Teacher pointer channel (`HelloStudent.pointer_overlay`).
+    pub pointer_overlay: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -38,6 +40,7 @@ pub struct RegisteredStudent {
     pub client_id: u64,
     pub endpoint: SocketAddrV4,
     pub hostname: String,
+    pub pointer_overlay: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -330,6 +333,7 @@ pub async fn register_student_for_presentation(
         selected_local_ip: routed_local_ip.to_string(),
         media_udp_port: u32::from(registration.media_udp_port),
         feedback_udp_port: u32::from(registration.feedback_udp_port),
+        pointer_overlay: registration.pointer_overlay,
     });
     info!(%teacher, local_addr = %stream.local_addr()?, "student registration TCP connected; sending Hello");
     write_envelope(&mut stream, &hello).await.map_err(|error| {
@@ -600,6 +604,7 @@ pub async fn register_student(
         selected_local_ip: registration.selected_local_ip.to_string(),
         media_udp_port: u32::from(registration.media_udp_port),
         feedback_udp_port: u32::from(registration.feedback_udp_port),
+        pointer_overlay: registration.pointer_overlay,
     });
     write_envelope(&mut stream, &hello).await?;
     let response = read_envelope(&mut stream).await?;
@@ -667,6 +672,7 @@ async fn handle_media_student(
             client_id,
             endpoint,
             hostname: hello.hostname,
+            pointer_overlay: hello.pointer_overlay,
         }))
         .map_err(|_| ControlError::ControlClosed)?;
     let _registration = RegisteredStudentGuard {
@@ -773,6 +779,7 @@ mod tests {
                 selected_local_ip: Ipv4Addr::new(10, 0, 55, 11),
                 media_udp_port: 47_810,
                 feedback_udp_port: 47_811,
+                pointer_overlay: false,
             },
         )
         .await
@@ -812,6 +819,7 @@ mod tests {
                 selected_local_ip: Ipv4Addr::LOCALHOST,
                 media_udp_port: 47_810,
                 feedback_udp_port: 47_811,
+                pointer_overlay: false,
             },
         )
         .await
@@ -871,6 +879,7 @@ mod tests {
                 selected_local_ip: Ipv4Addr::LOCALHOST,
                 media_udp_port: 47810,
                 feedback_udp_port: 47811,
+                pointer_overlay: false,
             },
         )
         .await

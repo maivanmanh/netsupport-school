@@ -2667,3 +2667,221 @@ The local dependency builds used temporary Cargo/Swift/Clang caches under `/priv
   to both Desktop folders and verify matching SHA-256 plus absence of partial files;
   then test timestamped screenshots on each Teacher OS. Windows Runner should be
   compiled on Windows before shipping a Windows Teacher build.
+
+
+## 2026-10-03 — Workspace cleanup / GitHub state (recorded after the fact)
+
+- Earlier today the workspace was cleaned (Rust/Flutter build output, caches,
+  logs, `checkpoints/evidence/`, temp files). Evidence paths cited by earlier
+  entries (`checkpoints/evidence/...`, `target/...`) no longer exist locally.
+- A private GitHub repo exists: `https://github.com/maivanmanh/netsupport-school`
+  with one commit `525a592a chore: initialize Classroom repository`.
+- The local `.git` was found re-initialized (no commits, no remote). Re-linking
+  (`git remote add origin …; git fetch; git reset --soft origin/main`) was
+  blocked by the agent's permission policy and is left to the owner.
+
+## 2026-10-03 — P2-K File delivery naming/dedupe, compact Student message, Teacher reply inbox
+
+Owner-reported issues: Windows file delivery failed; Student message dialog too
+large with an always-visible reply box; replies/failures re-appeared after
+reopening the Teacher app; received filenames got prefixes.
+
+- Root cause of Windows failure (from live Teacher IPC snapshot): `The parameter
+  is incorrect. (os error 87)`. Windows Student Desktop is `C:\Mac\Home\Desktop`
+  — a Parallels shared folder that is the Mac Student's (.2) own Desktop. The
+  deployed (old) Windows build published with hard links, which that share
+  rejects. Current code publishes with create_new + copy (no hard link/rename).
+  Note: in this lab the Mac and Windows Students therefore share one Desktop.
+- File naming (`classroom_tools.rs`): original filename kept (no `received-` or
+  job-id prefix); only unsafe characters replaced and Windows device names
+  (CON, COM1…) get `_`. Collisions become `name-1.ext`, `name-2.ext`, ….
+- Dedupe: Teacher hashes the staged file (SHA-256, off the IPC thread; targets
+  show `preparing`) and sends the hash in the offer. Student checks `name`,
+  `name-1`, … before connecting; an existing file with same size+hash → new
+  terminal status `skipped` (no transfer). SHA-256 is used instead of MD5 (same
+  purpose, already in the protocol). If a folder peer publishes the same name
+  during download, the Student waits for its size to settle and compares hashes
+  instead of creating a duplicate.
+- Downloads stage in `<temp>/Classroom-incoming/<job>.part`, not on the Desktop.
+  Student touches the Desktop (`read_dir`) before downloading so a macOS
+  first-use Desktop-access prompt or denial happens before the transfer.
+- Teacher waits up to 120 s + 10 MiB/s for the Student's "stored" ack (was the
+  4 s control timeout — large copies or the macOS prompt caused false errors).
+- Student message window (`student_tools_ui.rs`): sized to the message
+  (340–560 px wide, ≤12 lines then scroll), buttons OK / Reply. OK (or Enter/
+  Esc) closes; Teacher only records `dismissed`, no notification. Reply reopens
+  the window taller with a 3-line box and Send / Cancel (Esc collapses). Added
+  `Canvas::text_width` for pixel-accurate word wrap.
+- Teacher Flutter (`classroom_tools_ui.dart`): new `ToolActivity` turns agent
+  snapshots into one-shot notifications. Everything already finished in the
+  first snapshot a console sees is history (the Rust agent outlives the GUI),
+  so nothing re-appears after reopening; nothing is persisted. Replies aggregate
+  into one toast ("N new replies", latest 3 as `Name (IP): text`) plus a toolbar
+  inbox button with unread badge; the inbox dialog groups replies by message
+  with machine name · IP and time. File results announce once (success auto-
+  hides after 5 s; failures keep Retry until dismissed). Same in Observe window.
+  Agent snapshot now includes message `text` (≤240 chars).
+- `scripts/deploy-responsive-control.py`: `--mac-host/--windows-host`, and
+  passwords from `CLASSROOM_MAC_SSH_PASSWORD` / `CLASSROOM_WINDOWS_SSH_PASSWORD`
+  for unattended deployment (still prompts if unset).
+
+Verification:
+- `cargo fmt --all -- --check`; `cargo clippy -p classroom-app -- -D warnings`
+  clean (`--all-targets` still reports the pre-existing "items after test
+  module" in `observe_coordinator.rs`). `cargo test -p classroom-app`: 86 passed,
+  1 ignored, incl. new name/dedupe/numbering/peer-publish and dialog layout tests.
+- `flutter analyze` clean; `flutter test` 16 passed (new tools_activity_test:
+  no re-announce of history, reply aggregation with machine identity, one-shot
+  file results, inbox dialog). Toolbar icons made compact (740 px test fit).
+- Built Windows x64 (gnu, rustup rustc) Student/Classroom, Mac Student and
+  Flutter Teacher (ad-hoc); deployed + started both Students via SSH; restarted
+  local Teacher (.206).
+- Live (first build, before the ack-timeout fix): Windows .94 received v1
+  (`complete`), resend → `skipped`, changed v2 → `complete` as `NSS file test-1.txt`;
+  shared Desktop contains exactly the two expected files with no duplicate.
+  Mac .2 downloaded the full partial but blocked writing to ~/Desktop (new
+  ad-hoc signature → macOS Desktop-access consent), Teacher timed out at 4 s →
+  fixed as above, rebuilt and redeployed.
+
+- Live after owner granted Mac permissions (final build, both Students):
+  v1 → both `complete` (concurrent download into the shared Desktop produced a
+  single file, peer-publish detection worked); resend v1 → both `skipped`;
+  changed v2 → both `complete`, stored once as `NSS file test-1.txt`; 8 MiB
+  random file → both `complete` in 9.5 s, single copy; staging dir empty.
+  Test files removed from the Mac .2 Desktop afterwards. A test message
+  (allow_reply) was sent to both Students for owner visual review.
+
+Remaining / next:
+- Owner visual check of the new Student message window (OK / Reply / Send) on
+  Mac and Windows and the Teacher reply toast/inbox; adjust sizing if needed.
+- Windows Flutter Teacher runner (screenshot channel) still uncompiled.
+
+## 2026-10-03 — Mac first-click fix and keyboard focus in Rust windows
+
+- Owner: OK on the Mac Student message window was unreliable (Windows fine).
+  Cause: the click hits minifb's MTKView subview, which by default refuses the
+  first click while the accessory (LSUIElement) app is inactive — that click
+  only activated the app. Vendored minifb: `MFBMetalView` (MTKView subclass)
+  and `OSXWindowFrameView` return YES from `acceptsFirstMouse:`; showing a
+  window also calls `orderFrontRegardless` and `[NSApp activate]` on macOS 14+
+  (`activateIgnoringOtherApps` is deprecated/ignored there).
+- Owner request: Tab focus in Rust-drawn windows.
+  - Message window: Tab / Shift+Tab cycle Reply → OK (default OK) or reply box
+    → Cancel → Send (default box); Enter/Space activate the focused button,
+    Enter in the box sends; focus ring + blue box border; click in box focuses it.
+  - Start/Settings window (`launcher.rs`): Tab order Teacher → Student → IP →
+    Start/Save (default Start/Save, so Enter confirms); Left/Right switch role;
+    Enter/Space activate; focus rings via new `Canvas::focus_ring`.
+- Verification: fmt, strict clippy (app bins), 87 Rust tests passed (new
+  focus-order test). Built Windows x64 + Mac Students, deployed and restarted;
+  sent a keyboard test message to both. Mac needs Screen Recording re-approval
+  again (new ad-hoc signature). Visual/keyboard check pending owner.
+
+## 2026-10-03 — Mac click offset fix, Student file window, enhanced 1-1 Observe profile
+
+Owner reports/requests: Mac message OK/Reply unreliable (X fine); Student-side
+file-transfer window; investigate better codecs/FPS for one-to-one Observe
+(generalized: use any better option the hardware supports, else keep current);
+show the codec in Observe stats and footer.
+
+- Mac click root cause (vendored minifb): click coordinates used the child
+  contentView, which is a title-bar height (~28 pt) shorter than the content
+  area, so every click landed ~28 pt above the pointer; only the bottom few
+  points of a button hit. Now measured against the full-content frame view (same
+  space as hover/get_mouse_pos); synthetic test tap uses the same space.
+- minifb additions: `outer_frame`/`set_outer_origin`/`work_area` (consistent
+  top-left coordinates, both OSes) and `show_inactive` (no focus steal). Message
+  window reopen (Reply/Cancel) keeps its exact top-left via these.
+- Student file window (`student_file_ui.rs`, state in `Inbox::transfers`):
+  bottom-right of the work area, native title bar (movable), collapse/expand
+  keeping the bottom-right corner, newest 3 files with name + progress bar/%,
+  then "Saved to Desktop"/"Already on Desktop"/failure; "Show" reveals the file
+  in Finder (`open -R`) / Explorer (`/select,`) without opening it. Close and the
+  OS close button are refused while any transfer is active (OS close collapses
+  instead). Shown without stealing keyboard focus.
+- Enhanced Observe profile: see docs/11_DECISION_LOG.md (capability-negotiated
+  one-to-one media profile). New `stream_profile.rs`; codec-aware RTP and
+  VideoToolbox (H.265 hardware round trip test passes on this Mac); config
+  `[observe]`; proto ObserveMessage fields 10–12; receiver reports `codec` and
+  `fps_cap` in metrics; Flutter Session stats "Codec" row and footer label.
+
+Verification: cargo fmt; strict clippy (app bins); Rust tests 94 passed + new
+media-transport HEVC RTP test + VT HEVC hardware round trip; Flutter analyze
+clean, 18 tests (new codec label/panel test caught and fixed a 25 px overflow:
+panel 206→236 px). Built Windows x64/Mac Student/Teacher, deployed, restarted.
+Live: Teacher logs offer (["h265","h264"], 60); automated 20 s Observe of the
+Windows Student negotiated `h264@30` (no Windows hardware probing) and the UI
+metrics carried codec "H.264", fps_cap 30. Mac Student needs Screen Recording
+re-approval before the H.265@60 Observe run.
+
+Next: owner approves Mac Student Screen Recording; run Observe on Mac Student and
+compare FPS/bitrate h265@60 vs previous h264@30; owner checks file window and
+message buttons on Mac; Windows MF HEVC/hardware probing is the extension point.
+- Live after owner granted Mac permissions: 6 MiB file → Windows `complete`, Mac
+  `skipped` (shared Parallels Desktop already held the identical file — correct).
+  Automated 25 s Observe of Mac Student .2 negotiated `h265@60` (Teacher log
+  `profile=h265@60`; UI metrics codec "H.265", fps_cap 60). Teacher receiver
+  intervals: decode 54.5–62.0 FPS, native surface publish 47.6–55.0 FPS, 0
+  missing packets, 0 decode/depacketizer errors, receive 0.36–1.77 Mbps (mostly
+  static desktop; cadence includes the publisher's intentional repeat frames).
+  Earlier h264@30 Mac Observe reference: ~22 decode / ~21 surface FPS. Not a
+  controlled motion benchmark; a YouTube/animation comparison is still open.
+
+## 2026-10-03 — Class broadcast optimizations O1–O3 (docs/17)
+
+Owner approved the no-H.265 optimization plan; recorded in
+docs/17_BROADCAST_OPTIMIZATION_PLAN.md (analysis vs commercial products, work
+items O1–O5, status table, implementation notes). Implemented in order:
+
+- O1 separate pointer channel (RTP PT 100) with Student-side drawing; capture
+  stops compositing only when all receivers support it; DXGI pointer-only
+  updates skipped in overlay mode. New: `media_core::{PointerImage,
+  PointerSample, PointerSource, PointerOverlay}`, `Renderer::{set_pointer,
+  redraw}`, `media_transport::pointer`, `apps/classroom/src/pointer_channel.rs`,
+  `capture-macos-sck/src/pointer.rs`, DXGI `to_image`, D3D11 pointer quad,
+  minifb sprite; proto `HelloStudent.pointer_overlay` (6).
+- O2 refinement (`refinement.rs`), config `video.refine_bitrate_percent` (250).
+- O3 keyframe gate (`keyframe_gate.rs`), config
+  `video.keyframe_request_coalesce_ms` (400); `keyframe_interval_ms` 2000→4000.
+- Telemetry lines listed in docs/17 §5.
+
+Verification so far: fmt; strict clippy (app bins, capture/media crates);
+tests: app 99 (+pointer channel, refinement, keyframe gate), media-transport 18
+(+pointer wire), capture-windows-dxgi 10 (+shape conversion), media-core 6
+(+overlay math/blend), control-transport 9. Windows x64 / Mac Student / Teacher
+built, Students deployed. Live class-share run blocked: new ad-hoc Teacher build
+lost Screen Recording permission (TCC declined); Mac Student needs re-approval.
+
+Next: owner grants Teacher + Mac Student Screen Recording; run class share and
+check telemetry (pointer mode overlay, pointer_only_updates_skipped, refinement
+counts, keyframe coalescing) plus visual pointer on both Students. O4 needs a
+real-GPU Windows machine; O5 after the physical lab ladder.
+- Live after owner granted permissions (owner had started a share from the UI;
+  the automated script's final Stop ended that share): Teacher pointer mode
+  overlay for 2/2 Students, ≤60 updates/s; Students 0 malformed, redraws 6–50/s,
+  video ~28 FPS 0 loss; joins 3 IDR requests → 2 forced (1 coalesced); periodic
+  IDR 4 s. Refinement fired once, VT live bitrate (no IDR) but only ~2.3 KB over
+  3 frames → limited effect on macOS; follow-up in docs/17 §6.
+
+## 2026-10-03 — Lab-scope optimization round (simulator, latency, loss recovery)
+
+Details and numbers: docs/17_BROADCAST_OPTIMIZATION_PLAN.md §7.
+- New `scripts/simulate-class.py` (+ `CLASSROOM_TEST_DROP_PERCENT` ingress loss
+  emulator; Flutter roster ignores `sim-*`).
+- Teacher: capture-aligned encode scheduling (`video.capture_aligned_encode`),
+  VT latency properties, QP-capped refinement (`VideoEncoder::set_refinement`),
+  adaptive keyframe-gate window; telemetry `teacher encode scheduling interval`,
+  `keyframe_gate_window_ms`, `refine_qp_supported`.
+- Student/transport: NACK retry per gap, RTT-adaptive repair budget
+  (`JitterBuffer::set_repair_budget`), telemetry `nack_retries`, `repair_budget_ms`.
+- Rejected with evidence: VT DataRateLimits (removed), jitter-hold reduction, FEC now.
+- Verification: fmt; strict clippy; Rust app 100, media-transport 19, VT 7 (+1
+  ignored measurement), media-core 6, DXGI 10, control 9; Flutter 18. Built and
+  deployed Windows/Mac Students and Mac Teacher; 6 simulator runs with 10 virtual
+  + 2 real Students over Wi-Fi (reports under target/sim-class/).
+- Gotcha: closing the Teacher console leaves the old Rust agent running; after a
+  Teacher rebuild send IPC `quit` (scripts/test-flutter-ipc.py --action quit)
+  before reopening, otherwise the new console attaches to the old agent.
+- Next: error concealment / LTR for random-loss freezes; O4 on a real-GPU Windows
+  PC; wired-LAN and physical-lab runs of simulate-class.py.
+

@@ -1,6 +1,9 @@
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 mod macos_impl;
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+mod pointer;
 
 #[cfg(target_os = "macos")]
 pub use macos_impl::{control_display_bounds, control_display_id, ScreenCaptureKitCapture};

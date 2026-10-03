@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Deploy the existing Mac/Windows Students into their interactive sessions.
 
-Passwords are prompted and remain in memory. This is a development launcher,
+Passwords come from CLASSROOM_MAC_SSH_PASSWORD / CLASSROOM_WINDOWS_SSH_PASSWORD
+when set (for unattended runs), otherwise they are prompted; either way they
+remain in memory only. This is a development launcher,
 not an OS startup installer. Logs are copied locally without removing them.
 """
 import argparse
 import getpass
 import hashlib
 import json
+import os
 from pathlib import Path
 import plistlib
 import shlex
@@ -27,6 +30,8 @@ def main():
     parser.add_argument('--teacher', default='192.168.50.206')
     parser.add_argument('--collect-only', action='store_true')
     parser.add_argument('--mac-only', action='store_true')
+    parser.add_argument('--mac-host', default='mvmanh@macstudio')
+    parser.add_argument('--windows-host', default='mvmanh@192.168.50.94')
     parser.add_argument('--development-ad-hoc', action='store_true',
                         help='Explicit local development bundle; macOS permissions may require reapproval')
     args = parser.parse_args()
@@ -41,8 +46,11 @@ def main():
         else:
             subprocess.run(['python3', str(ROOT / 'scripts/sign-macos-app.py'),
                             str(mac_app), '--verify-only'], check=True)
-    mac = remote.Remote('mvmanh@macstudio', getpass.getpass('Mac SSH password: '))
-    win = None if args.mac_only else remote.Remote('mvmanh@192.168.50.94', getpass.getpass('Windows SSH password: '))
+    def password(variable, prompt):
+        return os.environ.get(variable) or getpass.getpass(prompt)
+    mac = remote.Remote(args.mac_host, password('CLASSROOM_MAC_SSH_PASSWORD', 'Mac SSH password: '))
+    win = None if args.mac_only else remote.Remote(
+        args.windows_host, password('CLASSROOM_WINDOWS_SSH_PASSWORD', 'Windows SSH password: '))
     folder = ROOT / 'target/control-responsiveness'
     folder.mkdir(parents=True, exist_ok=True)
     mac_root = '/Users/mvmanh/Classroom-two-mac'

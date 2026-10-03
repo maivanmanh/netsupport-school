@@ -129,6 +129,9 @@ pub struct HelloStudent {
     pub media_udp_port: u32,
     #[prost(uint32, tag = "5")]
     pub feedback_udp_port: u32,
+    /// Receiver draws the Teacher pointer from the pointer channel itself.
+    #[prost(bool, tag = "6")]
+    pub pointer_overlay: bool,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -380,4 +383,13 @@ pub struct ObserveMessage {
     pub down: bool,
     #[prost(string, tag = "9")]
     pub error: String,
+    /// Teacher → Student "start": codecs it can decode in hardware, preferred first.
+    #[prost(string, repeated, tag = "10")]
+    pub codecs: Vec<String>,
+    /// Teacher → Student "start": requested frame-rate ceiling (0 = default profile).
+    #[prost(uint32, tag = "11")]
+    pub max_fps: u32,
+    /// Student → Teacher reply: chosen session profile, e.g. "h265@60".
+    #[prost(string, tag = "12")]
+    pub codec: String,
 }

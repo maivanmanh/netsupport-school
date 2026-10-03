@@ -3,7 +3,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use media_core::EncodedAccessUnitRef;
+use media_core::{EncodedAccessUnitRef, VideoCodec};
+
+pub mod pointer;
 use thiserror::Error;
 
 pub const H264_PAYLOAD_TYPE: u8 = 96;
@@ -20,9 +22,9 @@ pub enum TransportError {
     Version(u8),
     #[error("RTP packet has unsupported CSRC or extension fields")]
     UnsupportedHeader,
-    #[error("RTP payload type {0} is not H.264 payload type {H264_PAYLOAD_TYPE}")]
+    #[error("RTP payload type {0} does not match the negotiated video codec")]
     PayloadType(u8),
-    #[error("malformed H.264 RTP payload: {0}")]
+    #[error("malformed video RTP payload: {0}")]
     MalformedH264(&'static str),
     #[error("RTP sequence gap: expected {expected}, received {actual}")]
     SequenceGap { expected: u16, actual: u16 },
@@ -109,20 +111,30 @@ impl RtpPacket {
     }
 }
 
+/// RTP packetizer for H.264 (RFC 6184, single NAL + FU-A) and H.265
+/// (RFC 7798, single NAL + FU). Packetization happens once per access unit.
 #[derive(Debug)]
-pub struct H264Packetizer {
+pub struct VideoPacketizer {
     next_sequence_number: u16,
     ssrc: u32,
     timing: Option<media_core::FrameTiming>,
+    codec: VideoCodec,
 }
+/// Historical name; the packetizer is codec-aware.
+pub type H264Packetizer = VideoPacketizer;
 
-impl H264Packetizer {
+impl VideoPacketizer {
     #[must_use]
     pub const fn new(ssrc: u32) -> Self {
+        Self::with_codec(ssrc, VideoCodec::H264)
+    }
+    #[must_use]
+    pub const fn with_codec(ssrc: u32, codec: VideoCodec) -> Self {
         Self {
             next_sequence_number: 0,
             ssrc,
             timing: None,
+            codec,
         }
     }
 
@@ -145,19 +157,17 @@ impl H264Packetizer {
             .saturating_mul(u128::from(RTP_VIDEO_CLOCK_HZ))
             / 1_000;
         let timestamp = u32::try_from(timestamp & u128::from(u32::MAX)).unwrap_or_default();
+        let codec = self.codec;
         let units = annex_b_units(access_unit.bytes)
             .into_iter()
-            // H.264 RTP aggregation/fragmentation indicators (24+) are not valid
-            // elementary-stream NAL units. Ignore malformed units rather than
-            // putting an undecodable payload on the wire.
-            .filter(|unit| {
-                unit.first()
-                    .is_some_and(|header| matches!(header & 0x1f, 1..=23))
-            })
+            // RTP aggregation/fragmentation types are not valid elementary-
+            // stream NAL units. Ignore malformed units rather than putting an
+            // undecodable payload on the wire.
+            .filter(|unit| codec.is_elementary(unit))
             .collect::<Vec<_>>();
         let packet_count = units
             .iter()
-            .map(|unit| packet_count(unit.len()))
+            .map(|unit| packet_count(codec, unit.len()))
             .sum::<usize>();
         let mut packet_index = 0_usize;
         let mut packets = Vec::with_capacity(packet_count);
@@ -167,15 +177,23 @@ impl H264Packetizer {
                 packets.push(self.make_packet(unit, packet_index == packet_count, timestamp));
                 continue;
             }
-            let indicator = (unit[0] & 0xe0) | 0x1c;
-            let nal_kind = unit[0] & 0x1f;
-            let fragment_payload_size = MAX_RTP_PAYLOAD_BYTES - 2;
-            let fragment_count = (unit.len() - 1).div_ceil(fragment_payload_size);
-            for (fragment_index, fragment) in unit[1..].chunks(fragment_payload_size).enumerate() {
+            // H.264 FU-A: indicator + FU header. H.265 FU: 2-byte payload
+            // header (type 49, original F/LayerId/TID) + FU header.
+            let header = codec.nal_header_len();
+            let nal_kind = codec.nal_type(unit).unwrap_or_default();
+            let prefix: Vec<u8> = match codec {
+                VideoCodec::H264 => vec![(unit[0] & 0xe0) | 0x1c],
+                VideoCodec::H265 => vec![(unit[0] & 0x81) | (49 << 1), unit[1]],
+            };
+            let fragment_payload_size = MAX_RTP_PAYLOAD_BYTES - prefix.len() - 1;
+            let fragment_count = (unit.len() - header).div_ceil(fragment_payload_size);
+            for (fragment_index, fragment) in
+                unit[header..].chunks(fragment_payload_size).enumerate()
+            {
                 let start = fragment_index == 0;
                 let end = fragment_index + 1 == fragment_count;
-                let mut payload = Vec::with_capacity(fragment.len() + 2);
-                payload.push(indicator);
+                let mut payload = Vec::with_capacity(fragment.len() + prefix.len() + 1);
+                payload.extend_from_slice(&prefix);
                 payload.push((u8::from(start) << 7) | (u8::from(end) << 6) | nal_kind);
                 payload.extend_from_slice(fragment);
                 packet_index += 1;
@@ -188,7 +206,7 @@ impl H264Packetizer {
     fn make_packet(&mut self, payload: &[u8], marker: bool, timestamp: u32) -> Vec<u8> {
         let packet = RtpPacket {
             marker,
-            payload_type: H264_PAYLOAD_TYPE,
+            payload_type: self.codec.rtp_payload_type(),
             sequence_number: self.next_sequence_number,
             timestamp,
             ssrc: self.ssrc,
@@ -200,11 +218,13 @@ impl H264Packetizer {
     }
 }
 
-fn packet_count(unit_len: usize) -> usize {
+fn packet_count(codec: VideoCodec, unit_len: usize) -> usize {
+    let header = codec.nal_header_len();
     if unit_len <= MAX_RTP_PAYLOAD_BYTES {
         1
     } else {
-        (unit_len - 1).div_ceil(MAX_RTP_PAYLOAD_BYTES - 2)
+        // Fragment prefix = payload header (NAL header length) + FU header.
+        (unit_len - header).div_ceil(MAX_RTP_PAYLOAD_BYTES - header - 1)
     }
 }
 
@@ -216,15 +236,29 @@ pub struct DepacketizedAccessUnit {
 }
 
 #[derive(Debug, Default)]
-pub struct H264Depacketizer {
+pub struct VideoDepacketizer {
     access_unit: Vec<u8>,
     timestamp: Option<u32>,
     fragment: Option<Vec<u8>>,
     last_sequence: Option<u16>,
     dropping_timestamp: Option<u32>,
+    codec: VideoCodec,
 }
+/// Historical name; the depacketizer is codec-aware.
+pub type H264Depacketizer = VideoDepacketizer;
 
-impl H264Depacketizer {
+impl VideoDepacketizer {
+    #[must_use]
+    pub fn for_codec(codec: VideoCodec) -> Self {
+        Self {
+            codec,
+            ..Self::default()
+        }
+    }
+    #[must_use]
+    pub const fn codec(&self) -> VideoCodec {
+        self.codec
+    }
     pub fn reset(&mut self) {
         self.access_unit.clear();
         self.timestamp = None;
@@ -280,7 +314,7 @@ impl H264Depacketizer {
         &mut self,
         packet: &RtpPacket,
     ) -> Result<Option<DepacketizedAccessUnit>, TransportError> {
-        if packet.payload_type != H264_PAYLOAD_TYPE {
+        if packet.payload_type != self.codec.rtp_payload_type() {
             return Err(TransportError::PayloadType(packet.payload_type));
         }
         if self.timestamp.is_some_and(|time| time != packet.timestamp) {
@@ -288,13 +322,17 @@ impl H264Depacketizer {
             self.fragment = None;
         }
         self.timestamp = Some(packet.timestamp);
-        let header = *packet
-            .payload
-            .first()
+        let kind = self
+            .codec
+            .nal_type(&packet.payload)
             .ok_or(TransportError::MalformedH264("empty payload"))?;
-        match header & 0x1f {
-            1..=23 => append_annex_b(&mut self.access_unit, &packet.payload),
-            28 => self.push_fu_a(&packet.payload)?,
+        match (self.codec, kind) {
+            (VideoCodec::H264, 1..=23) => append_annex_b(&mut self.access_unit, &packet.payload),
+            (VideoCodec::H264, 28) => self.push_fu_a(&packet.payload)?,
+            (VideoCodec::H265, 0..=47) if packet.payload.len() >= 2 => {
+                append_annex_b(&mut self.access_unit, &packet.payload);
+            }
+            (VideoCodec::H265, 49) => self.push_hevc_fu(&packet.payload)?,
             _ => {
                 return Err(TransportError::MalformedH264(
                     "unsupported packetization mode",
@@ -315,6 +353,33 @@ impl H264Depacketizer {
             timestamp,
             timing: packet.timing,
         }))
+    }
+    /// RFC 7798 FU: 2-byte payload header, FU header (S, E, type), data.
+    fn push_hevc_fu(&mut self, payload: &[u8]) -> Result<(), TransportError> {
+        if payload.len() < 4 {
+            return Err(TransportError::MalformedH264("short H.265 FU payload"));
+        }
+        let start = payload[2] & 0x80 != 0;
+        let end = payload[2] & 0x40 != 0;
+        if start {
+            if self.fragment.is_some() {
+                return Err(TransportError::MalformedH264("nested H.265 FU start"));
+            }
+            let kind = payload[2] & 0x3f;
+            self.fragment = Some(vec![(payload[0] & 0x81) | (kind << 1), payload[1]]);
+        }
+        let fragment = self.fragment.as_mut().ok_or(TransportError::MalformedH264(
+            "H.265 FU continuation without start",
+        ))?;
+        fragment.extend_from_slice(&payload[3..]);
+        if end {
+            let unit = self
+                .fragment
+                .take()
+                .ok_or(TransportError::MalformedH264("H.265 FU end without start"))?;
+            append_annex_b(&mut self.access_unit, &unit);
+        }
+        Ok(())
     }
     fn push_fu_a(&mut self, payload: &[u8]) -> Result<(), TransportError> {
         if payload.len() < 3 {
@@ -353,6 +418,7 @@ pub struct JitterStatistics {
     pub overflow_packets: u64,
     pub repaired_gaps: u64,
     pub fast_released_frames: u64,
+    pub nack_retries: u64,
 }
 
 pub struct JitterBuffer {
@@ -364,6 +430,9 @@ pub struct JitterBuffer {
     packets: BTreeMap<u16, (Instant, RtpPacket)>,
     missing_sequences: VecDeque<u16>,
     gap_started: Option<Instant>,
+    /// One more NACK for a gap still open halfway through the repair budget
+    /// (the first retransmission itself can be lost).
+    gap_retried: bool,
     statistics: JitterStatistics,
     diagnostics: media_core::diagnostics::StageMetrics,
 }
@@ -383,6 +452,7 @@ impl JitterBuffer {
             packets: BTreeMap::new(),
             missing_sequences: VecDeque::new(),
             gap_started: None,
+            gap_retried: false,
             statistics: JitterStatistics::default(),
             diagnostics: media_core::diagnostics::StageMetrics::default(),
         }
@@ -451,17 +521,26 @@ impl JitterBuffer {
             }
             return None;
         }
-        let (&next_available, (received_at, _)) = self
+        let (next_available, received_at) = self
             .packets
             .iter()
-            .min_by_key(|(sequence, _)| sequence.wrapping_sub(expected))?;
+            .min_by_key(|(sequence, _)| sequence.wrapping_sub(expected))
+            .map(|(&sequence, (received_at, _))| (sequence, *received_at))?;
         if self.gap_started.is_none() {
             self.queue_nack(expected, next_available);
             self.gap_started = Some(now);
+            self.gap_retried = false;
             return None;
         }
+        if !self.gap_retried
+            && now.saturating_duration_since(self.gap_started?) >= self.repair_budget / 2
+        {
+            self.gap_retried = true;
+            self.statistics.nack_retries += 1;
+            self.queue_nack(expected, next_available);
+        }
         if now.saturating_duration_since(self.gap_started?) < self.repair_budget
-            || now.saturating_duration_since(*received_at) < self.target_delay
+            || now.saturating_duration_since(received_at) < self.target_delay
         {
             return None;
         }
@@ -472,6 +551,14 @@ impl JitterBuffer {
         self.fast_release_until = None;
         self.gap_started = None;
         self.pop_ready(now)
+    }
+    /// Adjusts how long a sequence gap waits for NACK repair (e.g. from RTT).
+    pub fn set_repair_budget(&mut self, budget: Duration) {
+        self.repair_budget = budget;
+    }
+    #[must_use]
+    pub const fn repair_budget(&self) -> Duration {
+        self.repair_budget
     }
     #[must_use]
     pub const fn statistics(&self) -> JitterStatistics {
@@ -492,6 +579,7 @@ impl JitterBuffer {
         self.emitted = false;
         self.fast_release_until = None;
         self.gap_started = None;
+        self.gap_retried = false;
         self.missing_sequences.clear();
         count
     }
@@ -830,6 +918,37 @@ mod tests {
     }
 
     #[test]
+    fn hevc_parameter_sets_and_fragmented_irap_round_trip() {
+        // VPS(32) SPS(33) PPS(34) then a large IDR_W_RADL (19) slice.
+        let mut unit = vec![0, 0, 0, 1, 0x40, 0x01, 0x0c];
+        unit.extend_from_slice(&[0, 0, 0, 1, 0x42, 0x01, 0x01, 0x02]);
+        unit.extend_from_slice(&[0, 0, 0, 1, 0x44, 0x01, 0xc1]);
+        unit.extend_from_slice(&[0, 0, 0, 1, 0x26, 0x01]);
+        unit.extend(std::iter::repeat_n(0x5a, 3 * MAX_RTP_PAYLOAD_BYTES + 7));
+        let mut packetizer = VideoPacketizer::with_codec(9, VideoCodec::H265);
+        let packets = packetizer.packetize(EncodedAccessUnitRef {
+            bytes: &unit,
+            timestamp: Duration::from_millis(33),
+            is_keyframe: true,
+        });
+        assert!(packets.len() > 4);
+        let mut depacketizer = VideoDepacketizer::for_codec(VideoCodec::H265);
+        let mut output = None;
+        for packet in &packets {
+            let parsed = RtpPacket::parse(packet).unwrap();
+            assert!(parsed.payload.len() <= MAX_RTP_PAYLOAD_BYTES);
+            assert_eq!(parsed.payload_type, 98);
+            output = depacketizer.push(&parsed).unwrap().or(output);
+        }
+        assert_eq!(output.unwrap().bytes, unit);
+        // An H.264 receiver rejects the H.265 payload type instead of misparsing.
+        let mut h264 = VideoDepacketizer::default();
+        assert!(h264.push(&RtpPacket::parse(&packets[0]).unwrap()).is_err());
+        assert!(VideoCodec::H265.is_random_access(&[0x26, 0x01]));
+        assert!(!VideoCodec::H265.is_random_access(&[0x02, 0x01]));
+    }
+
+    #[test]
     fn missing_fragment_discards_only_its_access_unit_without_error_storm() {
         let mut unit = vec![0, 0, 0, 1, 0x65];
         unit.extend(std::iter::repeat_n(0x55, MAX_RTP_PAYLOAD_BYTES * 4));
@@ -898,6 +1017,38 @@ mod tests {
             .unwrap()
             .is_some());
     }
+    #[test]
+    fn unrepaired_gap_gets_one_second_nack_halfway_through_repair_budget() {
+        let start = Instant::now();
+        let mut jitter =
+            JitterBuffer::with_repair_budget(Duration::from_millis(20), Duration::from_millis(40));
+        jitter.push(test_packet(1, 1, true), start);
+        assert!(jitter
+            .pop_ready(start + Duration::from_millis(21))
+            .is_some());
+        jitter.push(test_packet(3, 2, true), start + Duration::from_millis(22));
+        assert!(jitter
+            .pop_ready(start + Duration::from_millis(22))
+            .is_none());
+        assert_eq!(jitter.take_missing_sequences(), vec![2]);
+        assert!(jitter
+            .pop_ready(start + Duration::from_millis(30))
+            .is_none());
+        assert!(
+            jitter.take_missing_sequences().is_empty(),
+            "too early to retry"
+        );
+        assert!(jitter
+            .pop_ready(start + Duration::from_millis(43))
+            .is_none());
+        assert_eq!(jitter.take_missing_sequences(), vec![2], "second chance");
+        assert!(jitter
+            .pop_ready(start + Duration::from_millis(50))
+            .is_none());
+        assert!(jitter.take_missing_sequences().is_empty(), "only one retry");
+        assert_eq!(jitter.statistics().nack_retries, 1);
+    }
+
     #[test]
     fn jitter_buffer_holds_packet_for_budget() {
         let now = Instant::now();

@@ -26,7 +26,16 @@ max_fps = 30
 target_bitrate_kbps = 6000
 min_bitrate_kbps = 1500
 max_bitrate_kbps = 8000
-keyframe_interval_ms = 2000
+# Periodic IDR interval. NACK repair and coalesced on-demand IDRs handle loss
+# and late joins, so a long interval avoids class-wide keyframe bursts (O3).
+keyframe_interval_ms = 4000
+keyframe_request_coalesce_ms = 400
+# O1: pointer on a separate channel, drawn by receivers that support it.
+pointer_channel = true
+# O2: one sharper frame after the screen settles, % of target bitrate (0 = off).
+refine_bitrate_percent = 250
+# Encode fresh captures as soon as the fps cap allows (not on a fixed clock).
+capture_aligned_encode = true
 # Lower default packet hold time for fresher screen updates on wired LAN.
 # Increase this when a classroom link needs more reordering/loss tolerance.
 jitter_buffer_ms = 20
@@ -56,3 +65,12 @@ preserve_resolution_first = true
 audio = false
 multicast = false
 security_hardening = false
+
+[observe]
+# One-to-one Observe/Control. With enhanced = true the Teacher offers the codecs
+# its hardware decodes and the Student chooses the best one its hardware encodes,
+# raising the frame-rate ceiling; anything unsupported keeps the broadcast profile.
+enhanced = true
+codec = "auto"              # auto | h265 | h264
+max_fps = 60
+bitrate_kbps = 0            # 0 = derived from [video] and the frame rate

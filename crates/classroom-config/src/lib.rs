@@ -17,6 +17,33 @@ pub struct Config {
     pub phase1: Phase1Config,
     #[serde(default)]
     pub monitoring: MonitoringConfig,
+    #[serde(default)]
+    pub observe: ObserveConfig,
+}
+
+/// One-to-one Observe/Control tuning. When `enhanced`, the Teacher offers what
+/// its hardware decodes and the Student picks the best profile its hardware
+/// encodes; otherwise (or when unsupported) the class-broadcast profile is used.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ObserveConfig {
+    pub enhanced: bool,
+    /// `auto` (best mutually hardware-supported), `h265` or `h264`.
+    pub codec: String,
+    /// Frame-rate ceiling for an enhanced session (hardware encode required).
+    pub max_fps: u32,
+    /// Target bitrate for an enhanced session; 0 derives it from `video`.
+    pub bitrate_kbps: u32,
+}
+impl Default for ObserveConfig {
+    fn default() -> Self {
+        Self {
+            enhanced: true,
+            codec: "auto".into(),
+            max_fps: 60,
+            bitrate_kbps: 0,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -60,6 +87,7 @@ pub struct NetworkConfig {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[allow(clippy::struct_excessive_bools)] // independent feature toggles
 pub struct VideoConfig {
     pub width: u32,
     pub height: u32,
@@ -89,6 +117,34 @@ pub struct VideoConfig {
     pub adaptive_bitrate_step_up_percent: u32,
     pub adaptive_bitrate_cooldown_ms: u32,
     pub preserve_resolution_first: bool,
+    /// Elementary codec for this media session; empty/`h264` for classroom
+    /// broadcast. Observe sessions set it after negotiation.
+    #[serde(default)]
+    pub codec: String,
+    /// O1: send the pointer on its own channel and let receivers that support
+    /// it draw it (the encode stops compositing only if all receivers can).
+    #[serde(default = "default_true")]
+    pub pointer_channel: bool,
+    /// O2: bitrate for one refinement frame after activity stops, as a percent
+    /// of the current target (0 disables).
+    #[serde(default = "default_refine_percent")]
+    pub refine_bitrate_percent: u32,
+    /// O3: keyframe requests (losses, joins) within this window share one IDR.
+    #[serde(default = "default_keyframe_coalesce_ms")]
+    pub keyframe_request_coalesce_ms: u32,
+    /// Encode a fresh capture as soon as the fps cap allows instead of on a
+    /// free-running clock (removes up to one frame interval of wait).
+    #[serde(default = "default_true")]
+    pub capture_aligned_encode: bool,
+}
+const fn default_true() -> bool {
+    true
+}
+const fn default_refine_percent() -> u32 {
+    250
+}
+const fn default_keyframe_coalesce_ms() -> u32 {
+    400
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

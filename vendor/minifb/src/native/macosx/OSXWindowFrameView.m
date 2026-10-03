@@ -355,9 +355,13 @@ uint32_t upper_power_of_two(uint32_t v) {
     (void)event;
     OSXWindow* window = (OSXWindow*)[self window];
     if (window->shared_data->mouse_state[0]) {
-        NSPoint point = [[window contentView] convertPoint:[event locationInWindow] fromView:nil];
+        // Classroom: use this frame view (the full content area). The child
+        // contentView is sized with contentRectForFrameRect on the content
+        // bounds, i.e. a title-bar height shorter, which shifted every click
+        // ~28 pt upward relative to get_mouse_pos and the drawn buttons.
+        NSPoint point = [self convertPoint:[event locationInWindow] fromView:nil];
         window->shared_data->click_x = point.x;
-        window->shared_data->click_y = [[window contentView] bounds].size.height - point.y;
+        window->shared_data->click_y = [self bounds].size.height - point.y;
         window->shared_data->mouse_state[3] = 1;
     }
     window->shared_data->mouse_state[0] = 0;
@@ -404,6 +408,11 @@ uint32_t upper_power_of_two(uint32_t v) {
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 - (BOOL)acceptsFirstResponder {
+    return YES;
+}
+
+- (BOOL)acceptsFirstMouse:(NSEvent*)event {
+    (void)event;
     return YES;
 }
 

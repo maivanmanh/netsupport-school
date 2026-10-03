@@ -42,6 +42,10 @@ pub struct NativeRenderer {
     height: usize,
     forced_presentation: bool,
     last_topmost_maintenance: Cell<Instant>,
+    /// O1: pointer drawn over the latest frame, sprite-style: the pixels under
+    /// it are saved so pointer-only motion restores and redraws a small area.
+    pointer: Option<media_core::PointerOverlay>,
+    under: Option<([i64; 4], Vec<u32>)>,
 }
 
 impl NativeRenderer {
@@ -102,6 +106,8 @@ impl NativeRenderer {
             height,
             forced_presentation,
             last_topmost_maintenance: Cell::new(Instant::now()),
+            pointer: None,
+            under: None,
         })
     }
 
@@ -144,7 +150,78 @@ fn main_display_dimensions() -> Result<(usize, usize), MediaError> {
     ))
 }
 
+impl NativeRenderer {
+    fn clip(&self, [left, top, width, height]: [i64; 4]) -> Option<[usize; 4]> {
+        let (fw, fh) = (
+            i64::try_from(self.width).ok()?,
+            i64::try_from(self.height).ok()?,
+        );
+        let (x0, y0) = (left.clamp(0, fw), top.clamp(0, fh));
+        let (x1, y1) = ((left + width).clamp(0, fw), (top + height).clamp(0, fh));
+        (x1 > x0 && y1 > y0).then(|| {
+            [
+                usize::try_from(x0).unwrap_or(0),
+                usize::try_from(y0).unwrap_or(0),
+                usize::try_from(x1 - x0).unwrap_or(0),
+                usize::try_from(y1 - y0).unwrap_or(0),
+            ]
+        })
+    }
+    fn restore_under(&mut self) {
+        let Some((rect, saved)) = self.under.take() else {
+            return;
+        };
+        if let Some([x, y, w, h]) = self.clip(rect) {
+            for row in 0..h {
+                let start = (y + row) * self.width + x;
+                self.pixels[start..start + w].copy_from_slice(&saved[row * w..(row + 1) * w]);
+            }
+        }
+    }
+    fn draw_pointer(&mut self) {
+        let Some(pointer) = self.pointer.clone() else {
+            return;
+        };
+        let (Ok(fw), Ok(fh)) = (u32::try_from(self.width), u32::try_from(self.height)) else {
+            return;
+        };
+        let rect = pointer.rect(fw, fh);
+        let Some([x, y, w, h]) = self.clip(rect) else {
+            return;
+        };
+        let mut saved = Vec::with_capacity(w * h);
+        for row in 0..h {
+            let start = (y + row) * self.width + x;
+            saved.extend_from_slice(&self.pixels[start..start + w]);
+        }
+        self.under = Some((rect, saved));
+        // SAFETY: u32 storage reinterpreted as its BGRA bytes for blending;
+        // length is exactly 4 * pixels and the borrow ends before any other use.
+        let bytes = unsafe {
+            std::slice::from_raw_parts_mut(
+                self.pixels.as_mut_ptr().cast::<u8>(),
+                self.pixels.len() * 4,
+            )
+        };
+        pointer.blend_into_bgra(bytes, fw, fh);
+    }
+}
+
 impl Renderer for NativeRenderer {
+    fn set_pointer(&mut self, pointer: Option<media_core::PointerOverlay>) {
+        self.pointer = pointer;
+    }
+    fn redraw(&mut self) -> Result<bool, MediaError> {
+        if self.pixels.is_empty() || self.width == 0 {
+            return Ok(false);
+        }
+        self.restore_under();
+        self.draw_pointer();
+        self.window
+            .update_with_buffer(&self.pixels, self.width, self.height)
+            .map_err(operation)?;
+        Ok(true)
+    }
     fn render(&mut self, frame: DecodedFrameRef<'_>) -> Result<(), MediaError> {
         let width = usize::try_from(frame.width)
             .map_err(|_| MediaError::Operation("decoded width is too large".to_owned()))?;
@@ -181,6 +258,9 @@ impl Renderer for NativeRenderer {
                 byte_count,
             );
         }
+        // The new frame replaced whatever was under the old pointer.
+        self.under = None;
+        self.draw_pointer();
         self.window
             .update_with_buffer(&self.pixels, self.width, self.height)
             .map_err(operation)

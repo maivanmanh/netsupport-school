@@ -31,6 +31,8 @@ pub struct Publisher {
     worker: Option<thread::JoinHandle<Result<()>>>,
     pub port: u16,
     pub token: String,
+    /// Negotiated session profile label, e.g. "h265@60".
+    pub profile: String,
 }
 impl Publisher {
     pub fn is_finished(&self) -> bool {
@@ -41,6 +43,7 @@ impl Publisher {
     #[allow(clippy::too_many_lines)]
     pub fn start(
         config: &Config,
+        request: &protocol::ObserveMessage,
         ip: Ipv4Addr,
         handle: &tokio::runtime::Handle,
         presenting: Arc<AtomicBool>,
@@ -74,8 +77,26 @@ impl Publisher {
                                             // Pointer-only changes otherwise select the static-slide 5 FPS policy.
                                             // Reverse desktop interaction needs fresh menus even at low activity.
         settings.video.adaptive_idle_fps = settings.video.max_fps.min(20);
+        // One-to-one sessions may use a richer profile when both ends have the
+        // hardware for it; otherwise this is exactly the broadcast profile.
+        let profile = super::stream_profile::choose(
+            &request.codecs,
+            request.max_fps,
+            config,
+            super::stream_profile::local_encodable,
+            super::stream_profile::hardware_encode,
+        );
+        profile.apply(&mut settings);
+        // Observe/Control manage the source cursor themselves (local Teacher
+        // pointer during Control); the class pointer channel is not used here.
+        settings.video.pointer_channel = false;
         info!(
             idle_fps = settings.video.adaptive_idle_fps,
+            offered = ?request.codecs,
+            offered_fps = request.max_fps,
+            profile = %profile.label(),
+            enhanced = profile.enhanced,
+            bitrate_kbps = settings.video.target_bitrate_kbps,
             "Observe interactive freshness policy"
         );
         let ids = super::presentation_ids::PresentationIds::new()?;
@@ -174,6 +195,7 @@ impl Publisher {
             worker: Some(worker),
             port,
             token,
+            profile: profile.label(),
         })
     }
 }
@@ -193,6 +215,8 @@ pub struct Output {
     ended: bool,
     sequence: u64,
     delay: media_core::diagnostics::StageMetrics,
+    /// Negotiated codec and fps ceiling, reported with metrics for the UI.
+    profile: Option<(media_core::VideoCodec, u32)>,
 }
 impl Output {
     fn new(path: &Path) -> Result<Self> {
@@ -242,6 +266,7 @@ impl Output {
             ended: false,
             sequence: 0,
             delay: media_core::diagnostics::StageMetrics::default(),
+            profile: None,
         })
     }
     pub fn record_delay(&mut self, age: Duration) {
@@ -257,6 +282,8 @@ impl Output {
                 "receive_mbps": receiver.receive_mbps,
                 "capture_to_surface_ms_p50": delay_us.map(|us| Duration::from_micros(us).as_secs_f64() * 1000.0),
                 "delay_samples":delay.as_ref().map_or(0, |s| s.samples),
+                "codec": self.profile.map(|(codec, _)| codec.to_string()),
+                "fps_cap": self.profile.map(|(_, fps)| fps),
                 "clock_uncertainty_ms":uncertainty_us.map(|us| Duration::from_micros(us).as_secs_f64() * 1000.0)
             }})
         );
@@ -338,6 +365,7 @@ pub async fn receive(
             selected_local_ip: Ipv4Addr::UNSPECIFIED,
             media_udp_port: port,
             feedback_udp_port: port,
+            pointer_overlay: false,
         },
     )
     .await?;
@@ -351,10 +379,14 @@ pub async fn receive(
         if let Some(p) = initial.take().or_else(|| control.presentation()) {
             let endpoint =
                 SocketAddrV4::new(*address.ip(), u16::try_from(p.teacher_media_udp_port)?);
+            output.profile = media_core::VideoCodec::from_rtp_payload_type(p.rtp_payload_type)
+                .map(|codec| (codec, p.max_fps));
             info!(
                 stream_id = p.stream_id,
                 width = p.width,
                 height = p.height,
+                payload_type = p.rtp_payload_type,
+                max_fps = p.max_fps,
                 "Observe live receiver ready"
             );
             let result = super::run_student_media_loop(

@@ -111,3 +111,28 @@ ClassroomStudent entry point to eliminate accidental role selection during
 Student launch; retain Classroom as helper/diagnostic compatibility executable.
 Windows Flutter Teacher build is deferred, not excluded from the product.
 See 15_ROLE_ARCHITECTURE.md for current packaging and launch behavior.
+
+## Capability-negotiated one-to-one media profile (2026-10-03)
+
+Owner request: when a single Teacher↔Student Observe/Control stream runs on
+hardware that supports better options, use them automatically; otherwise keep
+the current behavior. Classroom broadcast is unchanged (one H.264 encode, fan-out
+to every Student) — the AGENTS.md H.264 baseline still applies to it.
+
+- `media_core::VideoCodec` (H.264 = RTP PT 96, H.265 = PT 98). RTP packetizer/
+  depacketizer are codec-aware (RFC 6184 FU-A / RFC 7798 FU); VideoToolbox
+  encoder/decoder take a codec; keyframe detection uses H.264 IDR / H.265 IRAP.
+- Teacher `start` offer (`ObserveMessage.codecs`, `max_fps`) lists the codecs it
+  can decode in hardware, preferred first, plus `[observe].max_fps` (default 60).
+- Student picks the first offered codec it can encode; the frame-rate ceiling and
+  bitrate are raised only when that codec has a hardware encoder. The chosen
+  profile is announced via `StartPresentation.rtp_payload_type`/`max_fps` and
+  echoed as `ObserveMessage.codec` ("h265@60"). Old peers ignore new fields and
+  stay H.264@30.
+- Windows: Media Foundation HEVC/hardware probing is not wired yet, so Windows
+  Students/Teachers keep H.264 at the broadcast profile (extension point:
+  `stream_profile::hardware_encode` / `local_decodable`).
+- Config `[observe]`: `enhanced`, `codec` (auto|h265|h264), `max_fps`,
+  `bitrate_kbps` (0 = derived). Receiver pacing ceiling raised 30 → 60 (broadcast
+  config stays 30); FPS ladder gains 48/30 steps that only matter above 30.
+- UI: negotiated codec + fps ceiling shown in Session stats and the Observe footer.

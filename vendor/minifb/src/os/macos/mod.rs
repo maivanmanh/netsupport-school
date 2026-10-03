@@ -162,6 +162,7 @@ extern "C" {
     fn mfb_backing_scale(window: *mut c_void) -> u32;
     fn mfb_request_close(window: *mut c_void);
     fn mfb_set_visible(window: *mut c_void, visible: bool);
+    fn mfb_show_inactive(window: *mut c_void);
     fn mfb_is_visible(window: *mut c_void) -> bool;
     fn mfb_set_close_to_hide(window: *mut c_void, enabled: bool);
     fn mfb_set_title(window: *mut c_void, title: *const c_char);
@@ -176,6 +177,9 @@ extern "C" {
     );
     fn mfb_set_position(window: *mut c_void, x: i32, y: i32);
     fn mfb_get_position(window: *const c_void, x: *mut i32, y: *mut i32);
+    fn mfb_outer_frame(window: *mut c_void, x: *mut i32, y: *mut i32, w: *mut i32, h: *mut i32);
+    fn mfb_set_outer_origin(window: *mut c_void, x: i32, y: i32);
+    fn mfb_work_area(window: *mut c_void, x: *mut i32, y: *mut i32, w: *mut i32, h: *mut i32);
     fn mfb_set_key_callback(
         window: *mut c_void,
         target: *mut c_void,
@@ -351,6 +355,7 @@ impl Window {
     }
     pub fn request_close(&mut self) { unsafe {mfb_request_close(self.window_handle);} }
     pub fn set_visible(&mut self, visible: bool) { unsafe {mfb_set_visible(self.window_handle, visible);} }
+    pub fn show_inactive(&mut self) { unsafe {mfb_show_inactive(self.window_handle);} }
     pub fn is_visible(&self) -> bool { unsafe {mfb_is_visible(self.window_handle)} }
     pub fn set_close_to_hide(&mut self, enabled: bool) { unsafe {mfb_set_close_to_hide(self.window_handle, enabled);} }
 
@@ -458,6 +463,20 @@ impl Window {
             mfb_get_position(self.window_handle, &mut x, &mut y);
         }
         (x as isize, y as isize)
+    }
+
+    pub fn outer_frame(&self) -> [isize; 4] {
+        let (mut x, mut y, mut w, mut h) = (0, 0, 0, 0);
+        unsafe { mfb_outer_frame(self.window_handle, &mut x, &mut y, &mut w, &mut h) };
+        [x as isize, y as isize, w as isize, h as isize]
+    }
+    pub fn set_outer_origin(&mut self, x: isize, y: isize) {
+        unsafe { mfb_set_outer_origin(self.window_handle, x as i32, y as i32) }
+    }
+    pub fn work_area(&self) -> [isize; 4] {
+        let (mut x, mut y, mut w, mut h) = (0, 0, 0, 0);
+        unsafe { mfb_work_area(self.window_handle, &mut x, &mut y, &mut w, &mut h) };
+        [x as isize, y as isize, w as isize, h as isize]
     }
 
     #[inline]

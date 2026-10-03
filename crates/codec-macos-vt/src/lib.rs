@@ -3,7 +3,10 @@
 mod macos_impl;
 
 #[cfg(target_os = "macos")]
-pub use macos_impl::{VideoToolboxH264Decoder, VideoToolboxH264Encoder};
+pub use macos_impl::{
+    hardware_decode_supported, hardware_encode_supported, VideoToolboxH264Decoder,
+    VideoToolboxH264Encoder,
+};
 
 #[cfg(not(target_os = "macos"))]
 mod unsupported {
@@ -70,10 +73,23 @@ mod unsupported {
         }
     }
 
+    #[must_use]
+    pub fn hardware_encode_supported(_codec: media_core::VideoCodec) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub fn hardware_decode_supported(_codec: media_core::VideoCodec) -> bool {
+        false
+    }
+
     fn unsupported() -> MediaError {
         MediaError::BackendUnavailable("VideoToolbox is available only on macOS".to_owned())
     }
 }
 
 #[cfg(not(target_os = "macos"))]
-pub use unsupported::{VideoToolboxH264Decoder, VideoToolboxH264Encoder};
+pub use unsupported::{
+    hardware_decode_supported, hardware_encode_supported, VideoToolboxH264Decoder,
+    VideoToolboxH264Encoder,
+};

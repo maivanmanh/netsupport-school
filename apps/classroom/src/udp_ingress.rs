@@ -26,6 +26,20 @@ pub struct IngressState {
     pub socket_errors: u64,
     last_arrived: Option<Instant>,
     pub diagnostics: StageMetrics,
+    /// O1 pointer channel: latest state/image, never queued with video.
+    pub pointer: media_transport::pointer::PointerReceiver,
+    /// Test only (`CLASSROOM_TEST_DROP_PERCENT`): video packets discarded on
+    /// arrival to emulate network loss without OS firewall changes.
+    pub test_dropped: u64,
+}
+
+/// Test-only random loss, 0 (default) disables. Bounded to 50 %.
+fn test_drop_percent() -> u32 {
+    std::env::var("CLASSROOM_TEST_DROP_PERCENT")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0)
+        .min(50)
 }
 const CAPACITY: usize = 2048;
 const MAX_AGE: Duration = Duration::from_millis(80);
@@ -82,6 +96,15 @@ pub fn receive(
     stop: &AtomicBool,
 ) {
     let mut buffer = [0; 1500];
+    let drop_percent = test_drop_percent();
+    if drop_percent > 0 {
+        tracing::warn!(
+            drop_percent,
+            "TEST ONLY: emulating random video packet loss"
+        );
+    }
+    // xorshift; deterministic per process is fine for an emulator.
+    let mut seed = 0x9e37_79b9_u32 ^ std::process::id();
     while !stop.load(Ordering::Acquire) {
         match socket.recv_from(&mut buffer) {
             Ok((bytes, peer)) => {
@@ -94,7 +117,24 @@ pub fn receive(
                 state.packets += 1;
                 state.bytes += bytes as u64;
                 match RtpPacket::parse(&buffer[..bytes]) {
-                    Ok(packet) => state.push(ReceivedPacket { packet, arrived }),
+                    Ok(packet)
+                        if packet.payload_type
+                            == media_transport::pointer::POINTER_PAYLOAD_TYPE =>
+                    {
+                        state.pointer.push(&packet);
+                    }
+                    Ok(packet) => {
+                        if drop_percent > 0 {
+                            seed ^= seed << 13;
+                            seed ^= seed >> 17;
+                            seed ^= seed << 5;
+                            if seed % 100 < drop_percent {
+                                state.test_dropped += 1;
+                                continue;
+                            }
+                        }
+                        state.push(ReceivedPacket { packet, arrived });
+                    }
                     Err(_) => state.malformed += 1,
                 }
             }

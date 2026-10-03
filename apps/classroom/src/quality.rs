@@ -507,7 +507,9 @@ impl QualityController {
 }
 
 fn next_lower_fps(current: u32) -> u32 {
-    [24, 20, 15]
+    // 48/30 only matter for enhanced 60 FPS one-to-one sessions; a 30 FPS
+    // broadcast still steps 30 → 24 → 20 → 15.
+    [48, 30, 24, 20, 15]
         .into_iter()
         .find(|&candidate| candidate < current)
         .unwrap_or(current)
@@ -520,7 +522,7 @@ fn reporter_quorum(active_receivers: usize, percent: u32) -> usize {
 }
 
 fn next_higher_fps(current: u32, max_fps: u32) -> u32 {
-    [20, 24, max_fps]
+    [20, 24, 30, 48, max_fps]
         .into_iter()
         .find(|&candidate| candidate > current && candidate <= max_fps)
         .unwrap_or(current)

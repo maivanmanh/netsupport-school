@@ -502,10 +502,37 @@ impl Window {
         #[cfg(any(windows, target_os = "macos"))]
         self.0.set_visible(visible);
     }
+    /// Outer frame `[x, y, width, height]` in top-left-origin screen units
+    /// (logical points on macOS, pixels on Windows). Windows/macOS only.
+    pub fn outer_frame(&self) -> [isize; 4] {
+        #[cfg(any(windows, target_os = "macos"))]
+        { self.0.outer_frame() }
+        #[cfg(not(any(windows, target_os = "macos")))]
+        { [0, 0, 0, 0] }
+    }
+    /// Moves the outer frame's top-left corner (same space as `outer_frame`).
+    pub fn set_outer_origin(&mut self, x: isize, y: isize) {
+        #[cfg(any(windows, target_os = "macos"))]
+        self.0.set_outer_origin(x, y);
+        #[cfg(not(any(windows, target_os = "macos")))]
+        { let _ = (x, y); }
+    }
+    /// Usable area of the window's screen (no menu bar/Dock/taskbar), same space.
+    pub fn work_area(&self) -> [isize; 4] {
+        #[cfg(any(windows, target_os = "macos"))]
+        { self.0.work_area() }
+        #[cfg(not(any(windows, target_os = "macos")))]
+        { [0, 0, 1280, 720] }
+    }
     /// Request the same close action as the native title-bar button.
     pub fn request_close(&mut self) {
         #[cfg(any(windows, target_os = "macos"))]
         self.0.request_close();
+    }
+    /// Show without activating/focusing (a notification-style window).
+    pub fn show_inactive(&mut self) {
+        #[cfg(any(windows, target_os = "macos"))]
+        self.0.show_inactive();
     }
     /// Native visibility (Windows/macOS).
     pub fn is_visible(&self) -> bool {

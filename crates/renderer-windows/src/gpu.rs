@@ -14,14 +14,16 @@ use windows::{
                 D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
             },
             Direct3D11::{
-                D3D11CreateDeviceAndSwapChain, ID3D11Device, ID3D11DeviceContext,
+                D3D11CreateDeviceAndSwapChain, ID3D11BlendState, ID3D11Device, ID3D11DeviceContext,
                 ID3D11PixelShader, ID3D11RenderTargetView, ID3D11SamplerState,
                 ID3D11ShaderResourceView, ID3D11Texture2D, ID3D11VertexShader,
-                D3D11_BIND_SHADER_RESOURCE, D3D11_COMPARISON_ALWAYS,
+                D3D11_BIND_SHADER_RESOURCE, D3D11_BLEND_DESC, D3D11_BLEND_INV_SRC_ALPHA,
+                D3D11_BLEND_ONE, D3D11_BLEND_OP_ADD, D3D11_BLEND_SRC_ALPHA,
+                D3D11_COLOR_WRITE_ENABLE_ALL, D3D11_COMPARISON_ALWAYS,
                 D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_FILTER_MIN_MAG_MIP_LINEAR,
-                D3D11_FILTER_MIN_MAG_MIP_POINT, D3D11_SAMPLER_DESC, D3D11_SDK_VERSION,
-                D3D11_TEXTURE2D_DESC, D3D11_TEXTURE_ADDRESS_CLAMP, D3D11_USAGE_DEFAULT,
-                D3D11_VIEWPORT,
+                D3D11_FILTER_MIN_MAG_MIP_POINT, D3D11_RENDER_TARGET_BLEND_DESC, D3D11_SAMPLER_DESC,
+                D3D11_SDK_VERSION, D3D11_SUBRESOURCE_DATA, D3D11_TEXTURE2D_DESC,
+                D3D11_TEXTURE_ADDRESS_CLAMP, D3D11_USAGE_DEFAULT, D3D11_VIEWPORT,
             },
             Dxgi::{
                 Common::{
@@ -51,6 +53,9 @@ SamplerState chroma_sampler : register(s1);
 float4 pixel(Vertex input) : SV_Target {
     return float4(image.Sample(linear_sampler, input.uv).rgb, 1);
 }
+float4 pixel_pointer(Vertex input) : SV_Target {
+    return image.Sample(linear_sampler, input.uv);
+}
 float4 pixel_nv12(Vertex input) : SV_Target {
     float c = max(image.Sample(linear_sampler, input.uv).r * 255 - 16, 0);
     float2 de = chroma.Sample(chroma_sampler, input.uv).rg * 255 - 128;
@@ -78,6 +83,11 @@ pub struct GpuRenderer {
     image: Option<ID3D11ShaderResourceView>,
     source_size: (u32, u32),
     client_size: (u32, u32),
+    /// O1: locally drawn Teacher pointer (alpha-blended quad).
+    pointer_pixel: ID3D11PixelShader,
+    blend: ID3D11BlendState,
+    pointer: Option<media_core::PointerOverlay>,
+    pointer_texture: Option<((u32, u32, u32), ID3D11ShaderResourceView)>,
 }
 
 impl GpuRenderer {
@@ -134,6 +144,26 @@ impl GpuRenderer {
             let vertex_code = compile(s!("vertex"), s!("vs_4_0"))?;
             let pixel_code = compile(s!("pixel"), s!("ps_4_0"))?;
             let nv12_code = compile(s!("pixel_nv12"), s!("ps_4_0"))?;
+            let pointer_code = compile(s!("pixel_pointer"), s!("ps_4_0"))?;
+            let mut pointer_pixel = None;
+            device.CreatePixelShader(
+                blob_bytes(&pointer_code),
+                None,
+                Some(ptr::addr_of_mut!(pointer_pixel)),
+            )?;
+            let mut blend_desc = D3D11_BLEND_DESC::default();
+            blend_desc.RenderTarget[0] = D3D11_RENDER_TARGET_BLEND_DESC {
+                BlendEnable: true.into(),
+                SrcBlend: D3D11_BLEND_SRC_ALPHA,
+                DestBlend: D3D11_BLEND_INV_SRC_ALPHA,
+                BlendOp: D3D11_BLEND_OP_ADD,
+                SrcBlendAlpha: D3D11_BLEND_ONE,
+                DestBlendAlpha: D3D11_BLEND_INV_SRC_ALPHA,
+                BlendOpAlpha: D3D11_BLEND_OP_ADD,
+                RenderTargetWriteMask: u8::try_from(D3D11_COLOR_WRITE_ENABLE_ALL.0).unwrap_or(0x0f),
+            };
+            let mut blend = None;
+            device.CreateBlendState(ptr::addr_of!(blend_desc), Some(ptr::addr_of_mut!(blend)))?;
             let mut nv12_pixel = None;
             device.CreatePixelShader(
                 blob_bytes(&nv12_code),
@@ -172,6 +202,10 @@ impl GpuRenderer {
                 image: None,
                 source_size: (0, 0),
                 client_size: (width, height),
+                pointer_pixel: pointer_pixel.unwrap(),
+                blend: blend.unwrap(),
+                pointer: None,
+                pointer_texture: None,
             };
             renderer.create_target()?;
             tracing::info!(
@@ -316,10 +350,37 @@ impl GpuRenderer {
             );
             self.diagnostics
                 .record("render_upload_cpu", upload_started.elapsed());
+        }
+        self.draw(width, height, true)
+    }
+
+    pub fn set_pointer(&mut self, pointer: Option<media_core::PointerOverlay>) {
+        self.pointer = pointer;
+    }
+
+    /// Re-presents the last uploaded frame (pointer-only motion).
+    pub fn redraw(&mut self, width: u32, height: u32) -> Result<bool> {
+        if self.image.is_none() || self.client_size != (width, height) {
+            return Ok(false);
+        }
+        self.draw(width, height, false).map(|()| true)
+    }
+
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+    /// `timed` pairs with the GPU timing query begun by `render`.
+    fn draw(&mut self, width: u32, height: u32, timed: bool) -> Result<()> {
+        let (source_width, source_height) = self.source_size;
+        let nv12 = matches!(
+            self.source_format,
+            media_core::DecodedPixelFormat::Nv12 { .. }
+        );
+        // SAFETY: all views/shaders belong to this device; draws only read
+        // textures created above; the pointer texture is created with its data.
+        unsafe {
             let draw_started = Instant::now();
             let (fit_width, fit_height) = crate::fit::fit_rect(
-                frame.width,
-                frame.height,
+                source_width,
+                source_height,
                 i32::try_from(width).unwrap_or(i32::MAX),
                 i32::try_from(height).unwrap_or(i32::MAX),
             );
@@ -351,7 +412,68 @@ impl GpuRenderer {
                 ]),
             );
             self.context.Draw(3, 0);
-            if let Some(timing) = &mut self.timing {
+            if let Some(pointer) = self.pointer.clone() {
+                let fit_w = u32::try_from(fit_width).unwrap_or(0);
+                let fit_h = u32::try_from(fit_height).unwrap_or(0);
+                let [left, top, w, h] = pointer.rect(fit_w, fit_h);
+                let (w, h) = (u32::try_from(w).unwrap_or(1), u32::try_from(h).unwrap_or(1));
+                let key = (pointer.image.serial, w, h);
+                if self.pointer_texture.as_ref().is_none_or(|(k, _)| *k != key) {
+                    self.pointer_texture = None;
+                    let pixels = pointer.image.resized(w, h);
+                    let desc = D3D11_TEXTURE2D_DESC {
+                        Width: w,
+                        Height: h,
+                        MipLevels: 1,
+                        ArraySize: 1,
+                        Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                        SampleDesc: DXGI_SAMPLE_DESC {
+                            Count: 1,
+                            Quality: 0,
+                        },
+                        Usage: D3D11_USAGE_DEFAULT,
+                        BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+                        ..Default::default()
+                    };
+                    let data = D3D11_SUBRESOURCE_DATA {
+                        pSysMem: pixels.as_ptr().cast(),
+                        SysMemPitch: w * 4,
+                        SysMemSlicePitch: 0,
+                    };
+                    let mut texture = None;
+                    self.device.CreateTexture2D(
+                        ptr::addr_of!(desc),
+                        Some(ptr::addr_of!(data)),
+                        Some(ptr::addr_of_mut!(texture)),
+                    )?;
+                    let mut view = None;
+                    self.device.CreateShaderResourceView(
+                        texture.as_ref().unwrap(),
+                        None,
+                        Some(ptr::addr_of_mut!(view)),
+                    )?;
+                    self.pointer_texture = view.map(|view| (key, view));
+                }
+                if let Some((_, pointer_view)) = self.pointer_texture.as_ref() {
+                    let pointer_viewport = D3D11_VIEWPORT {
+                        TopLeftX: view.TopLeftX + left as f32,
+                        TopLeftY: view.TopLeftY + top as f32,
+                        Width: w as f32,
+                        Height: h as f32,
+                        MinDepth: 0.0,
+                        MaxDepth: 1.0,
+                    };
+                    self.context.RSSetViewports(Some(&[pointer_viewport]));
+                    self.context.PSSetShader(&self.pointer_pixel, None);
+                    self.context
+                        .PSSetShaderResources(0, Some(&[Some(pointer_view.clone()), None]));
+                    self.context
+                        .OMSetBlendState(&self.blend, Some(&[0.0; 4]), u32::MAX);
+                    self.context.Draw(3, 0);
+                    self.context.OMSetBlendState(None, None, u32::MAX);
+                }
+            }
+            if let Some(timing) = self.timing.as_mut().filter(|_| timed) {
                 timing.end(&self.context);
             }
             self.diagnostics

@@ -5,6 +5,23 @@
 #include <MetalKit/MetalKit.h>
 #include <unistd.h>
 
+// Classroom: the Metal view is the hit-tested view for every click. Accept the
+// first click while the (accessory) app is inactive, so a button in a newly
+// shown window responds immediately instead of only activating the app.
+@interface MFBMetalView : MTKView
+@end
+@implementation MFBMetalView
+- (BOOL)acceptsFirstMouse:(NSEvent*)event { (void)event; return YES; }
+@end
+
+static void mfb_activate_app(void) {
+    if (@available(macOS 14.0, *)) {
+        [NSApp activate];
+    } else {
+        [NSApp activateIgnoringOtherApps:YES];
+    }
+}
+
 extern id<MTLCommandQueue> g_command_queue;
 extern id<MTLLibrary> g_library;
 extern id<MTLRenderPipelineState> g_pipeline_state;
@@ -248,7 +265,7 @@ void* mfb_open(const char* name, int width, int height, uint32_t flags, int scal
     //viewController->m_width = width;
     //viewController->m_height = height;
 
-    MTKView* view = [[MTKView alloc] initWithFrame:rectangle];
+    MTKView* view = [[MFBMetalView alloc] initWithFrame:rectangle];
     view.device = g_metal_device;
     view.delegate = viewController;
     view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
@@ -883,7 +900,7 @@ void mfb_set_visible(void* ptr, bool visible) {
         for (NSView* view in [window.contentView subviews]) {
             if ([view isKindOfClass:[MTKView class]]) [(MTKView*)view draw];
         }
-        [window deminiaturize:nil]; [window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES];
+        [window deminiaturize:nil]; [window makeKeyAndOrderFront:nil]; [window orderFrontRegardless]; mfb_activate_app();
     }
     else { [window orderOut:nil]; window->is_active = false; }
 }
@@ -901,7 +918,9 @@ uint32_t mfb_backing_scale(void* ptr) {
 // Explicit unattended regression: zero-pressure down/up queued in the same pump.
 void mfb_test_left_tap(void* ptr, float x, float y) {
     NSWindow* window = (NSWindow*)ptr;
-    NSPoint point = NSMakePoint(x, window.contentView.bounds.size.height - y);
+    // Same full-content frame view that real clicks are measured against.
+    NSView* frame = ((OSXWindow*)ptr)->frame_view;
+    NSPoint point = [frame convertPoint:NSMakePoint(x, frame.bounds.size.height - y) toView:nil];
     for (int index = 0; index < 2; ++index) {
         NSEvent* event = [NSEvent mouseEventWithType:(index == 0 ? NSEventTypeLeftMouseDown : NSEventTypeLeftMouseUp)
             location:point modifierFlags:0 timestamp:NSProcessInfo.processInfo.systemUptime
@@ -909,3 +928,34 @@ void mfb_test_left_tap(void* ptr, float x, float y) {
         [NSApp postEvent:event atStart:NO];
     }
 }
+
+// Classroom: outer-frame geometry in top-left-origin global points (y down),
+// consistent across set/get, plus the visible work area of the window's screen
+// (excludes menu bar and Dock). Main-thread calls only.
+static CGFloat mfb_global_height(void) {
+    NSArray<NSScreen*>* screens = [NSScreen screens];
+    return screens.count ? NSMaxY([screens[0] frame]) : 0;
+}
+void mfb_outer_frame(void* ptr, int* x, int* y, int* w, int* h) {
+    NSRect f = [(NSWindow*)ptr frame];
+    *x = (int)NSMinX(f); *y = (int)(mfb_global_height() - NSMaxY(f));
+    *w = (int)f.size.width; *h = (int)f.size.height;
+}
+void mfb_set_outer_origin(void* ptr, int x, int y) {
+    [(NSWindow*)ptr setFrameTopLeftPoint:NSMakePoint(x, mfb_global_height() - y)];
+}
+void mfb_work_area(void* ptr, int* x, int* y, int* w, int* h) {
+    NSScreen* screen = [(NSWindow*)ptr screen] ?: [NSScreen mainScreen];
+    NSRect v = [screen visibleFrame];
+    *x = (int)NSMinX(v); *y = (int)(mfb_global_height() - NSMaxY(v));
+    *w = (int)v.size.width; *h = (int)v.size.height;
+}
+// Show above other windows without taking key focus or activating the app.
+void mfb_show_inactive(void* ptr) {
+    OSXWindow* window = (OSXWindow*)ptr;
+    for (NSView* view in [window.contentView subviews]) {
+        if ([view isKindOfClass:[MTKView class]]) [(MTKView*)view draw];
+    }
+    [window orderFrontRegardless];
+}
+

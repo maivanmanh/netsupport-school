@@ -133,6 +133,92 @@ fn apply_monochrome(frame: &mut [u8], offset: usize, shape: PointerShape<'_>, x:
     frame[offset + 3] = 255;
 }
 
+/// Converts a DXGI pointer shape to straight-alpha BGRA for receivers that
+/// draw the pointer themselves. XOR-style pixels (inverting cursors) have no
+/// alpha equivalent; they become opaque black/white so they stay visible.
+/// Shapes larger than `PointerImage::MAX_SIDE` are nearest-neighbour reduced.
+pub(crate) fn to_image(
+    shape: PointerShape<'_>,
+    serial: u32,
+    hotspot: (u32, u32),
+) -> Option<media_core::PointerImage> {
+    let height = match shape.kind {
+        PointerShapeKind::Monochrome => shape.height / 2,
+        PointerShapeKind::Color | PointerShapeKind::MaskedColor => shape.height,
+    };
+    let width = shape.width;
+    if width == 0 || height == 0 || shape.pitch == 0 {
+        return None;
+    }
+    let mut bgra = vec![0_u8; (width * height * 4) as usize];
+    for y in 0..height {
+        for x in 0..width {
+            let d = ((y * width + x) * 4) as usize;
+            let pixel: [u8; 4] = match shape.kind {
+                PointerShapeKind::Color => {
+                    let s = shape_pixel_offset(shape, x, y)?;
+                    [
+                        shape.bytes[s],
+                        shape.bytes[s + 1],
+                        shape.bytes[s + 2],
+                        shape.bytes[s + 3],
+                    ]
+                }
+                PointerShapeKind::MaskedColor => {
+                    let s = shape_pixel_offset(shape, x, y)?;
+                    let color = [shape.bytes[s], shape.bytes[s + 1], shape.bytes[s + 2]];
+                    if shape.bytes[s + 3] == 0 {
+                        [color[0], color[1], color[2], 255]
+                    } else if color == [0, 0, 0] {
+                        [0, 0, 0, 0] // XOR with zero: screen unchanged
+                    } else {
+                        [color[0], color[1], color[2], 255]
+                    }
+                }
+                PointerShapeKind::Monochrome => {
+                    let pitch = shape.pitch as usize;
+                    let byte = (x / 8) as usize;
+                    let bit = 0x80_u8 >> (x % 8);
+                    let and_offset = y as usize * pitch + byte;
+                    let xor_offset = (y + height) as usize * pitch + byte;
+                    let and_one = shape.bytes.get(and_offset)? & bit != 0;
+                    let xor_one = shape.bytes.get(xor_offset)? & bit != 0;
+                    match (and_one, xor_one) {
+                        (true, false) => [0, 0, 0, 0],
+                        (false, true) => [255, 255, 255, 255],
+                        // Black, or an inverted pixel drawn dark so it reads
+                        // on typical light content.
+                        (false, false) | (true, true) => [0, 0, 0, 255],
+                    }
+                }
+            };
+            bgra[d..d + 4].copy_from_slice(&pixel);
+        }
+    }
+    let max = u32::from(media_core::PointerImage::MAX_SIDE);
+    let scale = width.max(height).div_ceil(max).max(1);
+    let image = media_core::PointerImage {
+        serial,
+        width: u16::try_from(width).ok()?,
+        height: u16::try_from(height).ok()?,
+        hotspot_x: u16::try_from(hotspot.0.min(width - 1)).ok()?,
+        hotspot_y: u16::try_from(hotspot.1.min(height - 1)).ok()?,
+        bgra,
+    };
+    if scale == 1 {
+        return Some(image);
+    }
+    let (w, h) = ((width / scale).max(1), (height / scale).max(1));
+    Some(media_core::PointerImage {
+        serial,
+        width: u16::try_from(w).ok()?,
+        height: u16::try_from(h).ok()?,
+        hotspot_x: u16::try_from((hotspot.0 / scale).min(w - 1)).ok()?,
+        hotspot_y: u16::try_from((hotspot.1 / scale).min(h - 1)).ok()?,
+        bgra: image.resized(w, h),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,5 +285,51 @@ mod tests {
         };
         compose_cursor(&mut frame, 2, 1, 8, -1, 0, shape);
         assert_eq!(&frame[0..4], &[4, 5, 6, 255]);
+    }
+
+    #[test]
+    fn shapes_convert_to_straight_alpha_images() {
+        let color = PointerShape {
+            kind: PointerShapeKind::Color,
+            width: 2,
+            height: 1,
+            pitch: 8,
+            bytes: &[1, 2, 3, 200, 9, 9, 9, 0],
+        };
+        let image = to_image(color, 4, (1, 0)).unwrap();
+        assert!(image.is_valid());
+        assert_eq!(image.bgra, [1, 2, 3, 200, 9, 9, 9, 0]);
+        assert_eq!((image.serial, image.hotspot_x), (4, 1));
+        // Monochrome 8x1: AND row then XOR row.
+        let mono = PointerShape {
+            kind: PointerShapeKind::Monochrome,
+            width: 8,
+            height: 2,
+            pitch: 1,
+            bytes: &[0b1010_0000, 0b0110_0000],
+        };
+        let image = to_image(mono, 1, (0, 0)).unwrap();
+        // x0: AND1 XOR0 transparent; x1: AND0 XOR1 white; x2: AND1 XOR1 dark; x3: black
+        assert_eq!(&image.bgra[0..4], &[0, 0, 0, 0]);
+        assert_eq!(&image.bgra[4..8], &[255, 255, 255, 255]);
+        assert_eq!(&image.bgra[8..12], &[0, 0, 0, 255]);
+        assert_eq!(&image.bgra[12..16], &[0, 0, 0, 255]);
+    }
+    #[test]
+    fn oversized_shapes_are_reduced_within_bounds() {
+        let bytes = vec![255_u8; 256 * 256 * 4];
+        let big = PointerShape {
+            kind: PointerShapeKind::Color,
+            width: 256,
+            height: 256,
+            pitch: 1024,
+            bytes: &bytes,
+        };
+        let image = to_image(big, 1, (200, 10)).unwrap();
+        assert!(image.is_valid());
+        assert_eq!(
+            (image.width, image.hotspot_x, image.hotspot_y),
+            (128, 100, 5)
+        );
     }
 }

@@ -139,6 +139,8 @@ pub struct ScreenCaptureKitCapture {
     resolution_changed: Arc<AtomicBool>,
     resolution_monitor_stop: Arc<AtomicBool>,
     resolution_monitor: Option<JoinHandle<()>>,
+    /// `CGDirectDisplayID` of the captured display, for the pointer sampler.
+    display_id: Arc<std::sync::atomic::AtomicU32>,
 }
 
 impl std::fmt::Debug for ScreenCaptureKitCapture {
@@ -171,6 +173,7 @@ impl ScreenCaptureKitCapture {
             resolution_changed: Arc::new(AtomicBool::new(false)),
             resolution_monitor_stop: Arc::new(AtomicBool::new(false)),
             resolution_monitor: None,
+            display_id: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         }
     }
 
@@ -243,6 +246,11 @@ impl CaptureSource for ScreenCaptureKitCapture {
     fn set_cursor_policy(&mut self, visible: Arc<std::sync::atomic::AtomicBool>) {
         self.cursor_policy = Some(visible);
     }
+    fn pointer_source(&self) -> Option<Box<dyn media_core::PointerSource>> {
+        Some(Box::new(crate::pointer::MacPointerSource::new(Arc::clone(
+            &self.display_id,
+        ))))
+    }
     fn start(&mut self, config: CaptureConfig) -> Result<(), MediaError> {
         if config.width == 0 || config.height == 0 || config.max_fps == 0 {
             return Err(MediaError::Operation(
@@ -262,6 +270,8 @@ impl CaptureSource for ScreenCaptureKitCapture {
                 displays.len()
             ))
         })?;
+        self.display_id
+            .store(display.display_id(), std::sync::atomic::Ordering::Release);
         let filter = SCContentFilter::create()
             .with_display(display)
             .with_excluding_windows(&[])

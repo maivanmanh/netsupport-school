@@ -25,8 +25,16 @@ pub type ObserveJobs = Arc<ObserveRequests>;
 pub struct ObserveRequests {
     pub entries: Mutex<std::collections::HashMap<String, ObserveJob>>,
     wake: Condvar,
+    /// Teacher's enhanced-profile offer (codecs it decodes, fps ceiling).
+    offer: (Vec<String>, u32),
 }
 impl ObserveRequests {
+    pub fn with_offer(offer: (Vec<String>, u32)) -> Self {
+        Self {
+            offer,
+            ..Self::default()
+        }
+    }
     pub fn request(&self, id: String) {
         let mut entries = self.entries.lock().unwrap();
         entries.insert(
@@ -60,6 +68,8 @@ pub struct ObserveJob {
     pub token: String,
     pub error: String,
     pub requested_at: Option<Instant>,
+    /// Student-chosen session profile, e.g. "h265@60".
+    pub profile: String,
 }
 
 const MAX_JPEG: usize = 48 * 1024;
@@ -281,6 +291,8 @@ fn serve(
                 socket,
                 Payload::Observe(protocol::ObserveMessage {
                     action: "start".into(),
+                    codecs: jobs.offer.0.clone(),
+                    max_fps: jobs.offer.1,
                     ..Default::default()
                 }),
             )?;
@@ -290,6 +302,8 @@ fn serve(
             info!(
                 client_id,
                 handshake_ms = handshake.elapsed().as_secs_f64() * 1000.0,
+                offered = ?jobs.offer,
+                profile = %reply.codec,
                 "Observe source handshake complete"
             );
             let mut all = jobs.entries.lock().unwrap();
@@ -297,6 +311,7 @@ fn serve(
                 j.port = u16::try_from(reply.port)?;
                 j.token = reply.token;
                 j.error = reply.error;
+                j.profile = reply.codec;
             }
         }
         let request_at = Instant::now();
@@ -458,6 +473,7 @@ fn capture_requests(
                 };
                 match super::observation::Publisher::start(
                     config,
+                    &command,
                     *local.ip(),
                     runtime,
                     Arc::clone(presenting),
@@ -469,6 +485,7 @@ fn capture_requests(
                     Ok(p) => {
                         response.port = u32::from(p.port);
                         response.token.clone_from(&p.token);
+                        response.codec.clone_from(&p.profile);
                         publisher = Some(p);
                     }
                     Err(e) => response.error = format!("{e:#}"),
