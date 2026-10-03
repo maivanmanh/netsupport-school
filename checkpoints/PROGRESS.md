@@ -2885,3 +2885,12 @@ Details and numbers: docs/17_BROADCAST_OPTIMIZATION_PLAN.md §7.
 - Next: error concealment / LTR for random-loss freezes; O4 on a real-GPU Windows
   PC; wired-LAN and physical-lab runs of simulate-class.py.
 
+
+## 2026-10-03 — Git re-linked and session committed
+
+- Local repo re-attached to `origin/main` (GitHub private repo) with
+  `git reset --soft origin/main`; working tree unchanged.
+- Committed the whole session as `baeef69` (feat: classroom tools, enhanced
+  Observe, broadcast optimizations O1-O3) and pushed. Scanned for leaked SSH
+  passwords before committing (none). Build output/logs stay ignored.
+- From now on: commit + push after each verified milestone (AGENTS.md §12).
