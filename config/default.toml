@@ -1,0 +1,58 @@
+# Example defaults. The implementation may rename keys, but preserve equivalent configurability.
+
+[app]
+role = "ask"                # ask | teacher | student
+log_level = "info"
+
+[network]
+# Default Teacher address shown by the native launcher. CLI loopback tests use
+# --loopback; Students can override the address with --teacher-ip.
+teacher_ip = "192.168.100.115"
+teacher_ip_mode = "explicit"
+control_port = 47800
+media_port = 47810
+feedback_port = 47811
+retransmission_cache_ms = 300
+# Aggregate UDP fan-out pacing; each AU is capped at 8 ms of pacing. 0 disables.
+send_pacing_mbps = 400
+bind_ip = "127.0.0.1"
+interface = "auto_default_route_ethernet"
+
+[video]
+# Windows output bounds: preserve source aspect, no upscale, hard cap 1920x1080.
+width = 1920
+height = 1080
+max_fps = 30
+target_bitrate_kbps = 6000
+min_bitrate_kbps = 1500
+max_bitrate_kbps = 8000
+keyframe_interval_ms = 2000
+# Lower default packet hold time for fresher screen updates on wired LAN.
+# Increase this when a classroom link needs more reordering/loss tolerance.
+jitter_buffer_ms = 20
+# Independent short repair window; complete contiguous frames bypass jitter hold.
+nack_repair_ms = 25
+adaptive = true
+adaptive_idle_fps = 5
+adaptive_idle_after_ms = 1200
+adaptive_typing_fps = 24
+adaptive_small_change_percent = 0.005
+adaptive_large_change_percent = 0.3
+adaptive_small_hold_ms = 400
+adaptive_pressure_encode_ms = 28
+adaptive_pressure_cpu_percent = 80.0
+adaptive_receiver_loss_percent = 2.0
+adaptive_receiver_min_fps_percent = 75
+adaptive_receiver_render_latency_max_ms = 12
+adaptive_feedback_min_reporting_percent = 50
+adaptive_high_loss_quorum_percent = 25
+adaptive_recovery_min_reporting_percent = 75
+adaptive_bitrate_step_down_percent = 20
+adaptive_bitrate_step_up_percent = 10
+adaptive_bitrate_cooldown_ms = 5000
+preserve_resolution_first = true
+
+[phase1]
+audio = false
+multicast = false
+security_hardening = false

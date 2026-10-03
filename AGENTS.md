@@ -1,0 +1,198 @@
+# AGENTS.md — Mandatory instructions for the coding agent
+
+You are implementing a performance-sensitive native desktop system. Read every project document before coding. Treat the requirements in this package as the current authoritative baseline unless the human owner explicitly changes them.
+
+## 1. Primary engineering goal
+
+The highest-priority requirement is **smooth low-latency 1080p teacher-screen broadcast to up to 40 Windows student PCs over wired LAN**. Everything else is secondary in Phase 1.
+
+Do not spend meaningful time on file sharing, student monitoring, app blocking, Internet blocking, keyboard/mouse locking, macOS, installers, security hardening, or polished UI until the media vertical slice works and is benchmarked.
+
+## 2. Platform priority
+
+- Primary runtime: Windows 10 Education 22H2 x64 and Windows 11 x64.
+- Development host may be macOS.
+- The codebase must preserve platform abstractions for future macOS support, but **do not implement macOS backends in Phase 1**.
+- Produce a portable Windows executable first.
+- Cross-build from macOS should be supported when practical, but actual integration/performance tests must run on real Windows machines.
+
+## 3. Application form
+
+Phase 1 should prefer one portable executable:
+
+`Classroom.exe`
+
+At startup it can offer Teacher and Student roles. Also support development CLI flags such as:
+
+- `Classroom.exe --role teacher`
+- `Classroom.exe --role student`
+
+If a single executable causes serious technical friction, two binaries are acceptable, but document why before changing direction.
+
+Future production packaging may provide `TeacherSetup.exe` and `StudentSetup.exe`; that is not a Phase 1 deliverable.
+
+## 4. No web application stack
+
+This is a native desktop application. Do not implement the product as a browser app, local web server UI, Electron app, or WebView-dependent application. Use native Rust desktop/windowing/rendering technologies. Keep the media engine independent of the UI framework.
+
+## 5. Core media invariants
+
+These are architectural invariants, not suggestions:
+
+1. Capture the teacher screen once.
+2. Encode the teacher stream once regardless of whether 1 or 40 students are watching.
+3. Packetize once.
+4. Fan out encoded packets to student endpoints without re-encoding.
+5. Prefer current visual state over delivery of old frames: **latest frame wins**.
+6. Never allow an unbounded video queue.
+7. Do not introduce a dedicated classroom server in Phase 1. The teacher PC is the coordinator and media source/distributor.
+8. Audio is out of scope.
+9. Internet access must not be required for classroom operation.
+
+## 6. Windows media baseline
+
+Preferred Phase 1 stack:
+
+- Rust.
+- Windows APIs via `windows` / windows-rs where appropriate.
+- Screen capture: DXGI Desktop Duplication + D3D11.
+- Include the mouse cursor in the transmitted presentation.
+- Codec: H.264.
+- Initial encoder backend: Windows Media Foundation H.264, selecting an available hardware MFT when usable and falling back to a software MFT.
+- Hardware acceleration is an optional optimization, not a functional dependency.
+- Decoder: Windows Media Foundation H.264.
+- Render: native Windows rendering, preferably D3D11 or another path that does not force a browser/WebView.
+- No B-frames in the low-latency profile.
+- Cache SPS/PPS and make clean joining/recovery possible.
+- Support on-demand keyframes/IDR.
+
+Keep encoder, decoder, capture, converter, transport, and renderer behind interfaces so additional backends can be introduced later.
+
+## 7. Network baseline
+
+- All classroom PCs use wired 1 Gbps Ethernet.
+- Phase 1 media distribution is **UDP unicast fan-out**.
+- Use an RTP/H.264-compatible packetization design rather than inventing opaque raw-H264-over-TCP framing.
+- Control plane should be simple and reliable: length-prefixed Protobuf messages over TCP is the preferred initial design.
+- Keep multicast as a future `MediaDistributor` backend, but do not require or depend on multicast in Phase 1.
+- Do not depend on subnet-wide UDP broadcast discovery.
+
+Default room example:
+
+- Teacher: `10.0.55.200`
+- Students: e.g. `10.0.55.11`, `.12`, `.13`, ...
+- Mask seen in the lab: `255.255.240.0` (/20)
+- Gateway example: `10.0.48.1`
+- Another room may use the same pattern with a different third octet, e.g. teacher `10.0.63.200`.
+
+Student default teacher resolution strategy may infer `10.0.<local-third-octet>.200`, but it must always be configurable/overridable.
+
+The machines contain virtual adapters (Hyper-V and VMware). Do **not** select the first IPv4 adapter naively. Prefer the active physical Ethernet interface associated with the default route/gateway, and allow manual override.
+
+## 8. Quality policy
+
+Initial quality target:
+
+- Up to 1920×1080.
+- Maximum 30 fps.
+- Initial target bitrate about 6 Mbps.
+- Configurable/adaptive range roughly 1.5–8 Mbps.
+- Low-latency design.
+
+For classroom content, prioritize:
+
+1. low latency / freshness,
+2. text readability / resolution,
+3. image quality,
+4. frame rate.
+
+Under pressure, reduce frame rate and bitrate before aggressively reducing resolution. Example policy may move 1080p30 -> 1080p24 -> 1080p20 -> 1080p15 before reducing to 900p/720p.
+
+Use screen activity / dirty-region information where useful so static slides/code do not need 30 newly encoded frames per second. Treat thresholds as tunable parameters, not hard-coded truths.
+
+## 9. Threading and back-pressure
+
+Design explicit bounded stages. Suggested conceptual pipeline:
+
+Capture -> latest-frame slot -> preprocess/color conversion -> encoder -> packetizer -> network fan-out.
+
+- The capture-to-encode queue should normally have effective capacity 1.
+- If a new frame arrives before the previous queued frame is consumed, replace/drop the older waiting frame.
+- Do not allow video latency to grow through buffering.
+- Keep blocking Windows/media operations away from the async control/network runtime.
+- Let the codec/backend perform appropriate internal multithreading; do not create unsafe ad-hoc per-frame parallel encoding that breaks temporal dependencies.
+
+## 10. Receiver design
+
+Student path:
+
+UDP receive -> small jitter buffer -> RTP/H.264 depacketize -> H.264 decode -> render.
+
+Initial jitter budget can be around 30–50 ms and must be configurable.
+
+Plan for:
+
+- RTP sequence numbers and timestamps,
+- loss detection,
+- late packet discard,
+- short retransmission/NACK mechanism,
+- on-demand keyframe request after unrecoverable reference loss,
+- clean late join while teacher is already presenting.
+
+Do not trade seconds of latency for perfect completeness.
+
+## 11. Metrics are part of Phase 1
+
+Instrument from the beginning. The agent must not postpone observability.
+
+At minimum expose/log:
+
+Teacher:
+- capture FPS and capture latency,
+- frame-change/dirty-region ratio if available,
+- encode FPS,
+- p50/p95 encode latency,
+- current bitrate,
+- dropped/replaced frames,
+- process CPU and memory,
+- aggregate network send Mbps,
+- connected student count.
+
+Per student / receiver reports:
+- RTT or equivalent control round trip,
+- packet loss / missing sequences,
+- NACK/retransmission counts,
+- decode FPS,
+- render FPS,
+- late/dropped frames,
+- receive bitrate,
+- jitter-buffer delay.
+
+Metrics may start as logs/console output; a polished dashboard is not required.
+
+## 12. Implementation workflow
+
+Work milestone-by-milestone. After each milestone:
+
+1. run formatting/linting/tests that exist,
+2. run the relevant executable test,
+3. update `checkpoints/PROGRESS.md` with what changed, what was verified, remaining risks, and the exact next step,
+4. if Git is available and project policy permits commits, create a descriptive checkpoint commit; otherwise do not invent a commit history.
+
+Do not silently redesign a locked decision. If a locked decision proves infeasible, write the evidence and proposed change into the progress checkpoint before implementing the alternative.
+
+## 13. Engineering quality
+
+- Prefer clear, modular Rust over premature cleverness.
+- Use `unsafe` only at Windows FFI boundaries or where technically justified; wrap it behind small safe abstractions and document invariants.
+- Avoid copies in the hot video path where practical, but get a correct measurable vertical slice before micro-optimizing.
+- Avoid global mutable state.
+- Use structured error types and meaningful logs.
+- Keep configuration externalizable.
+- Do not hard-code the A505 IP range into media/control logic; it is only a default configuration.
+- Do not make hardware acceleration mandatory.
+- Do not assume every PC is as fast as the i7-14700 lab.
+
+## 14. Stop conditions
+
+Do not proceed to future features until Phase 1 has demonstrated the core path and scaling evidence described in `docs/06_PERFORMANCE_ACCEPTANCE.md`.

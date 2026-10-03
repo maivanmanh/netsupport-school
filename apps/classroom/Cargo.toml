@@ -1,0 +1,65 @@
+[package]
+name = "classroom-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "Classroom"
+path = "src/main.rs"
+
+[[bin]]
+name = "ClassroomStudent"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json = "1.0"
+base64 = "0.22"
+getrandom = "0.3"
+memmap2 = "0.9"
+fs2 = "0.4"
+enigo = "0.6"
+app-core = { path = "../../crates/app-core" }
+clap.workspace = true
+classroom-config = { path = "../../crates/classroom-config" }
+codec-macos-vt = { path = "../../crates/codec-macos-vt" }
+codec-windows-mf = { path = "../../crates/codec-windows-mf" }
+capture-macos-sck = { path = "../../crates/capture-macos-sck" }
+capture-windows-dxgi = { path = "../../crates/capture-windows-dxgi" }
+control-transport = { path = "../../crates/control-transport" }
+media-core = { path = "../../crates/media-core" }
+media-transport = { path = "../../crates/media-transport" }
+prost.workspace = true
+minifb = { version = "0.28.0", default-features = false }
+platform = { path = "../../crates/platform" }
+protocol = { path = "../../crates/protocol" }
+renderer-macos = { path = "../../crates/renderer-macos" }
+renderer-windows = { path = "../../crates/renderer-windows" }
+socket2.workspace = true
+sysinfo.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+jpeg-encoder = { version = "0.6", default-features = false, features = ["std"] }
+jpeg-decoder = { version = "0.3", default-features = false }
+sha2 = "0.10"
+fontdue = { version = "0.9", default-features = false }
+
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+tray-icon = { version = "=0.21.3", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = "0.25"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSProcessInfo", "NSString"] }
+
+[lints]
+workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_UI_HiDpi", "Win32_UI_Shell"] }

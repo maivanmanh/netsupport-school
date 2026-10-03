@@ -1,0 +1,93 @@
+syntax = "proto3";
+
+package classroom.v1;
+
+message Envelope {
+  uint32 protocol_version = 1;
+  oneof payload {
+    HelloStudent hello_student = 10;
+    WelcomeStudent welcome_student = 11;
+    StartPresentation start_presentation = 12;
+    ReceiverReport receiver_report = 13;
+    Nack nack = 14;
+    RequestKeyframe request_keyframe = 15;
+    ControlPing control_ping = 16;
+    ControlPong control_pong = 17;
+    StopPresentation stop_presentation = 18;
+    ThumbnailHello thumbnail_hello = 19;
+    ThumbnailRequest thumbnail_request = 20;
+    ThumbnailFrame thumbnail_frame = 21;
+    ObserveMessage observe = 22;
+  }
+}
+
+message HelloStudent {
+  string hostname = 1;
+  string instance_id = 2;
+  string selected_local_ip = 3;
+  uint32 media_udp_port = 4;
+  uint32 feedback_udp_port = 5;
+}
+
+message WelcomeStudent {
+  uint64 client_id = 1;
+  bool presentation_active = 2;
+}
+
+message StartPresentation {
+  uint64 stream_id = 1;
+  uint32 width = 2;
+  uint32 height = 3;
+  uint32 max_fps = 4;
+  uint32 bitrate_bps = 5;
+  uint32 rtp_payload_type = 6;
+  uint32 rtp_clock_hz = 7;
+  uint32 teacher_media_udp_port = 8;
+}
+
+message ReceiverReport {
+  uint64 stream_id = 1;
+  uint64 received_packets = 2;
+  uint64 missing_packets = 3;
+  uint64 decoded_frames = 4;
+  uint64 rendered_frames = 5;
+  uint64 receive_bitrate_bps = 6;
+  uint32 jitter_delay_ms = 7;
+  uint64 control_rtt_us = 8;
+  uint64 control_rtt_samples = 9;
+  bool rendering_enabled = 10;
+  uint64 render_latency_p95_us = 11;
+}
+
+message Nack {
+  uint64 stream_id = 1;
+  repeated uint32 sequence_numbers = 2;
+}
+
+message RequestKeyframe { uint64 stream_id = 1; }
+message ControlPing { uint64 nonce = 1; uint64 sender_unix_us = 2; }
+message ControlPong {
+  uint64 nonce = 1;
+  uint64 sender_unix_us = 2;
+  uint64 teacher_received_unix_us = 3;
+  uint64 teacher_sent_unix_us = 4;
+}
+
+message StopPresentation { uint64 stream_id = 1; }
+
+// Dedicated monitoring connection on control port + 1.
+message ThumbnailHello { string instance_id = 1; }
+message ThumbnailRequest { uint32 width = 1; uint32 height = 2; uint32 interval_ms = 3; uint32 quality = 4; }
+message ThumbnailFrame { uint32 width = 1; uint32 height = 2; bytes jpeg = 3; string state = 4; uint64 sequence = 5; }
+
+message ObserveMessage {
+ string action = 1;
+ string token = 2;
+ uint32 port = 3;
+ uint64 stream_id = 4;
+ double x = 5;
+ double y = 6;
+ string key = 7;
+ bool down = 8;
+ string error = 9;
+}

@@ -1,0 +1,25 @@
+# Keep source and configuration diffs stable across macOS and Windows.
+* text=auto
+*.rs text eol=lf
+*.toml text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+*.proto text eol=lf
+*.md text eol=lf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.sh text eol=lf
+
+# These formats are binary even when a tool can partially decode them.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.ppm binary
+*.zip binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+*.ttf binary

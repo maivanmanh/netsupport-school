@@ -1,0 +1,273 @@
+   Compiling media-transport v0.1.0 (/Users/mvmanh/Development/netsupport-school/crates/media-transport)
+   Compiling classroom-app v0.1.0 (/Users/mvmanh/Development/netsupport-school/apps/classroom)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.29s
+     Running unittests src/lib.rs (target/debug/deps/app_core-8e81ff321b4a48d0)
+
+running 1 test
+test tests::role_parsing_is_case_insensitive ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/capture_macos_sck-a26656904b7cf009)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/capture_windows_dxgi-5c4e834fae979213)
+
+running 7 tests
+test cursor::tests::color_cursor_alpha_blends_bgra ... ok
+test cursor::tests::monochrome_cursor_applies_and_then_xor_masks ... ok
+test scale::tests::resize_preserves_constant_bgra_and_size ... ok
+test cursor::tests::cursor_is_clipped_at_frame_edges ... ok
+test cursor::tests::masked_color_cursor_replaces_or_xors ... ok
+test scale::tests::downsampling_averages_pixels_without_cropping ... ok
+test scale::tests::keeps_aspect_without_upscaling_or_exceeding_limit ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/Classroom-5d5fe210f428b868)
+
+running 54 tests
+test compact_log::tests::default_logs_are_created_beside_the_executable ... ok
+test benchmark::tests::port_range_keeps_media_and_feedback_distinct_and_rejects_overflow ... ok
+test benchmark_report::tests::flags_zero_decoded_frames_and_rejects_nonfinite_metrics ... ok
+test benchmark_report::tests::rejects_partial_or_impossible_adaptive_interval_telemetry ... ok
+test benchmark_report::tests::report_weights_durations_and_excludes_join_intervals ... ok
+test benchmark_report::tests::reports_adaptive_feedback_and_required_media_metrics_when_recorded ... ok
+test benchmark_report::tests::rejects_compaction_missing_final_reconnect_and_extra_encoder ... ok
+test compact_log::tests::default_logs_fall_back_to_executable_directory ... ok
+test compact_log::tests::only_sparse_metrics_and_important_events_are_selected ... ok
+test presentation_pacer::tests::new_source_can_advance_presentation_phase_after_a_late_tick ... ok
+test compact_log::tests::previous_compact_log_is_removed_before_new_run ... ok
+test presentation_pacer::tests::replaces_waiting_frame_and_never_catches_up_with_a_burst ... ok
+test quality::tests::activity_sampler_reuses_both_sample_buffers ... ok
+test presentation_pacer::tests::bursty_source_never_exceeds_thirty_in_a_rolling_second ... ok
+test quality::tests::encoder_rejection_preserves_bitrate_and_disables_further_proposals ... ok
+test quality::tests::disconnect_removes_feedback_and_reconnect_starts_a_fresh_baseline ... ok
+test quality::tests::disabled_adaptation_keeps_nominal_fps ... ok
+test quality::tests::five_receivers_need_more_than_one_noisy_reporter ... ok
+test quality::tests::fps_recovery_never_exceeds_a_lower_configured_cap ... ok
+test quality::tests::forty_receivers_ignore_a_single_noisy_or_stale_reporter ... ok
+test quality::tests::forty_receivers_need_broad_healthy_coverage_to_recover_bitrate ... ok
+test compact_log::tests::writer_flushes_and_archives_previous_runs ... ok
+test quality::tests::headless_receiver_is_not_slow_when_decode_cadence_is_healthy ... ok
+test quality::tests::receiver_feedback_applies_one_bitrate_change_to_the_live_encoder ... ok
+test quality::tests::healthy_receiver_reports_raise_bitrate_after_cooldown_without_overshoot ... ok
+test quality::tests::isolated_text_like_change_wakes_typing_tier_without_forcing_full_motion_rate ... ok
+test quality::tests::missing_receiver_report_breaks_a_loss_streak ... ok
+test quality::tests::slow_render_with_slow_renderer_does_not_reduce_bitrate ... ok
+test quality::tests::static_screen_idles_and_first_change_wakes_immediately_even_with_full_dirty_metadata ... ok
+test quality::tests::sustained_encode_pressure_reduces_bitrate_before_fps ... ok
+test quality::tests::sustained_receiver_loss_proposes_bounded_bitrate_change ... ok
+test quality::tests::sustained_slow_decode_receiver_reduces_bitrate_while_preserving_fps ... ok
+test teacher_repair::tests::expired_and_invalid_sequences_do_not_retransmit_a_different_packet ... ok
+test student_presentation::tests::decoder_can_replace_frames_while_renderer_holds_in_flight_frame ... ok
+test tests::automatic_bind_uses_selected_adapter ... ok
+test quality::tests::sustained_encode_pressure_reduces_fps_at_minimum_bitrate ... ok
+test tests::detects_idr_with_any_valid_nal_priority_bits ... ok
+test tests::keyframe_rebuild_requests_are_rate_limited ... ok
+test tests::explicit_bind_is_supported ... ok
+test tests::lan_teacher_uses_selected_adapter_as_media_endpoint ... ok
+test tests::localhost_teacher_uses_localhost_media_endpoint ... ok
+test quality::tests::sustained_slow_render_with_fast_renderer_preserves_bitrate ... ok
+test tests::media_route_probe_round_trips_client_id_and_rejects_other_datagrams ... ok
+test tests::student_decodes_across_real_teacher_adaptive_bitrate_change ... ignored, requires macOS Screen Recording permission and runs a real six-second capture/encode/decode loop
+test compact_log::tests::archive_retains_latest_five_complete_logs ... ok
+test udp_sender::tests::pacing_caps_large_idr_and_can_be_disabled ... ok
+test udp_sender::tests::exhausted_budget_is_shared_and_permanent_errors_are_not_retried ... ok
+test udp_sender::tests::recovers_transient_backpressure_without_dropping_packet ... ok
+test tests::native_launcher_is_default_but_explicit_roles_and_diagnostics_bypass_it ... ok
+test teacher_repair::tests::repair_runs_without_media_consumer_and_preserves_cached_bytes ... ok
+test tests::benchmark_modes_validate_arguments_without_changing_role_commands ... ok
+test tests::media_route_probe_reveals_the_students_actual_udp_endpoint ... ok
+test udp_ingress::tests::bounds_packet_backlog_by_capacity_and_age ... ok
+test udp_ingress::tests::receives_and_timestamps_while_consumer_is_not_running ... ok
+
+test result: ok. 53 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running unittests src/lib.rs (target/debug/deps/classroom_config-89e6edb1852e658e)
+
+running 5 tests
+test tests::validates_independent_bounded_repair_budget ... ok
+test tests::embedded_defaults_are_valid ... ok
+test tests::rejects_phase_one_scope_expansion ... ok
+test tests::rejects_invalid_receiver_feedback_quorums ... ok
+test tests::nested_overlay_preserves_other_defaults ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/codec_macos_vt-9376b02b30adad8a)
+
+running 4 tests
+test macos_impl::tests::parses_three_and_four_byte_annex_b_start_codes ... ok
+test macos_impl::tests::converts_avcc_with_non_four_byte_lengths ... ok
+test macos_impl::tests::converts_avcc_to_annex_b_and_detects_idr ... ok
+test macos_impl::tests::parses_avcc_by_declared_length_not_start_code_heuristic ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/codec_windows_mf-a2e15c2b7b425e7f)
+
+running 8 tests
+test color::tests::decoder_skips_padded_luma_rows_before_chroma ... ok
+test color::tests::nv12_round_trip_keeps_neutral_pixels_neutral ... ok
+test color::tests::black_and_white_convert_to_expected_luma_range ... ok
+test color::tests::copied_layout_does_not_apply_surface_padding_to_packed_bytes ... ok
+test h264::tests::non_idr_is_not_modified ... ok
+test color::tests::conversion_rejects_odd_dimensions ... ok
+test color::tests::decoder_skips_nv12_row_padding ... ok
+test h264::tests::caches_and_prepends_parameter_sets_to_later_idr ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/control_transport-7ddd598716f1b48a)
+
+running 3 tests
+test tests::media_endpoint_follows_the_proven_control_route ... ok
+test tests::registration_handshake_uses_length_prefixed_protobuf ... ok
+test tests::media_control_measures_rtt_and_reports_server_disconnect ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running unittests src/lib.rs (target/debug/deps/media_core-904ce7266f4d50d0)
+
+running 5 tests
+test pixel_tests::padded_nv12_uses_storage_height_for_chroma_plane ... ok
+test source_timing::tests::delayed_output_maps_to_its_input_and_repeat_wall_time_is_stable ... ok
+test pixel_tests::pixel_validation_rejects_invalid_and_overflowing_layouts ... ok
+test source_timing::tests::evicted_output_is_unmapped_instead_of_getting_latest_source ... ok
+test diagnostics::tests::preserves_exact_totals_while_bounding_percentile_storage ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/media_transport-631a595a69420c17)
+
+running 14 tests
+test tests::complete_frame_releases_early_but_incomplete_frame_keeps_reorder_budget ... ok
+test tests::fragmented_idr_round_trips ... ok
+test tests::jitter_buffer_discards_a_retransmission_that_arrived_too_late ... ok
+test tests::jitter_buffer_holds_packet_for_budget ... ok
+test tests::jitter_buffer_reports_a_small_gap_for_nack ... ok
+test tests::jitter_gap_and_late_counters_survive_sequence_wrap_and_reset ... ok
+test tests::fragmented_reference_frame_survives_repair_without_partial_decode ... ok
+test tests::missing_fragment_discards_only_its_access_unit_without_error_storm ... ok
+test tests::missing_reference_expires_at_repair_deadline_and_late_repair_is_rejected ... ok
+test tests::missing_fu_a_start_reports_once_then_accepts_next_access_unit ... ok
+test tests::nack_is_immediate_and_repaired_frame_does_not_wait_another_jitter_period ... ok
+test tests::startup_reordering_across_sequence_wrap_preserves_fragment_order ... ok
+test tests::timed_fragmentation_preserves_timing_and_mtu_and_wraps_timestamp ... ok
+test tests::rejected_overflow_packet_cannot_change_startup_sequence ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (target/debug/deps/platform-2cb87d9f745bd5d6)
+
+running 5 tests
+test tests::teacher_address_uses_room_octet_only_for_campus_shape ... ok
+test tests::manual_override_can_select_virtual_adapter ... ok
+test tests::physical_ethernet_beats_default_virtual_adapter ... ok
+test tests::manual_ip_override_can_select_a_secondary_address ... ok
+test tests::default_route_breaks_tie_between_physical_ethernet_adapters ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/protocol-ebe845e9a457279d)
+
+running 1 test
+test tests::envelope_round_trips ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/renderer_macos-1f3ba4efe6396d85)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/renderer_windows-3c030d79d822d1b9)
+
+running 1 test
+test fit::tests::letterboxes_different_student_window_shapes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests app_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests capture_macos_sck
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests capture_windows_dxgi
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests classroom_config
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests codec_macos_vt
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests codec_windows_mf
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests control_transport
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests media_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests media_transport
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests platform
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests protocol
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests renderer_macos
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests renderer_windows
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

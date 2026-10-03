@@ -1,0 +1,16 @@
+[package]
+name = "capture-macos-sck"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+media-core = { path = "../media-core" }
+tracing.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+screencapturekit = { version = "10.0.3", features = ["macos_14_0"] }
+
+[lints]
+workspace = true

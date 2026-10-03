@@ -1,0 +1,139 @@
+project:
+  name: Classroom Screen Share
+  phase: 1
+  implementation_language: Rust
+  app_type: native_desktop
+  web_ui_allowed: false
+  primary_platform: windows
+  minimum_windows_target: "Windows 10 Education 22H2 x64"
+  future_platforms:
+    - macOS
+
+objective:
+  primary: "Broadcast the teacher desktop to up to 40 student PCs smoothly at up to 1920x1080 over wired LAN with low latency and readable text."
+  dedicated_server: false
+  internet_required: false
+  audio_required: false
+
+lab_environment:
+  teacher_count: 1
+  max_students: 40
+  physical_network: "wired Ethernet only"
+  nic_speed: "1 Gbps"
+  switch_observed: "Cisco Business unmanaged switch; photographed model assessed as CBS110-24T; complete multi-switch topology unknown"
+  example_teacher_ip: "10.0.55.200"
+  example_student_ips:
+    - "10.0.55.11"
+    - "10.0.55.12"
+    - "10.0.55.13"
+  subnet_mask: "255.255.240.0"
+  cidr: 20
+  example_gateway: "10.0.48.1"
+  other_room_example_teacher_ip: "10.0.63.200"
+  room_ip_convention: "teacher normally uses .200 in the same third octet as room/student addresses"
+  adapter_notes:
+    - "Physical Intel Ethernet adapter exists."
+    - "Hyper-V virtual Ethernet adapter may exist."
+    - "VMware VMnet1/VMnet8 virtual adapters may exist."
+    - "Do not choose first IPv4 adapter blindly."
+  best_room_machine:
+    cpu: "Intel Core i7-14700"
+    ram_gb: 16
+    storage: "1 TB SSD"
+    discrete_gpu: false
+    integrated_gpu_possible: true
+    display_count: 1
+    display_resolution: "1920x1080"
+  weaker_rooms_exist: true
+  administrator_rights:
+    teacher: true
+    student: true
+
+application:
+  preferred_phase1_binary: "Classroom.exe"
+  startup_roles:
+    - teacher
+    - student
+  cli_role_selection: true
+  future_installers:
+    - TeacherSetup.exe
+    - StudentSetup.exe
+  future_privileged_service: true
+
+media:
+  capture_windows: "DXGI Desktop Duplication + D3D11"
+  include_cursor: true
+  codec: H264
+  encoder_initial: "Windows Media Foundation H.264 MFT"
+  encoder_policy:
+    hardware_if_available: true
+    software_fallback_required: true
+    hardware_dependency_allowed: false
+  decoder_initial: "Windows Media Foundation H.264"
+  target_width: 1920
+  target_height: 1080
+  windows_resolution_policy: "Fit source within configured bounds capped at 1920x1080; preserve aspect within even-pixel rounding; never upscale smaller sources."
+  max_fps: 30
+  initial_target_bitrate_mbps: 6.0
+  approximate_min_bitrate_mbps: 1.5
+  approximate_max_bitrate_mbps: 8.0
+  b_frames: false
+  low_latency: true
+  frame_queue_policy: latest_frame_wins
+  capture_to_encode_effective_queue_capacity: 1
+  adaptive_quality: true
+  adaptation_priority:
+    - preserve_low_latency
+    - preserve_text_resolution
+    - adjust_bitrate
+    - adjust_fps
+    - reduce_resolution_last
+
+network:
+  control_transport: "TCP + length-prefixed Protobuf"
+  media_transport: "RTP/H.264 over UDP unicast"
+  multicast_phase1: false
+  multicast_future_backend: true
+  broadcast_discovery_phase1: false
+  cloud_signalling: false
+  webrtc: false
+  teacher_address_resolution:
+    default_rule: "10.0.<student_local_third_octet>.200"
+    manual_override_required: true
+  interface_selection: "Prefer active physical Ethernet/default-route interface; manual override required"
+  loss_recovery:
+    jitter_buffer_ms_initial: 40
+    nack: true
+    recent_retransmission_cache: true
+    idr_request: true
+    stale_retransmission_forbidden: true
+
+phase1_out_of_scope:
+  - audio
+  - file_transfer
+  - student_grid_monitoring
+  - high_quality_student_preview
+  - present_student_to_class
+  - keyboard_mouse_lock
+  - application_blocking
+  - internet_blocking
+  - process_protection
+  - windows_service
+  - macos_runtime_support
+  - production_installer
+  - strong_security_hardening
+
+future_design_requirements:
+  - "A student must later be able to become the presentation source using the same reusable media pipeline."
+  - "Student grid monitoring should use lightweight thumbnails at configurable approximately 1-3 second refresh intervals rather than 40 full live streams."
+  - "A selected student can later switch to higher-quality live preview on demand."
+  - "Privileged Windows controls should later move into a Windows Service with IPC to the user-session app."
+
+acceptance:
+  students: 40
+  preferred_latency_ms: "100-150 typical on healthy LAN"
+  p95_latency_goal_ms: 200
+  no_unbounded_video_queue: true
+  one_encoder_for_all_students: true
+  operation_without_internet: true
+  adaptive_degradation_required: true

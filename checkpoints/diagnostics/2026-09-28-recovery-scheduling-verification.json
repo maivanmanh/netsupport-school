@@ -1,0 +1,22 @@
+{
+  "date": "2026-09-28",
+  "status": "implemented; Windows cross-build verified; real Windows runtime pending",
+  "tests": {
+    "passed": 107,
+    "failed": 0,
+    "ignored": 1,
+    "filtered": 1,
+    "filtered_test": "bitrate_change_keeps_a_decodable_keyframe_boundary",
+    "filter_reason": "Existing unchanged VideoToolbox hardware creation fails with -12908 on this development host"
+  },
+  "format": "cargo fmt --all -- --check passed",
+  "native_clippy": "cargo clippy --workspace --all-targets --offline -- -D warnings passed",
+  "windows_clippy": "rustup clippy-driver, workspace/all targets, x86_64-pc-windows-gnu, -Dwarnings passed",
+  "executable_smoke": "Teacher --loopback --diagnose; schema 3/protocol 5 and nack_repair_ms=25 validated; no live capture",
+  "windows_release": "target/x86_64-pc-windows-gnu/release/Classroom.exe",
+  "delivered": "/Users/mvmanh/Downloads/Classroom.exe",
+  "copy_verification": "cmp exit 0",
+  "sha256": "6d5cb60086a0ff41982f047b0ffb2c67ecbd0e4a0503b2e1dd23a89531410559",
+  "known_build_warning": "rust-objcopy cannot load libLLVM.dylib while stripping host build script; release link succeeds",
+  "runtime_boundary": "No Windows/DXGI/MFT/D3D11 runtime or 40-PC acceptance was performed on this Mac"
+}

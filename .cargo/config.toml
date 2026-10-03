@@ -1,0 +1,4 @@
+[alias]
+windows-check = "check --workspace --target x86_64-pc-windows-msvc"
+windows-build = "build --release --bin Classroom --target x86_64-pc-windows-msvc"
+

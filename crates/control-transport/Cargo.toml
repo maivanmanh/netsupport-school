@@ -1,0 +1,18 @@
+[package]
+name = "control-transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+media-core = { path = "../media-core" }
+prost.workspace = true
+protocol = { path = "../protocol" }
+socket2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

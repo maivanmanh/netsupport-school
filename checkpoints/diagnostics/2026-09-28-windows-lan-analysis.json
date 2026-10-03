@@ -1,0 +1,186 @@
+{
+  "student": {
+    "intervals": 37,
+    "stages": {
+      "decode_color_conversion_cpu": {
+        "samples": 990.0,
+        "weighted_mean_ms": 1.616161616161616e-05,
+        "median_interval_p95_ms": 0.0,
+        "max_ms": 0.022
+      },
+      "decode_input_copy": {
+        "samples": 990.0,
+        "weighted_mean_ms": 0.016654545454545457,
+        "median_interval_p95_ms": 0.0245,
+        "max_ms": 0.663
+      },
+      "decode_layout": {
+        "samples": 990.0,
+        "weighted_mean_ms": 0.024113131313131312,
+        "median_interval_p95_ms": 0.037,
+        "max_ms": 0.406
+      },
+      "decode_mft_input": {
+        "samples": 990.0,
+        "weighted_mean_ms": 0.022065656565656563,
+        "median_interval_p95_ms": 0.036,
+        "max_ms": 0.057
+      },
+      "decode_mft_output": {
+        "samples": 1980.0,
+        "weighted_mean_ms": 4.358357575757576,
+        "median_interval_p95_ms": 11.63,
+        "max_ms": 56.243
+      },
+      "decode_output_copy": {
+        "samples": 990.0,
+        "weighted_mean_ms": 1.1554676767676768,
+        "median_interval_p95_ms": 1.8835,
+        "max_ms": 3.047
+      },
+      "decoded_wait": {
+        "samples": 957.0,
+        "weighted_mean_ms": 11.570988505747126,
+        "median_interval_p95_ms": 20.321,
+        "max_ms": 32.887
+      },
+      "jitter_residence": {
+        "samples": 21261.0,
+        "weighted_mean_ms": 21.933830675885424,
+        "median_interval_p95_ms": 21.8175,
+        "max_ms": 59.205
+      },
+      "keyframe_recovery": {
+        "samples": 5.0,
+        "weighted_mean_ms": 531.4112,
+        "median_interval_p95_ms": 605.23,
+        "max_ms": 771.802
+      },
+      "render_draw_submit_cpu": {
+        "samples": 957.0,
+        "weighted_mean_ms": 0.18137722048066876,
+        "median_interval_p95_ms": 0.288,
+        "max_ms": 0.428
+      },
+      "render_gpu_upload_draw": {
+        "samples": 957.0,
+        "weighted_mean_ms": 2.4526060606060605,
+        "median_interval_p95_ms": 2.526,
+        "max_ms": 4.671
+      },
+      "render_present_cpu": {
+        "samples": 957.0,
+        "weighted_mean_ms": 0.2521264367816092,
+        "median_interval_p95_ms": 0.394,
+        "max_ms": 1.716
+      },
+      "render_upload_cpu": {
+        "samples": 957.0,
+        "weighted_mean_ms": 0.5672257053291536,
+        "median_interval_p95_ms": 0.852,
+        "max_ms": 2.688
+      },
+      "source_capture_to_present_estimate": {
+        "samples": 605.0,
+        "weighted_mean_ms": 150.75464132231403,
+        "median_interval_p95_ms": 263.842,
+        "max_ms": 925.255
+      },
+      "source_send_to_access_unit_estimate": {
+        "samples": 990.0,
+        "weighted_mean_ms": 23.083491919191918,
+        "median_interval_p95_ms": 25.9745,
+        "max_ms": 66.991
+      },
+      "source_send_to_present_estimate": {
+        "samples": 957.0,
+        "weighted_mean_ms": 45.69562173458725,
+        "median_interval_p95_ms": 56.735,
+        "max_ms": 93.678
+      },
+      "source_send_to_udp_marker_estimate": {
+        "samples": 1045.0,
+        "weighted_mean_ms": 1.320356937799043,
+        "median_interval_p95_ms": 3.932,
+        "max_ms": 41.078
+      },
+      "udp_ingress_wait": {
+        "samples": 21265.0,
+        "weighted_mean_ms": 4.751310322125558,
+        "median_interval_p95_ms": 6.879,
+        "max_ms": 55.759
+      },
+      "udp_wire_arrival_gap": {
+        "samples": 21264.0,
+        "weighted_mean_ms": 1.7885278875094057,
+        "median_interval_p95_ms": 0.408,
+        "max_ms": 205.147
+      }
+    }
+  },
+  "teacher": {
+    "intervals": 38,
+    "stages": {
+      "capture_api": {
+        "samples": 456.0,
+        "weighted_mean_ms": 13.578377192982456,
+        "median_interval_p95_ms": 27.648,
+        "max_ms": 53.748
+      },
+      "capture_to_encode_age": {
+        "samples": 1095.0,
+        "weighted_mean_ms": 163.78466575342466,
+        "median_interval_p95_ms": 400.6975,
+        "max_ms": 896.835
+      },
+      "encode_color_conversion_cpu": {
+        "samples": 1095.0,
+        "weighted_mean_ms": 2.1968484018264838,
+        "median_interval_p95_ms": 2.4995,
+        "max_ms": 25.429
+      },
+      "encode_input_copy": {
+        "samples": 1095.0,
+        "weighted_mean_ms": 0.4606328767123288,
+        "median_interval_p95_ms": 0.563,
+        "max_ms": 15.406
+      },
+      "encode_mft_input": {
+        "samples": 1095.0,
+        "weighted_mean_ms": 0.30093333333333333,
+        "median_interval_p95_ms": 0.347,
+        "max_ms": 5.077
+      },
+      "encode_mft_output": {
+        "samples": 1095.0,
+        "weighted_mean_ms": 0.0346337899543379,
+        "median_interval_p95_ms": 0.0755,
+        "max_ms": 0.246
+      },
+      "encode_output_copy_normalize": {
+        "samples": 1095.0,
+        "weighted_mean_ms": 0.03121095890410959,
+        "median_interval_p95_ms": 0.104,
+        "max_ms": 0.779
+      },
+      "packetization": {
+        "samples": 1095.0,
+        "weighted_mean_ms": 0.027152511415525115,
+        "median_interval_p95_ms": 0.1075,
+        "max_ms": 0.592
+      },
+      "teacher_tick_lateness": {
+        "samples": 1095.0,
+        "weighted_mean_ms": 1.705966210045662,
+        "median_interval_p95_ms": 4.1295,
+        "max_ms": 30.181
+      },
+      "udp_fanout": {
+        "samples": 1095.0,
+        "weighted_mean_ms": 0.43405753424657534,
+        "median_interval_p95_ms": 1.73,
+        "max_ms": 6.946
+      }
+    }
+  }
+}

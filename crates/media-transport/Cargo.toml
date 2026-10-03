@@ -1,0 +1,13 @@
+[package]
+name = "media-transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+media-core = { path = "../media-core" }
+thiserror.workspace = true
+
+[lints]
+workspace = true
