@@ -181,3 +181,37 @@ concealment (keep decoding through a lost slice), or LTR-based recovery; then
 FEC once a wired lab shows random loss. `process_cpu_percent` is unavailable for
 the sandboxed Teacher agent (shows 0).
 
+
+## 8. Wired-link scaling run (2026-10-04)
+
+Setup: Teacher MacBook M1 Pro `192.168.10.100` ↔ Mac Studio M1 Ultra
+`192.168.10.101` over a **Thunderbolt Bridge** cable (not 1 GbE; ping ~0.7 ms).
+All virtual Students run headless on the one Studio; one real Mac Student was
+also connected (hence `connected_students` = N+1). 1080p, motion workload on.
+
+| Run | Teacher encode p95 (interval p50 / p95) | encode FPS p50 | send Mbps p50 / p95 / max | Student decode FPS p50 / p95 | missing pkts | retransmits | IDR requests → forced |
+|---|---|---|---|---|---|---|---|
+| 10 (`wired-n10`, 45 s) | 20.9 / 26.1 ms | 31.4 | 3.8 / 25 / 52 | 31.0 / 32.9 | 0 | 0 | 12 → 2 |
+| 20 (`wired-n20`, 45 s) | 23.4 / 27.7 ms | 30.6 | 7.9 / 50 / 253 | 30.0 / 32.0 | 0 | 0 | 22 → 2 |
+| 40 (`wired-n40`, 60 s) | 21.6 / 30.0 ms | 27.5 | 40 / 223 / 272 | 28.0 / 32.0 | 0 | 0 | 47 → 3 |
+| Wi-Fi ref. (`n10-final2`) | 21.2 / 26.5 ms | — | 9.7 / 51 / — | 29 | 17 unrepaired | — | — |
+
+Findings:
+- Encode cost is flat in N (encode-once invariant holds); send rate scales
+  linearly with N. Peaks (≤272 Mbps) are join/IDR bursts × 41 receivers and stay
+  well under 1 Gbps.
+- Zero loss and zero NACK/retransmission at 40 receivers on the wire.
+- Each Student issues ~3 IDR requests, all during join; the keyframe gate
+  coalesces 47 requests into 3 forced IDRs.
+- 5 FPS decode intervals are the adaptive idle mode on a static screen
+  (~0.04 Mbps), not stalls.
+- Studio-side decode latency p50 rises 5 → 9.7 ms with 40 decoders on one
+  machine; that is the simulator host's load, not a Teacher limit.
+- Not yet representative: real 1 GbE switch, 40 distinct Windows PCs.
+
+Harness notes: `simulate-class.py` now drains Teacher IPC while waiting (the
+agent correctly drops IPC clients that stop reading for 3 s; at 40 Students the
+state pushes filled the socket and the first 40-run aborted before Stop).
+After a Student rebuild, macOS Local Network privacy blocked the Studio's
+Student with `No route to host` although the toggle showed enabled; toggling it
+off/on plus re-launching the app from the GUI restored access.

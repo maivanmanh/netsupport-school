@@ -18,6 +18,7 @@ import getpass
 import json
 import os
 import re
+import select
 import shlex
 import socket
 import struct
@@ -65,6 +66,12 @@ class Ipc:
             value = self.receive()
             if 'students' in value:
                 return value
+
+    def drain(self, deadline):
+        # select() before each whole frame so a timeout never splits one.
+        while (left := deadline - time.time()) > 0:
+            if select.select([self.socket], [], [], min(1.0, left))[0]:
+                self.receive()
 
     def command(self, action):
         self.serial += 1
@@ -155,7 +162,9 @@ def main():
             subprocess.run(['swiftc', str(source), '-o', str(binary)], check=True, timeout=180)
         workload = subprocess.Popen([str(binary), str(args.seconds)],
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(args.seconds)
+    # Keep draining state pushes: the agent drops IPC clients that stop reading
+    # for 3 s, and 40+ Students fill the socket buffer quickly.
+    ipc.drain(time.time() + args.seconds)
     ended_ms = int(time.time() * 1000)
     if owned_share:
         print('STOP', ipc.command('stop').get('ok'), flush=True)

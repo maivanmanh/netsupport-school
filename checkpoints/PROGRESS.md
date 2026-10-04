@@ -2894,3 +2894,19 @@ Details and numbers: docs/17_BROADCAST_OPTIMIZATION_PLAN.md §7.
   Observe, broadcast optimizations O1-O3) and pushed. Scanned for leaked SSH
   passwords before committing (none). Build output/logs stay ignored.
 - From now on: commit + push after each verified milestone (AGENTS.md §12).
+
+## 2026-10-04 — Wired scaling run: 10 / 20 / 40 simulated Students
+
+- Teacher MacBook `192.168.10.100` ↔ Mac Studio `192.168.10.101` over
+  Thunderbolt Bridge. Results table and findings: docs/17 §8.
+- 40/40 registered; 0 missing packets, 0 retransmissions; Student decode p50
+  28 FPS (p95 32); Teacher encode p95 ~22–30 ms independent of N; send p50 40 /
+  max 272 Mbps; 47 join IDR requests coalesced to 3 forced IDRs.
+- Fixed `scripts/simulate-class.py`: keep draining IPC during the share window
+  (select-based; the first 40-Student run lost its IPC socket and never sent Stop).
+- Gotcha: stale macOS Local Network grant after a Student rebuild → `No route
+  to host`; owner toggled the permission and relaunched the app via GUI.
+- Remaining risks: link is Thunderbolt not 1 GbE; all virtual Students share
+  one host; Windows Students not in this run.
+- Next: same ladder on the physical lab (1 GbE switch, real Windows PCs), and
+  error concealment / LTR for random-loss freezes (docs/17 §7 open item).
