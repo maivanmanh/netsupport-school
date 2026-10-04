@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "flutter/generated_plugin_registrant.h"
+#include <flutter/plugin_registrar_windows.h>
 
 namespace {
 
@@ -97,8 +98,14 @@ void SaveScreenshot(
                     "Could not write screenshot to Desktop.");
       return;
     }
-    result->Success(
-        flutter::EncodableValue(std::string(filename.begin(), filename.end())));
+    const int bytes = WideCharToMultiByte(CP_UTF8, 0, filename.data(),
+                                          static_cast<int>(filename.size()),
+                                          nullptr, 0, nullptr, nullptr);
+    std::string utf8_name(static_cast<size_t>(bytes), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, filename.data(),
+                        static_cast<int>(filename.size()), utf8_name.data(),
+                        bytes, nullptr, nullptr);
+    result->Success(flutter::EncodableValue(utf8_name));
     return;
   }
   result->Error("screenshot_name",
@@ -128,6 +135,61 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+  auto *registrar =
+      flutter::PluginRegistrarManager::GetInstance()
+          ->GetRegistrar<flutter::PluginRegistrarWindows>(
+              flutter_controller_->engine()->GetRegistrarForPlugin(
+                  "ClassroomObserveTexture"));
+  textures_ = registrar->texture_registrar();
+  observe_texture_ = std::make_shared<ObserveTexture>();
+  const auto surface = observe_texture_;
+  texture_variant_ =
+      std::make_unique<flutter::TextureVariant>(flutter::PixelBufferTexture(
+          [surface](size_t, size_t) { return surface->Copy(); }));
+  observe_channel_ =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+          flutter_controller_->engine()->messenger(), "classroom/observe",
+          &flutter::StandardMethodCodec::GetInstance());
+  observe_channel_->SetMethodCallHandler([this](const auto &call, auto result) {
+    if (call.method_name() == "attach") {
+      const auto *args = std::get_if<flutter::EncodableMap>(call.arguments());
+      if (!args) {
+        result->Error("invalid_path", "Observe surface missing");
+        return;
+      }
+      const auto entry = args->find(flutter::EncodableValue("path"));
+      const auto *path = entry == args->end()
+                             ? nullptr
+                             : std::get_if<std::string>(&entry->second);
+      if (!path) {
+        result->Error("invalid_path", "Observe surface missing");
+        return;
+      }
+      observe_texture_->Bind(*path);
+      if (texture_id_ < 0)
+        texture_id_ = textures_->RegisterTexture(texture_variant_.get());
+      if (texture_id_ < 0) {
+        result->Error("texture_registration",
+                      "Observe texture registration failed");
+        return;
+      }
+      if (!texture_timer_)
+        texture_timer_ = SetTimer(GetHandle(), 0x434C4153, 16, nullptr);
+      result->Success(flutter::EncodableValue(texture_id_));
+    } else if (call.method_name() == "stats") {
+      result->Success(flutter::EncodableValue(observe_texture_->Stats()));
+    } else if (call.method_name() == "detach") {
+      if (texture_timer_)
+        KillTimer(GetHandle(), texture_timer_);
+      texture_timer_ = 0;
+      observe_texture_->Pause();
+      // Keep the registration and buffers until engine teardown; its raster
+      // thread can still resolve the previous Texture layer during detach.
+      result->Success();
+    } else {
+      result->NotImplemented();
+    }
+  });
   files_channel_ =
       std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
           flutter_controller_->engine()->messenger(), "classroom/files",
@@ -175,9 +237,16 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  if (texture_timer_)
+    KillTimer(GetHandle(), texture_timer_);
+  texture_timer_ = 0;
+  observe_channel_.reset();
+  files_channel_.reset();
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }
+  texture_variant_.reset();
+  observe_texture_.reset();
 
   Win32Window::OnDestroy();
 }
@@ -186,6 +255,13 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  // window_manager can consume WM_TIMER. Handle our refresh before plugins
+  // so the native Observe texture keeps advancing beyond its first frame.
+  if (message == WM_TIMER && texture_timer_ && wparam == texture_timer_) {
+    if (observe_texture_->HasNewFrame())
+      textures_->MarkTextureFrameAvailable(texture_id_);
+    return 0;
+  }
   // Give Flutter, including plugins, an opportunity to handle window messages.
   if (flutter_controller_) {
     std::optional<LRESULT> result =

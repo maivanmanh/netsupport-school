@@ -8,6 +8,7 @@
 #include <flutter/standard_method_codec.h>
 #include <memory>
 
+#include "observe_texture.h"
 #include "win32_window.h"
 
 // A window that does nothing but host a Flutter view.
@@ -32,6 +33,13 @@ private:
   std::unique_ptr<flutter::FlutterViewController> flutter_controller_;
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
       files_channel_;
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
+      observe_channel_;
+  std::shared_ptr<ObserveTexture> observe_texture_;
+  std::unique_ptr<flutter::TextureVariant> texture_variant_;
+  flutter::TextureRegistrar *textures_ = nullptr;
+  int64_t texture_id_ = -1;
+  UINT_PTR texture_timer_ = 0;
 };
 
 #endif // RUNNER_FLUTTER_WINDOW_H_

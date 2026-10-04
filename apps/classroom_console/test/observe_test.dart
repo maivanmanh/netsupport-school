@@ -148,6 +148,11 @@ void main() {
       expect(find.text('Observe · Read only'), findsOneWidget);
       expect(find.byType(Texture), findsOneWidget);
       expect(find.byType(ObserveStatsPanel), findsNothing);
+      // Widget setup may take real seconds on Windows/VMs. Keep the mocked
+      // live report fresh at the point where its display is being tested.
+      (a.state['observe'] as Map)['metrics']['sampled_unix_us'] =
+          DateTime.now().microsecondsSinceEpoch;
+      a.notifyListeners();
       await t.tap(find.byKey(const ValueKey('observe-stats-toggle')));
       await t.pump();
       expect(find.byType(ObserveStatsPanel), findsOneWidget);
@@ -436,11 +441,9 @@ void main() {
         ),
       );
     }
-    expect(
-      a.inputs.where((v) => v['action'] == 'scroll').map((v) => v['y']),
-      [1],
-      reason: 'Small wheel deltas must accumulate rather than disappear',
-    );
+    expect(a.inputs.where((v) => v['action'] == 'scroll').map((v) => v['y']), [
+      1,
+    ], reason: 'Small wheel deltas must accumulate rather than disappear');
     a.inputs.clear();
     await t.sendEventToBinding(
       const PointerPanZoomStartEvent(pointer: 8, position: Offset(400, 300)),
@@ -458,11 +461,9 @@ void main() {
     await t.sendEventToBinding(
       const PointerPanZoomEndEvent(pointer: 8, position: Offset(400, 300)),
     );
-    expect(
-      a.inputs.where((v) => v['action'] == 'scroll').map((v) => v['y']),
-      [1],
-      reason: 'Trackpad content pan must become remote wheel input',
-    );
+    expect(a.inputs.where((v) => v['action'] == 'scroll').map((v) => v['y']), [
+      1,
+    ], reason: 'Trackpad content pan must become remote wheel input');
     // A new frame shape changes the crop immediately after native stats update.
     source = const Size(1920, 1080);
     await t.pump(const Duration(seconds: 1));

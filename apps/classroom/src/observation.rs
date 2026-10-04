@@ -325,15 +325,20 @@ impl Output {
     }
     pub fn present(&mut self, frame: &DecodedFrame) -> Result<bool> {
         anyhow::ensure!(
-            frame.format == media_core::DecodedPixelFormat::Bgra,
-            "Native Observe texture requires BGRA"
-        );
-        anyhow::ensure!(
-            frame.width <= 1920
-                && frame.height <= 1080
-                && frame.bytes.len() == frame.width as usize * frame.height as usize * 4,
+            frame.width <= 1920 && frame.height <= 1080,
             "Invalid Observe pixels"
         );
+        // Windows MF returns padded NV12 for the native Student GPU renderer.
+        // The Observe surface has a packed BGRA contract on both platforms.
+        // Convert outside the cross-process lock; class rendering stays NV12.
+        let pixels = media_core::DecodedFrameRef {
+            format: frame.format,
+            bytes: &frame.bytes,
+            width: frame.width,
+            height: frame.height,
+        }
+        .bgra()?;
+        let pixel_bytes = frame.width as usize * frame.height as usize * 4;
         if self.file.try_lock_exclusive().is_err() {
             return Ok(false);
         } // latest frame, no UI wait
@@ -342,7 +347,7 @@ impl Output {
         self.map[4..8].copy_from_slice(&frame.height.to_le_bytes());
         self.map[8..16].copy_from_slice(&self.sequence.to_le_bytes());
         self.map[16..24].copy_from_slice(&media_core::unix_us().to_le_bytes());
-        self.map[HEADER..HEADER + frame.bytes.len()].copy_from_slice(&frame.bytes);
+        self.map[HEADER..HEADER + pixel_bytes].copy_from_slice(&pixels[..pixel_bytes]);
         FileExt::unlock(&self.file)?;
         Ok(true)
     }

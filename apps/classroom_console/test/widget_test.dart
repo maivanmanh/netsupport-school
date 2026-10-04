@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -118,10 +119,16 @@ void main() {
       ..error = 'ScreenCaptureKit TCC declined';
     await tester.pumpWidget(ClassroomApp(agent: a));
     await tester.pumpAndSettle();
-    expect(find.text('Open Settings'), findsOneWidget);
-    await tester.tap(find.text('Open Settings'));
-    await tester.pumpAndSettle();
-    expect(calls, contains('openScreenRecordingSettings'));
+    if (Platform.isMacOS) {
+      expect(find.text('Open Settings'), findsOneWidget);
+      await tester.tap(find.text('Open Settings'));
+      await tester.pumpAndSettle();
+      expect(calls, contains('openScreenRecordingSettings'));
+    } else {
+      expect(find.text('Open Settings'), findsNothing);
+      expect(find.text('ScreenCaptureKit TCC declined'), findsOneWidget);
+      expect(calls, isEmpty);
+    }
     await tester.pumpWidget(const SizedBox());
     a.dispose();
   });

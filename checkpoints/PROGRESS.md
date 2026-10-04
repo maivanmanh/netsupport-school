@@ -2929,3 +2929,31 @@ Details and numbers: docs/17_BROADCAST_OPTIMIZATION_PLAN.md §7.
   192.168.10.100 for the run, then restored to `auto`.
 - Next: physical lab ladder with a Windows Teacher (1 GbE, 40 PCs); error
   concealment / LTR for random-loss freezes.
+
+## 2026-10-04 — Windows Flutter Teacher build and same-host smoke
+
+Status: Windows VM integration verified; physical LAN acceptance remains pending.
+
+- Built ARM64 Rust diagnostics and delivered x64 MSVC Teacher/Student with Flutter
+  3.47.6 on Windows 11 Pro Parallels (4 CPUs, 8 GB, 1920x1080).
+- Fixed MSVC screenshot filename conversion; added missing Windows Observe native
+  texture/channel with 3 bounded reusable buffers and nonblocking map locks;
+  converted MF NV12 at the Observe sink; fixed refresh timer dispatch/ID.
+- Fixed protocol round-trip fixture and platform/real-clock assumptions in Flutter
+  tests. Packager resolves relative helper paths and includes the Student binary.
+- Verified actual console-spawned agent, Student registration/thumbnail, two
+  Share/Stop cycles, Student identity-preserving reconnect, continuous Observe.
+  Final native sequence samples 37 -> 135, no Observe error. Test processes stopped.
+- 20 s x64 broadcast: render ~28.26 FPS, encode p95 ~19–20 ms, one encoder,
+  zero decode errors/final missing packets/send errors; two NACK sequences repaired.
+- Passed Rust workspace lib/bin tests, Flutter 18 tests/analyze, formatting;
+  app-bin Clippy passes with -D warnings -A deprecated (pre-existing fetch_update
+  warning on Rust 1.99; retain Rust 1.82 compatibility). No firewall script changes.
+- Commands and full limits: diagnostics/2026-10-04-windows-flutter-teacher.md.
+  Evidence: target/windows-flutter-smoke/ (failed attempts retained; final 124228).
+  Bundle: target/Classroom-Console-Windows-x64/classroom_console.exe.
+- Limits: VM, x64 emulation, same-screen feedback; no optical/40-PC acceptance.
+  Some captures show foreground terminal, so readability is not claimed. Control
+  input/screenshot not exercised; Windows file picker still unimplemented.
+- Exact next step: one separate physical Windows Student + controlled text/scroll
+  and visual cursor/Observe check, optical latency, then wired 1/5/10/20/40 ladder.

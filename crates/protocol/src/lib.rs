@@ -338,6 +338,7 @@ mod tests {
             selected_local_ip: "10.0.55.11".to_owned(),
             media_udp_port: 47_810,
             feedback_udp_port: 47_811,
+            pointer_overlay: true,
         });
         let encoded = original.encode_to_vec();
         let decoded = Envelope::decode(encoded.as_slice()).unwrap();

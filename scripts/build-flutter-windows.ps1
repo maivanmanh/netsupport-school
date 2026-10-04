@@ -1,6 +1,7 @@
 param([Parameter(Mandatory=$true)][string]$RustAgent)
 $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
+$RustAgent=(Resolve-Path -LiteralPath $RustAgent).Path
 Push-Location "$root/apps/classroom_console"
 try {
  flutter pub get
@@ -11,5 +12,7 @@ try {
  New-Item -ItemType Directory -Force $destination | Out-Null
  Copy-Item 'build/windows/x64/runner/Release/*' $destination -Recurse -Force
  Copy-Item $RustAgent "$destination/ClassroomAgent.exe" -Force
+ $student=Join-Path (Split-Path $RustAgent -Parent) 'ClassroomStudent.exe'
+ if(Test-Path -LiteralPath $student){Copy-Item -LiteralPath $student "$destination/ClassroomStudent.exe" -Force}
  Write-Output "Bundle: $destination"
 } finally { Pop-Location }
