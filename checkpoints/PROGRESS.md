@@ -3028,3 +3028,12 @@ Status: functional integration and faults exercised; shared-host 20/40 decode fa
 - Rust app x64 107 tests passed + 1 ignored; fmt/release passed. Non-strict Clippy completed with existing warnings; strict warnings remain failing. Flutter analyze and 24 tests passed; Windows release rebuilt. No raw IPC endpoints, passwords or logs are committed.
 - Detailed evidence and limitations: diagnostics/2026-10-04-windows-teacher-followup.md. Mac permission path is /Users/mvmanh/Classroom-teacher-validation/Classroom Student.app on .205; Windows ARM Student moved to .105. Local deletion review rejection was handled using a new isolated package, without replacing v1 release assets.
 - Exact next step: separate raw UDP/depacketization sinks from shared-host decode, then isolated physical Windows x64 over Ethernet with confirmed foreground workload, optical latency and the required 1/5/10/20/40 ladder. Run actual sleep and additional DPI cases in a supporting environment.
+
+## 2026-10-04 — Owner-requested agent handoff conclusions
+
+Status: documentation updated; no new runtime changes or test results.
+
+- Expanded AGENTS.md with the Windows Teacher conclusion, three verified fixes and ordered follow-up priorities: separate shared-host receiver/network bottlenecks, reduce ARM recovery/render lag, measure controlled physical wired performance, then complete real sleep/DPI/continuous 1080p soak cases.
+- Explicitly retained bounded latest-frame queues and Phase 1 acceptance gates. Zero Teacher send errors and shared-host simulations do not establish successful receiver rendering or physical 40-PC acceptance; no redesign is justified by the evidence collected so far.
+- Verified the documentation against diagnostics/2026-10-04-windows-teacher-followup.md and checked the Git diff for whitespace errors. Existing generated plugin files are outside this documentation checkpoint.
+- Exact next step: measure UDP/depacketization without decode on the simulator host, then compare with decode under the same confirmed workload before changing receiver/network code.

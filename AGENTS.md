@@ -208,3 +208,44 @@ Before copying a replacement build to a test machine, stop the app and its owned
 ### Follow-up Windows Teacher validation
 
 See [the four-group follow-up report](checkpoints/diagnostics/2026-10-04-windows-teacher-followup.md) for encode pacing/GOP and crash-recovery changes. The shared-host 1080p simulation reached 1/5/10 receivers but failed decode at 20/40; it is not physical wired acceptance. A/B captures were 1488×768, the 30-minute soak had resolution changes, and actual sleep plus 125%/150% DPI remain unverified. Do not describe those cases as passed or overwrite the published v1 assets with a validation build.
+
+### Kết luận và thứ tự ưu tiên sau bài test Windows Teacher
+
+Windows Teacher đã được kiểm chứng về chức năng và vòng đời trong môi trường
+Parallels/LAN Wi-Fi hiện tại; chưa đạt nghiệm thu chiếu mượt 1080p cho 40 PC.
+Ba lỗi đã sửa và kiểm tra lại: admission encoder vượt giới hạn FPS, software MFT
+không áp dụng cadence GOP qua thuộc tính cũ, và endpoint IPC timeout ngăn Flutter
+khởi động lại Rust helper đã crash. Sau bản sửa, helper tự khởi động lại, hai
+Student nhận lại phiên chiếu và Exit đóng GUI/helper thử nghiệm.
+
+Agent tiếp theo phải ưu tiên các việc sau trước khi bổ sung tính năng mới:
+
+1. **Tách nguyên nhân thất bại ở mức 20/40 receiver.** Teacher vẫn encode khoảng
+   29 FPS bằng một encoder, nhưng decode phía nhận giảm mạnh. Các simulator và
+   Windows ARM Student dùng chung host Mac/NIC; chưa thể quy nguyên nhân cho
+   Teacher, Wi-Fi hoặc decoder riêng lẻ. Đo UDP receive/depacketize với sink không
+   decode, sau đó bật decode và so sánh ingress drops, late packets, backlog,
+   NACK/cache misses, keyframe recovery và tải host. Giữ cùng workload và cấu hình
+   giữa các lượt; zero send errors không chứng minh receiver nhận và render tốt.
+2. **Giảm thời gian phục hồi và khoảng cách decode/render trên Windows ARM.**
+   A/B bản cuối ở 1488×768 có decode khoảng 28,49 FPS, render 24,31 FPS và recovery
+   peak khoảng 1063 ms. Xác định thời gian nằm ở ingress, chờ keyframe, decode hay
+   renderer trước khi sửa. Giữ bounded queues/latest-frame-wins; không tăng buffer
+   để che mất gói hoặc đổi độ trễ thấp lấy phát đủ frame cũ. Mọi thay đổi repair,
+   NACK, pacing hoặc renderer cần lượt đo đối chứng, không coi giả thuyết là lỗi
+   đã được chứng minh.
+3. **Đo đúng mục tiêu nghiệm thu.** Xác nhận workload chữ, cuộn trang và chuyển
+   động thực sự ở foreground; ghi độ phân giải và bitrate thực tế. Ladder vừa rồi
+   là 1080p nhưng nội dung ít chuyển động, stream khoảng 0,60–1,19 Mbps dù target
+   6 Mbps. Dùng Windows x64 vật lý qua Ethernet, đo độ trễ quang học và ladder
+   1/5/10/20/40 theo `docs/06_PERFORMANCE_ACCEPTANCE.md`. Không dùng kết quả
+   simulator trên một host để tuyên bố hỗ trợ 40 PC vật lý.
+4. **Hoàn tất các trường hợp chưa xác minh.** Chạy sleep/resume thật trên môi
+   trường hỗ trợ, DPI 125%/150% và soak 1080p liên tục với độ phân giải cố định.
+   Lượt hiện tại có `ERROR_NOT_SUPPORTED` khi sleep, custom scaling khóa lựa chọn
+   DPI và Parallels tự đổi độ phân giải trong soak; các trường hợp này chưa pass.
+
+Chưa có bằng chứng yêu cầu redesign Teacher. Giữ các quyết định media hiện tại,
+ưu tiên xác định nút thắt receiver/network và giảm thời gian phục hồi. Các mốc
+nghiệm thu Phase 1 phía trên vẫn áp dụng; báo cáo chi tiết liên kết ở mục trước
+là nguồn bằng chứng, không suy rộng số đo A/B thành hiệu năng 1080p/40 máy.
