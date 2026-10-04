@@ -200,3 +200,11 @@ Do not proceed to future features until Phase 1 has demonstrated the core path a
 ## Owner-authorized Windows Teacher integration test (2026-10-04)
 
 The owner expanded the active integration scope to include the Flutter/Rust Teacher running on Windows. The Windows 11 ARM development machine was exercised as Teacher over Wi-Fi LAN with macOS and Windows ARM Student endpoints. Lifecycle, settings, cursor hiding, file transfer and diagnostics were tested; this does not constitute wired-LAN performance acceptance or a 40-physical-PC test. See the detailed Vietnamese evidence, limitations and release package record in [checkpoints/diagnostics/2026-10-04-lifecycle-settings-diagnostics.md](checkpoints/diagnostics/2026-10-04-lifecycle-settings-diagnostics.md) and [docs/18_WINDOWS_TEACHER_TEST_AND_V1_RELEASE.md](docs/18_WINDOWS_TEACHER_TEST_AND_V1_RELEASE.md). The Phase 1 acceptance criteria above remain in force.
+
+### Owner instructions for replacing LAN test builds
+
+Before copying a replacement build to a test machine, stop the app and its owned helpers, verify the exact old binary/bundle path, then remove that old build. Preserve settings, profiles, logs and unrelated applications. Announce the exact macOS `.app` path so the owner can grant Screen Recording and Accessibility; do not change privacy grants through automation. The current Mac Student permission target is `/Users/mvmanh/Classroom-teacher-validation/Classroom Student.app` on `192.168.50.205`; Windows ARM Student is now `192.168.50.105`. When a deletion is rejected by automatic tool review, report that limitation and use an isolated new test package without replacing a running binary.
+
+### Follow-up Windows Teacher validation
+
+See [the four-group follow-up report](checkpoints/diagnostics/2026-10-04-windows-teacher-followup.md) for encode pacing/GOP and crash-recovery changes. The shared-host 1080p simulation reached 1/5/10 receivers but failed decode at 20/40; it is not physical wired acceptance. A/B captures were 1488×768, the 30-minute soak had resolution changes, and actual sleep plus 125%/150% DPI remain unverified. Do not describe those cases as passed or overwrite the published v1 assets with a validation build.

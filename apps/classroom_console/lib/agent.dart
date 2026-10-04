@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:window_manager/window_manager.dart';
+import 'process_liveness.dart';
 
 class Agent extends ChangeNotifier {
   Agent(this.args, {this.closeApplication});
@@ -214,8 +215,18 @@ class Agent extends ChangeNotifier {
       try {
         if (await endpoint.exists()) {
           try {
-            await attach();
-            return;
+            final descriptor =
+                jsonDecode(await endpoint.readAsString())
+                    as Map<String, dynamic>;
+            if (windowsProcessIsAlive(descriptor['pid'] as int?) == false) {
+              // A dead owner can leave an IPC port that times out instead of
+              // refusing the connection. Do not mistake a paused live helper
+              // for a dead one and launch a second Teacher.
+              await endpoint.delete();
+            } else {
+              await attach();
+              return;
+            }
           } on SocketException catch (e) {
             socket?.destroy();
             socket = null;
@@ -291,6 +302,7 @@ class Agent extends ChangeNotifier {
       }
     } catch (e) {
       error = e.toString();
+      await log('console startup failed: $e');
       notifyListeners();
     }
   }

@@ -3015,3 +3015,16 @@ Status: functional packages published; Phase 1 wired scaling acceptance remains 
 - Verified local ZIP listings, absence of log paths, asset sizes and generated checksums. Documentation commit f2ef43d was pushed to main before publishing.
 - Remaining: native macOS status-menu Exit/reopen is unverified; ARM/Wi-Fi recovery remains poor; physical Windows x64 wired test and 1/5/10/20/40 performance ladder are still required by docs/06_PERFORMANCE_ACCEPTANCE.md.
 - Exact next step: manually verify macOS status-menu Exit and Finder relaunch, then test an isolated physical Windows x64 Student over wired Ethernet before beginning the acceptance ladder.
+
+## 2026-10-04 — Windows Teacher four-group follow-up
+
+Status: functional integration and faults exercised; shared-host 20/40 decode fails; wired acceptance remains pending.
+
+- Enforced a bounded rolling one-second encode admission budget after measuring >30 FPS under fresh capture. Prefer the documented Windows MF GOP-size property, with fallback for other transforms. Final 1488×768 A/B Teacher encode ~29.44–29.59 FPS, Windows ARM decode/render ~28.49/24.31 FPS, Mac ~29.45/26.34; recovery on ARM still exceeds one second.
+- Exercised desktop size changes and restart-on-fitted-size-change, owner-confirmed unlock, and an actual 5-second helper pause/resume. Native Windows sleep returned ERROR_NOT_SUPPORTED; custom scaling disables the DPI selector, so real sleep and 125%/150% remain unverified.
+- Completed a 30-minute functional soak with reconnect/late join and Share/Stop. Parallels changed resolution until owner pinned 1080p; simulation selected idle real Students for some phases. This is not 30 minutes of uninterrupted 1080p rendering.
+- Same Teacher PID/one encoder through 90-second 1080p fan-out levels 1/5/10/20/40. Shared Mac headless receivers decode ~29 FPS through 10, ~2.19–4.14 FPS at 20, and 0–0.011 FPS at 40. Teacher send errors remain zero; shared decoder capacity and Wi-Fi burst/loss require separation. Foreground was terminal/light content, not a controlled 6 Mbps motion workload.
+- Native UI kill/reopen retained its helper. Helper kill exposed stale IPC timeout preventing respawn; Flutter now queries endpoint PID before attach and only discards ownership confirmed dead. New tests cover live/exited/unknown owners; native post-fix recovery and shutdown evidence is recorded in the detailed report.
+- Rust app x64 107 tests passed + 1 ignored; fmt/release passed. Non-strict Clippy completed with existing warnings; strict warnings remain failing. Flutter analyze and 24 tests passed; Windows release rebuilt. No raw IPC endpoints, passwords or logs are committed.
+- Detailed evidence and limitations: diagnostics/2026-10-04-windows-teacher-followup.md. Mac permission path is /Users/mvmanh/Classroom-teacher-validation/Classroom Student.app on .205; Windows ARM Student moved to .105. Local deletion review rejection was handled using a new isolated package, without replacing v1 release assets.
+- Exact next step: separate raw UDP/depacketization sinks from shared-host decode, then isolated physical Windows x64 over Ethernet with confirmed foreground workload, optical latency and the required 1/5/10/20/40 ladder. Run actual sleep and additional DPI cases in a supporting environment.

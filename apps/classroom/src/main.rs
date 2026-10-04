@@ -40,6 +40,7 @@ mod compact_log;
 mod dashboard_view;
 mod desktop_tray;
 mod diagnostics;
+mod encode_pacer;
 mod fanout;
 mod keyframe_gate;
 mod launcher;
@@ -1206,7 +1207,7 @@ fn run_teacher_media_inner(
     let ends = share_seconds.map(|seconds| started + Duration::from_secs(seconds));
     let mut quality = QualityController::new(&config.video, started);
     let mut next_tick = started;
-    let mut last_encode_at: Option<Instant> = None;
+    let mut encode_pacer = encode_pacer::EncodePacer::new(config.video.max_fps);
     let mut interval_aligned_encodes = 0_u64;
     let mut latest_frame: Option<VideoFrame> = None;
     let mut fresh_frame_pending = false;
@@ -1412,15 +1413,21 @@ fn run_teacher_media_inner(
                 next_tick = now; // start the refinement burst right away
             }
         }
-        let frame_interval = if refine.refining() {
-            Duration::from_secs_f64(1.0 / f64::from(refinement::REFINE_FPS.max(target_fps)))
+        let encode_fps = if refine.refining() {
+            refinement::REFINE_FPS.max(target_fps)
         } else {
-            Duration::from_secs_f64(1.0 / f64::from(target_fps))
-        };
+            target_fps
+        }
+        .min(config.video.max_fps);
+        let frame_interval =
+            Duration::from_nanos(1_000_000_000_u64.div_ceil(u64::from(encode_fps)));
         // Capture-aligned encode: a fresh frame is encoded as soon as the fps
-        // cap allows (85 % of the interval since the last encode) instead of
+        // cap allows instead of
         // waiting for a free-running tick that is out of phase with capture.
-        let earliest = last_encode_at.map_or(now, |at: Instant| at + frame_interval.mul_f64(0.85));
+        // Activity/refinement may advance the requested tick, but cannot bypass
+        // the cap or accumulate a catch-up burst after a stalled encode.
+        let earliest = encode_pacer.deadline(now, now, frame_interval);
+        next_tick = encode_pacer.deadline(now, next_tick, frame_interval);
         if config.video.capture_aligned_encode && fresh_frame_pending {
             let aligned = earliest.max(now);
             if aligned < next_tick {
@@ -1450,6 +1457,7 @@ fn run_teacher_media_inner(
                     }
                 }
             }
+            next_tick = encode_pacer.deadline(Instant::now(), next_tick, frame_interval);
             let remaining = next_tick.saturating_duration_since(Instant::now());
             if !remaining.is_zero() {
                 thread::sleep(remaining);
@@ -1650,7 +1658,7 @@ fn run_teacher_media_inner(
             encoder.request_keyframe()?;
         }
         let encode_started = Instant::now();
-        last_encode_at = Some(encode_started);
+        encode_pacer.admitted(encode_started);
         if fresh_input {
             teacher_stages.record(
                 "fresh_capture_to_encode_age",

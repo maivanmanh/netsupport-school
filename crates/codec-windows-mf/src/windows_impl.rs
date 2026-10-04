@@ -18,12 +18,12 @@ use windows::{
             CODECAPI_AVDecNumWorkerThreads, CODECAPI_AVEncCommonLowLatency,
             CODECAPI_AVEncCommonMeanBitRate, CODECAPI_AVEncCommonRateControlMode,
             CODECAPI_AVEncCommonRealTime, CODECAPI_AVEncMPVDefaultBPictureCount,
-            CODECAPI_AVEncVideoForceKeyFrame, CODECAPI_AVEncVideoMaxKeyframeDistance,
-            CODECAPI_AVLowLatencyMode, ICodecAPI, IMF2DBuffer, IMFActivate, IMFMediaBuffer,
-            IMFMediaEventGenerator, IMFMediaType, IMFSample, IMFShutdown, IMFTransform,
-            METransformHaveOutput, METransformNeedInput, MFCreateAlignedMemoryBuffer,
-            MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample, MFMediaType_Video,
-            MFSampleExtension_CleanPoint, MFShutdown, MFStartup, MFTEnumEx,
+            CODECAPI_AVEncMPVGOPSize, CODECAPI_AVEncVideoForceKeyFrame,
+            CODECAPI_AVEncVideoMaxKeyframeDistance, CODECAPI_AVLowLatencyMode, ICodecAPI,
+            IMF2DBuffer, IMFActivate, IMFMediaBuffer, IMFMediaEventGenerator, IMFMediaType,
+            IMFSample, IMFShutdown, IMFTransform, METransformHaveOutput, METransformNeedInput,
+            MFCreateAlignedMemoryBuffer, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample,
+            MFMediaType_Video, MFSampleExtension_CleanPoint, MFShutdown, MFStartup, MFTEnumEx,
             MFT_FRIENDLY_NAME_Attribute, MFVideoArea, MFVideoFormat_H264, MFVideoFormat_NV12,
             MFVideoInterlace_Progressive, MFSTARTUP_FULL, MFT_CATEGORY_VIDEO_DECODER,
             MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG, MFT_ENUM_FLAG_ASYNCMFT,
@@ -883,12 +883,29 @@ fn configure_encoder_codec(codec: &ICodecAPI, config: H264Config) {
         config.bitrate,
         "mean bitrate",
     );
-    try_codec_u32(
+    // The Microsoft H.264 MFT documents GOPSize as its keyframe cadence
+    // property. Some transforms accept MaxKeyframeDistance without applying
+    // it, leaving a default one-second GOP and unnecessary packet bursts.
+    // https://learn.microsoft.com/en-us/windows/win32/medfound/h-264-video-encoder
+    match set_codec_u32(
         codec,
-        &CODECAPI_AVEncVideoMaxKeyframeDistance,
+        &CODECAPI_AVEncMPVGOPSize,
         config.keyframe_interval_frames,
-        "keyframe distance",
-    );
+    ) {
+        Ok(()) => info!(
+            gop_frames = config.keyframe_interval_frames,
+            "encoder GOP size accepted"
+        ),
+        Err(error) => {
+            warn!(%error, "encoder GOP size rejected; trying keyframe distance");
+            try_codec_u32(
+                codec,
+                &CODECAPI_AVEncVideoMaxKeyframeDistance,
+                config.keyframe_interval_frames,
+                "keyframe distance",
+            );
+        }
+    }
 }
 
 fn configure_decoder_codec_latency(transform: &IMFTransform) {
