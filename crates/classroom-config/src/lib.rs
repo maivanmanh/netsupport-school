@@ -84,6 +84,14 @@ pub struct NetworkConfig {
     pub send_pacing_mbps: u32,
     pub bind_ip: String,
     pub interface: String,
+    /// Teacher RTP fan-out worker threads (Students sharded by client id),
+    /// running off the encode thread with a one-AU bounded queue each.
+    #[serde(default = "default_fanout_threads")]
+    pub fanout_threads: u32,
+    /// Per-Student connected UDP sockets sharing the Teacher media port:
+    /// avoids a route lookup per `sendto` (4-7x faster on macOS).
+    #[serde(default = "default_true")]
+    pub connected_fanout: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -139,6 +147,9 @@ pub struct VideoConfig {
 }
 const fn default_true() -> bool {
     true
+}
+const fn default_fanout_threads() -> u32 {
+    4
 }
 const fn default_refine_percent() -> u32 {
     250
@@ -298,6 +309,11 @@ impl Config {
         if self.network.send_pacing_mbps > 10_000 {
             return Err(ConfigError::Validation(
                 "network.send_pacing_mbps must be 0..=10000 (0 disables pacing)".to_owned(),
+            ));
+        }
+        if !(1..=16).contains(&self.network.fanout_threads) {
+            return Err(ConfigError::Validation(
+                "network.fanout_threads must be 1..=16".to_owned(),
             ));
         }
         if !(1..=100).contains(&self.video.nack_repair_ms) {

@@ -39,6 +39,7 @@ mod classroom_tools;
 mod compact_log;
 mod dashboard_view;
 mod desktop_tray;
+mod fanout;
 mod keyframe_gate;
 mod launcher;
 mod media_activity;
@@ -1189,7 +1190,6 @@ fn run_teacher_media_inner(
     let mut previous_pointer_skipped = 0_u64;
     let mut endpoints = HashMap::new();
     let mut udp_ready_clients = HashSet::new();
-    let mut endpoint_send_warning_at = HashMap::new();
     let mut last_sent_capture = None;
     // O3: one IDR per coalescing window for joins/repairs; deferred, not dropped.
     let mut keyframes = keyframe_gate::KeyframeGate::new(Duration::from_millis(u64::from(
@@ -1218,20 +1218,24 @@ fn run_teacher_media_inner(
     let mut interval_encoded_bytes = 0_u64;
     let mut interval_max_access_unit_bytes = 0_u64;
     let mut encoded_keyframes = 0_u64;
-    let mut sent_packets = 0_u64;
-    let mut sent_bytes = 0_u64;
-    let mut send_errors = 0_u64;
-    let mut send_would_block = 0_u64;
-    let mut send_retry_recovered = 0_u64;
-    let mut send_abandoned_packets = 0_u64;
-    let mut interval_send_retry_wait = Duration::ZERO;
-    let mut interval_send_pacing_wait = Duration::ZERO;
+    // Fan-out runs on worker threads so a forty-Student IDR burst does not
+    // stall the next capture/encode (docs/17 §9).
+    let fanout = fanout::Fanout::start(
+        socket,
+        fanout::FanoutConfig {
+            workers: config.network.fanout_threads as usize,
+            connected: config.network.connected_fanout,
+            pacing_mbps: config.network.send_pacing_mbps,
+            max_pacing_span: Duration::from_millis(8)
+                .min(Duration::from_secs_f64(1.0 / f64::from(config.video.max_fps.max(1))) / 3),
+            send_buffer_bytes: MEDIA_SOCKET_SEND_BUFFER_BYTES,
+        },
+    )?;
+    let mut previous_fanout = FanoutSnapshot::default();
     let mut encode_latencies = Vec::new();
     let mut interval_encode_latencies = Vec::new();
     let mut teacher_stages = media_core::diagnostics::StageMetrics::default();
     let mut interval_started = started;
-    let mut interval_packets = 0_u64;
-    let mut interval_bytes = 0_u64;
     let mut previous_repair_bytes = 0_u64;
     let mut interval_encoded_frames = 0_u64;
     let mut interval_capture_frames = capture.statistics().frames_acquired;
@@ -1277,7 +1281,6 @@ fn run_teacher_media_inner(
                     overlay_clients.remove(&client_id);
                     endpoints.remove(&client_id);
                     udp_ready_clients.remove(&client_id);
-                    endpoint_send_warning_at.remove(&client_id);
                     quality.remove_receiver(client_id);
                     info!(client_id, endpoint = %endpoint, connected_students = endpoints.len(), "teacher removed disconnected UDP media endpoint");
                 }
@@ -1501,6 +1504,9 @@ fn run_teacher_media_inner(
             let repair_interval_bytes = repair_bytes.saturating_sub(previous_repair_bytes);
             previous_repair_bytes = repair_bytes;
             log_stages("teacher", repair.diagnostics());
+            let fan = FanoutSnapshot::take(&fanout.stats);
+            let interval_packets = fan.sent_packets - previous_fanout.sent_packets;
+            let interval_bytes = fan.sent_bytes - previous_fanout.sent_bytes;
             info!(
                 connected_students = endpoints.len(),
                 connected_students_min = interval_min_students,
@@ -1533,12 +1539,16 @@ fn run_teacher_media_inner(
                 process_cpu_percent = process.cpu_percent,
                 process_working_set_bytes = process.working_set_bytes,
                 sent_packets = interval_packets,
-                send_errors,
-                send_would_block,
-                send_retry_recovered,
-                send_abandoned_packets,
-                send_retry_wait_interval_ms = interval_send_retry_wait.as_secs_f64() * 1_000.0,
-                send_pacing_wait_interval_ms = interval_send_pacing_wait.as_secs_f64() * 1_000.0,
+                send_errors = fan.send_errors,
+                send_would_block = fan.would_block,
+                send_retry_recovered = fan.retry_recovered,
+                send_abandoned_packets = fan.abandoned_packets,
+                send_retry_wait_interval_ms = (fan.retry_wait_us - previous_fanout.retry_wait_us) as f64 / 1_000.0,
+                send_pacing_wait_interval_ms = (fan.pacing_wait_us - previous_fanout.pacing_wait_us) as f64 / 1_000.0,
+                fanout_handoff_wait_interval_ms = (fan.handoff_wait_us - previous_fanout.handoff_wait_us) as f64 / 1_000.0,
+                fanout_threads = config.network.fanout_threads,
+                fanout_connected_sockets = fanout.stats.connected_sockets.load(Ordering::Relaxed),
+                fanout_connect_failures = fanout.stats.connect_failures.load(Ordering::Relaxed),
                 repair_send_errors = repair.stats.errors.load(Ordering::Relaxed),
                 control_reports_dropped = repair.stats.reports_dropped.load(Ordering::Relaxed),
                 repair_send_mbps = repair_interval_bytes as f64 * 8.0 / interval_seconds / 1_000_000.0,
@@ -1606,6 +1616,8 @@ fn run_teacher_media_inner(
             }
             log_stages("teacher", encoder.take_diagnostics());
             log_stages("teacher", std::mem::take(&mut teacher_stages));
+            log_stages("teacher", fanout.take_stages());
+            previous_fanout = fan;
             interval_started = Instant::now();
             interval_min_students = endpoints.len();
             interval_max_students = endpoints.len();
@@ -1614,10 +1626,6 @@ fn run_teacher_media_inner(
             interval_encoded_bytes = 0;
             interval_max_access_unit_bytes = 0;
             interval_encode_latencies.clear();
-            interval_packets = 0;
-            interval_bytes = 0;
-            interval_send_retry_wait = Duration::ZERO;
-            interval_send_pacing_wait = Duration::ZERO;
         }
         let Some(frame) = latest_frame.as_ref() else {
             next_tick = Instant::now() + frame_interval;
@@ -1700,20 +1708,10 @@ fn run_teacher_media_inner(
             );
             teacher_stages.record("packetization", packetize_started.elapsed());
             let fanout_started = Instant::now();
-            let mut failed_endpoints = HashSet::new();
-            let mut pacer = udp_sender::PacketPacer::new(
-                packets.iter().map(Vec::len).sum(),
-                packets.len(),
-                udp_ready_clients.len(),
-                config.network.send_pacing_mbps,
-                Duration::from_millis(8).min(frame_interval / 3),
-            );
-            let mut send_budget =
-                udp_sender::SendBudget::new(Instant::now(), Duration::from_millis(10));
-            for (index, packet) in packets.iter().enumerate() {
-                pacer.before_packet(index);
-                let sequence_number = RtpPacket::parse(packet)?.sequence_number;
-                repair.cache(sequence_number, packet, Instant::now());
+            let mut outgoing = Vec::with_capacity(packets.len());
+            for packet in packets {
+                let sequence_number = RtpPacket::parse(&packet)?.sequence_number;
+                repair.cache(sequence_number, &packet, Instant::now());
                 original_packet_index += 1;
                 if drop_every_nth_rtp_packet != 0
                     && original_packet_index % u64::from(drop_every_nth_rtp_packet) == 0
@@ -1722,53 +1720,28 @@ fn run_teacher_media_inner(
                         u64::try_from(endpoints.len()).unwrap_or(u64::MAX);
                     continue;
                 }
-                for (&client_id, endpoint) in &endpoints {
-                    if !udp_ready_clients.contains(&client_id) {
-                        continue;
-                    }
-                    if failed_endpoints.contains(&client_id) {
-                        send_abandoned_packets += 1;
-                        continue;
-                    }
-                    match send_budget.send(socket, packet, *endpoint) {
-                        Ok(_) => {
-                            sent_packets += 1;
-                            interval_packets += 1;
-                            let packet_bytes = u64::try_from(packet.len()).unwrap_or(u64::MAX);
-                            sent_bytes += packet_bytes;
-                            interval_bytes += packet_bytes;
-                        }
-                        Err(error) => {
-                            send_errors += 1;
-                            send_abandoned_packets += 1;
-                            failed_endpoints.insert(client_id);
-                            let now = Instant::now();
-                            let should_warn =
-                                endpoint_send_warning_at
-                                    .get(&client_id)
-                                    .is_none_or(|previous| {
-                                        now.saturating_duration_since(*previous)
-                                            >= Duration::from_secs(5)
-                                    });
-                            if should_warn {
-                                endpoint_send_warning_at.insert(client_id, now);
-                                warn!(client_id, endpoint = %endpoint, %error, "teacher could not send RTP to Student; presentation continues");
-                            }
-                        }
-                    }
-                }
+                outgoing.push(packet);
             }
-            send_would_block += send_budget.would_block;
-            send_retry_recovered += send_budget.recovered;
-            interval_send_retry_wait += send_budget.retry_wait;
-            interval_send_pacing_wait += pacer.wait;
-            teacher_stages.record("udp_fanout", fanout_started.elapsed());
+            fanout.send(fanout::FanoutJob {
+                packets: outgoing,
+                targets: endpoints
+                    .iter()
+                    .filter(|(client_id, _)| udp_ready_clients.contains(*client_id))
+                    .map(|(&client_id, &endpoint)| (client_id, endpoint))
+                    .collect(),
+            });
+            teacher_stages.record("udp_fanout_handoff", fanout_started.elapsed());
         }
         next_tick += frame_interval;
         if next_tick < Instant::now() {
             next_tick = Instant::now() + frame_interval;
         }
     }
+    // Join the workers so the totals include the last AU.
+    let fanout_stats = std::sync::Arc::clone(&fanout.stats);
+    log_stages("teacher", fanout.take_stages());
+    drop(fanout);
+    let fan = FanoutSnapshot::take(&fanout_stats);
     capture_latencies.sort_unstable();
     let nack_requested_sequences = repair.stats.requested.load(Ordering::Relaxed);
     let nack_cache_misses = repair.stats.misses.load(Ordering::Relaxed);
@@ -1804,22 +1777,22 @@ fn run_teacher_media_inner(
         bitrate_change_first_access_unit_keyframes =
             summary.bitrate_change_first_access_unit_keyframes,
         encoded_stream_mbps = encoded_bytes as f64 * 8.0 / elapsed.as_secs_f64() / 1_000_000.0,
-        sent_packets,
+        sent_packets = fan.sent_packets,
         retransmitted_packets,
         encoded_keyframes,
         nack_requested_sequences,
         nack_cache_misses,
-        send_errors,
-        send_would_block,
-        send_retry_recovered,
-        send_abandoned_packets,
+        send_errors = fan.send_errors,
+        send_would_block = fan.would_block,
+        send_retry_recovered = fan.retry_recovered,
+        send_abandoned_packets = fan.abandoned_packets,
         intentionally_dropped_packets,
         connected_students = endpoints.len(),
         encoder_instances = 1,
         process_metrics_available = process.available,
         process_cpu_percent = process.cpu_percent,
         process_working_set_bytes = process.working_set_bytes,
-        aggregate_send_mbps = (sent_bytes + repair.stats.bytes.load(Ordering::Relaxed)) as f64
+        aggregate_send_mbps = (fan.sent_bytes + repair.stats.bytes.load(Ordering::Relaxed)) as f64
             * 8.0
             / elapsed.as_secs_f64()
             / 1_000_000.0,
@@ -2032,6 +2005,37 @@ async fn run_student_media(
     Ok(restart_requested)
 }
 
+/// Cumulative fan-out counters read once per telemetry interval.
+#[derive(Clone, Copy, Default)]
+struct FanoutSnapshot {
+    sent_packets: u64,
+    sent_bytes: u64,
+    send_errors: u64,
+    abandoned_packets: u64,
+    would_block: u64,
+    retry_recovered: u64,
+    retry_wait_us: u64,
+    pacing_wait_us: u64,
+    handoff_wait_us: u64,
+}
+
+impl FanoutSnapshot {
+    fn take(stats: &fanout::FanoutStats) -> Self {
+        let load = |counter: &std::sync::atomic::AtomicU64| counter.load(Ordering::Relaxed);
+        Self {
+            sent_packets: load(&stats.sent_packets),
+            sent_bytes: load(&stats.sent_bytes),
+            send_errors: load(&stats.send_errors),
+            abandoned_packets: load(&stats.abandoned_packets),
+            would_block: load(&stats.would_block),
+            retry_recovered: load(&stats.retry_recovered),
+            retry_wait_us: load(&stats.retry_wait_us),
+            pacing_wait_us: load(&stats.pacing_wait_us),
+            handoff_wait_us: load(&stats.handoff_wait_us),
+        }
+    }
+}
+
 fn bind_media_socket(port: u16) -> Result<UdpSocket> {
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_recv_buffer_size(MEDIA_SOCKET_RECEIVE_BUFFER_BYTES)?;
@@ -2046,6 +2050,8 @@ fn bind_media_socket(port: u16) -> Result<UdpSocket> {
 fn bind_teacher_media_socket(bind_ip: Ipv4Addr, port: u16) -> Result<UdpSocket> {
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_send_buffer_size(MEDIA_SOCKET_SEND_BUFFER_BYTES)?;
+    // Per-Student connected fan-out sockets share this address.
+    fanout::allow_shared_port(&socket)?;
     socket.bind(&SocketAddrV4::new(bind_ip, port).into())?;
     socket.set_nonblocking(true)?;
     let actual_send_buffer = socket.send_buffer_size()?;

@@ -119,6 +119,8 @@ def main():
     parser.add_argument('--base-port', type=int, default=48100)
     parser.add_argument('--workload', action='store_true', help='run the motion workload on the Teacher screen')
     parser.add_argument('--label', default='')
+    parser.add_argument('--student-interface', default='',
+                        help='adapter for the Students (e.g. bridge0) when the default route is another link')
     args = parser.parse_args()
     if not 1 <= args.count <= 60 or not 10 <= args.seconds <= 600 or not 0 <= args.drop_percent <= 50:
         parser.error('count 1..60, seconds 10..600, drop-percent 0..50')
@@ -137,6 +139,7 @@ def main():
         env = f'HOSTNAME={name} CLASSROOM_TEST_DROP_PERCENT={args.drop_percent}'
         command = (f'{env} nohup {REMOTE_BIN} --role student --teacher-ip {args.teacher} --headless '
                    f'--media-port {port} --feedback-port {port + 1} --config {sim}/sim.toml '
+                   f'{"--interface " + shlex.quote(args.student_interface) + " " if args.student_interface else ""}'
                    f'--launch-profile {sim}/profile-{i}.toml --log-file {sim}/{name}.log '
                    f'--share-seconds {args.seconds + 90} >/dev/null 2>&1 &')
         launches.append(command)

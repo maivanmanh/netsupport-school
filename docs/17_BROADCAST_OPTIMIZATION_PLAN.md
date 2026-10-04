@@ -215,3 +215,50 @@ state pushes filled the socket and the first 40-run aborted before Stop).
 After a Student rebuild, macOS Local Network privacy blocked the Studio's
 Student with `No route to host` although the toggle showed enabled; toggling it
 off/on plus re-launching the app from the GUI restored access.
+
+## 9. Fan-out off the encode thread (2026-10-04)
+
+Problem found in §8: RTP fan-out ran synchronously on the encode thread, one
+`sendto` per packet per Student. `udp_fanout` p95 grew 4 → 11 → 17 ms for
+10/20/40 Students (max 60–175 ms at an IDR) against a 33 ms frame budget;
+encode FPS fell to 27.5 and replaced frames rose 28 → 135 at 40 Students.
+Measured send cost: macOS unconnected `sendto` 28–40 µs (Thunderbolt bridge);
+the same 41×85-packet IDR burst takes 100–140 ms on one thread.
+
+Change (`apps/classroom/src/fanout.rs`, Teacher only, no protocol/Student change):
+- Packetize once on the encode thread (repair cache unchanged), hand the AU as
+  one `Arc` to `network.fanout_threads` workers (default 4); Students sharded by
+  client id. Each worker has a one-AU bounded queue; when busy the encode thread
+  waits (capture slot keeps replacing old frames), so nothing in a reference
+  chain is dropped and no queue is unbounded. Pacing budget is split per worker.
+- `network.connected_fanout` (default on): per-Student UDP socket bound to the
+  shared Teacher media address (`SO_REUSEPORT` on macOS, `SO_REUSEADDR` on
+  Windows — Windows refused the later binds until the first socket also set
+  it) and `connect()`ed to the Student. Students still see source
+  `Teacher:47811`; route probes from new Students still reach the shared socket
+  (unit-tested on macOS and Windows). Falls back to the shared socket per
+  Student if a bind fails (`fanout_connect_failures`).
+- Telemetry: `fanout_handoff_wait_interval_ms`, `fanout_connected_sockets`,
+  `fanout_connect_failures`, `fanout_threads`; stages `udp_fanout_handoff`
+  (encode thread) and `udp_fanout_worker`. `fresh_source_capture_to_send` now
+  ends at the hand-off, not at the last datagram.
+
+Send-path measurement (ignored test `fanout_bench_connected_vs_unconnected`,
+41 Students × 85 packets):
+- Windows 11 VM → Mac Studio: 1 worker 59–70 ms per IDR, 2 workers 45–53 ms,
+  4 workers 35–39 ms. Connected sockets ≈ unconnected in speed on Windows but
+  gave 0 send errors where the shared socket had some with 4 workers.
+- macOS (Python probe over the bridge): connected `send` 4–10 µs vs `sendto`
+  28–40 µs. Over Wi-Fi the burst overflows the send buffer, so no number.
+
+Re-run of the §8 ladder (same link, Students pinned to `bridge0`):
+
+| Run | encode-thread send p95 (median / max) | worker p95 (median / max) | encode FPS p50 | replaced frames | Student decode FPS p50 | missing |
+|---|---|---|---|---|---|---|
+| 10 before → after | 3.9 / 60 → 0.1 / 2.8 ms | — → 1.0 / 40 ms | 31.4 → 31.6 | 28 → 19 | 31.0 → 31.9 | 0 |
+| 20 before → after | 11.2 / 175 → 0.1 / 11 ms | — → 7.9 / 26 ms | 30.6 → 30.5 | 70 → 19 | 30.0 → 30.9 | 0 |
+| 40 before → after | 17.1 / 136 → 0.1 / 4 ms | — → 7.8 / 32 ms | 27.5 → 31.3 | 135 → 34 | 28.0 → 31.0 | 0 |
+
+40/40 connected sockets, 0 connect failures. Teacher capture→hand-off p50
+stays ~28–30 ms. Open: confirm on real Windows Teacher hardware with 1 GbE and
+40 physical Students; consider raising `fanout_threads` on many-core PCs.

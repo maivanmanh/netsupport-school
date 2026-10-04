@@ -35,6 +35,11 @@ impl SendBudget {
         self.send_with(|| socket.send_to(packet, endpoint))
     }
 
+    /// Same retry budget for a socket already `connect()`ed to its Student.
+    pub fn send_connected(&mut self, socket: &UdpSocket, packet: &[u8]) -> io::Result<usize> {
+        self.send_with(|| socket.send(packet))
+    }
+
     fn send_with(&mut self, mut send: impl FnMut() -> io::Result<usize>) -> io::Result<usize> {
         let first = match send() {
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => error,

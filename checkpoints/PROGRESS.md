@@ -2910,3 +2910,22 @@ Details and numbers: docs/17_BROADCAST_OPTIMIZATION_PLAN.md §7.
   one host; Windows Students not in this run.
 - Next: same ladder on the physical lab (1 GbE switch, real Windows PCs), and
   error concealment / LTR for random-loss freezes (docs/17 §7 open item).
+
+## 2026-10-04 — RTP fan-out moved off the encode thread
+
+- New `apps/classroom/src/fanout.rs`: 4 worker threads (`network.fanout_threads`)
+  with one-AU bounded queues; per-Student connected UDP sockets on the shared
+  media port (`network.connected_fanout`, reuse-port/addr). Teacher-only; no
+  protocol or Student change, Students not redeployed. Details: docs/17 §9.
+- Verified: fmt; strict clippy for app/config bins on macOS and
+  x86_64-pc-windows-gnu (`--no-deps`; pre-existing lints remain in
+  renderer-windows `too_many_lines` and app test target `items_after_test_module`);
+  tests 102 + 3 new fan-out tests on macOS; fan-out tests also on Windows 11 VM
+  (first run caught the missing Windows `SO_REUSEADDR`, fixed).
+- Wired re-run 10/20/40: encode-thread send p95 17 ms → 0.1 ms at 40; encode FPS
+  27.5 → 31.3; Student decode 28 → 31 FPS; replaced frames 135 → 34; 0 loss.
+- Harness: `simulate-class.py --student-interface bridge0` pins the Students
+  when the default route is Wi-Fi; Teacher console `bind_ip` set to
+  192.168.10.100 for the run, then restored to `auto`.
+- Next: physical lab ladder with a Windows Teacher (1 GbE, 40 PCs); error
+  concealment / LTR for random-loss freezes.
