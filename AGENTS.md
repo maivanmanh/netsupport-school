@@ -196,3 +196,7 @@ Do not silently redesign a locked decision. If a locked decision proves infeasib
 ## 14. Stop conditions
 
 Do not proceed to future features until Phase 1 has demonstrated the core path and scaling evidence described in `docs/06_PERFORMANCE_ACCEPTANCE.md`.
+
+## Owner-authorized Windows Teacher integration test (2026-10-04)
+
+The owner expanded the active integration scope to include the Flutter/Rust Teacher running on Windows. The Windows 11 ARM development machine was exercised as Teacher over Wi-Fi LAN with macOS and Windows ARM Student endpoints. Lifecycle, settings, cursor hiding, file transfer and diagnostics were tested; this does not constitute wired-LAN performance acceptance or a 40-physical-PC test. See the detailed Vietnamese evidence, limitations and release package record in [checkpoints/diagnostics/2026-10-04-lifecycle-settings-diagnostics.md](checkpoints/diagnostics/2026-10-04-lifecycle-settings-diagnostics.md) and [docs/18_WINDOWS_TEACHER_TEST_AND_V1_RELEASE.md](docs/18_WINDOWS_TEACHER_TEST_AND_V1_RELEASE.md). The Phase 1 acceptance criteria above remain in force.
