@@ -3004,3 +3004,14 @@ Status: implementation and Windows/LAN integration verified; macOS native menu c
 - App tests 105 passed + 1 ignored; config 5; transport 20; fmt/Clippy, Flutter analyze + 21 tests and Windows x64/ARM + macOS builds passed. Test automation cleaned up; diagnostic archives retained privately on Teacher.
 - Details: diagnostics/2026-10-04-lifecycle-settings-diagnostics.md.
 - Exact next step: owner manual Mac status-menu Exit/Finder reopen; physical x64 Windows wired controlled workload and optical latency, then 1/5/10/20/40 acceptance ladder. Separate ARM/Wi-Fi ingress/recovery investigation remains necessary.
+
+## 2026-10-04 — Classroom v1 Windows Teacher report and GitHub release
+
+Status: functional packages published; Phase 1 wired scaling acceptance remains pending.
+
+- Added the owner-authorized Windows 11 ARM Teacher + macOS/Windows ARM Student evidence to AGENTS.md and docs/18_WINDOWS_TEACHER_TEST_AND_V1_RELEASE.md. The report records lifecycle, role settings, cursor hiding, native file send and post-Stop diagnostics, plus Parallels and ARM/Wi-Fi limitations.
+- Packaged Windows Teacher x64, Windows Student x64, Windows Student ARM64, macOS Teacher and macOS Student into five ZIP assets. Excluded runtime logs, preserved macOS bundles, and generated SHA-256 checksums.
+- Created and published https://github.com/maivanmanh/netsupport-school/releases/tag/v1 with all five ZIPs, RELEASE-NOTES-VI.md and SHA256SUMS.txt.
+- Verified local ZIP listings, absence of log paths, asset sizes and generated checksums. Documentation commit f2ef43d was pushed to main before publishing.
+- Remaining: native macOS status-menu Exit/reopen is unverified; ARM/Wi-Fi recovery remains poor; physical Windows x64 wired test and 1/5/10/20/40 performance ladder are still required by docs/06_PERFORMANCE_ACCEPTANCE.md.
+- Exact next step: manually verify macOS status-menu Exit and Finder relaunch, then test an isolated physical Windows x64 Student over wired Ethernet before beginning the acceptance ladder.
