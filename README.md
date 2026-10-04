@@ -183,6 +183,30 @@ rustup run stable cargo build --release \
   --target x86_64-pc-windows-gnu --bin Classroom --bin ClassroomStudent
 ```
 
+### Clone và chạy trên một máy Windows khác
+
+Yêu cầu: Windows 10/11 x64, Git, [rustup](https://rustup.rs) (toolchain
+`stable-x86_64-pc-windows-msvc`) và Visual Studio Build Tools với workload
+"Desktop development with C++". Không cần protoc hay truy cập vendor ngoài repo
+(`vendor/` đã nằm trong repository).
+
+```powershell
+git clone https://github.com/maivanmanh/netsupport-school.git
+cd netsupport-school
+cargo build --release --bin Classroom --bin ClassroomStudent
+# Teacher (thay IP bằng IP Ethernet của máy Teacher):
+.\target\release\Classroom.exe --role teacher --bind-ip 10.0.55.200
+# Student:
+.\target\release\Classroom.exe --role student --teacher-ip 10.0.55.200
+# Thử cả hai trên cùng một máy:
+.\target\release\Classroom.exe --role teacher --loopback
+.\target\release\Classroom.exe --role student --loopback
+```
+
+Cho phép `Classroom.exe` qua Windows Firewall (TCP control + UDP media) khi được
+hỏi. Teacher Console Flutter (`apps/classroom_console`) là tùy chọn; build bằng
+`scripts/build-flutter-windows.ps1` sau khi cài Flutter SDK.
+
 Trong Windows/Parallels, `scripts/Run-Classroom.bat` lấy `Classroom.exe` từ
 thư mục Downloads được chia sẻ, copy vào thư mục local có quyền executable,
 unblock file, rồi mở hai cửa sổ Teacher và Student. Log loopback được ghi về
