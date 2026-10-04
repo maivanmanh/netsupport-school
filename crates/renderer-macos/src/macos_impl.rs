@@ -96,6 +96,7 @@ impl NativeRenderer {
         if forced_presentation {
             window.set_position(0, 0);
             window.topmost(true);
+            window.set_cursor_visibility(false);
         }
         window.set_background_color(0, 0, 0);
         window.set_target_fps(0);
@@ -204,6 +205,16 @@ impl NativeRenderer {
             )
         };
         pointer.blend_into_bgra(bytes, fw, fh);
+    }
+}
+
+impl Drop for NativeRenderer {
+    fn drop(&mut self) {
+        if self.forced_presentation {
+            // Balance NSCursor's hide count exactly once, including disconnect,
+            // renderer failure and Exit; transmitted Teacher pointer is separate.
+            self.window.set_cursor_visibility(true);
+        }
     }
 }
 

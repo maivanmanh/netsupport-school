@@ -154,6 +154,10 @@ try {
             if ($script:state) {
                 $script:state | Add-Member -Force -NotePropertyName tray_menu_open -NotePropertyValue ([ClassroomSmokeWindow]::TrayMenuOpen($descriptor.pid))
                 Publish-State
+                if ($script:state.lifecycle -eq 'exit') {
+                    $results.Add(@{action='agent_exit';time=[DateTime]::UtcNow.ToString('o')})
+                    break
+                }
             }
         }
         if (Test-Path -LiteralPath $commandPath) {
@@ -164,7 +168,8 @@ try {
                 if (![ClassroomSmokeWindow]::OpenTray($descriptor.pid)) { throw 'Tray callback failed' }
             }
             elseif ($command.action -eq 'open_observe_window') {
-                $observe = Start-Process (Join-Path $bundlePath 'classroom_console.exe') -ArgumentList @('--observe-id', $command.selected[0], '--observe-name', 'Mac-WiFi-Student', '--ipc-file', $endpoint) -WindowStyle Normal -PassThru
+                $row=$script:state.students | Where-Object { $_.id -eq $command.selected[0] } | Select-Object -First 1
+                $observe = Start-Process (Join-Path $bundlePath 'classroom_console.exe') -ArgumentList @('--observe-id', $command.selected[0], '--observe-name', $row.name, '--ipc-file', $endpoint) -WindowStyle Normal -PassThru
                 $owned.Add($observe)
             } else {
                 $script:requestId++
@@ -187,7 +192,11 @@ try {
         $agent = Get-Process -Id $descriptor.pid -ErrorAction SilentlyContinue
         if ($agent) { $null = $agent.WaitForExit(3000) }
     }
-    foreach ($process in $owned) { if (!$process.HasExited) { $process.Kill(); $process.WaitForExit() } }
+    foreach ($process in $owned) {
+        $natural=$process.WaitForExit(3000)
+        $results.Add(@{action='ui_shutdown';pid=$process.Id;natural_exit=$natural})
+        if (!$natural) { $process.Kill(); $process.WaitForExit() }
+    }
     # The console deliberately detaches its agent. On a failed IPC connection,
     # clean up only processes carrying this run's unique endpoint argument.
     $remaining = Get-CimInstance Win32_Process | Where-Object {

@@ -6,8 +6,11 @@ import 'package:path_provider/path_provider.dart';
 import 'package:window_manager/window_manager.dart';
 
 class Agent extends ChangeNotifier {
-  Agent(this.args);
+  Agent(this.args, {this.closeApplication});
   final List<String> args;
+  final Future<void> Function()? closeApplication;
+  bool shutdownReceived = false;
+  bool reconfiguring = false;
   Map<String, dynamic> preferences = {};
   Directory? dataDirectory;
   Map<String, dynamic> state = {};
@@ -183,6 +186,7 @@ class Agent extends ChangeNotifier {
   }
 
   Future<void> start() async {
+    if (disposed || shutdownReceived) return;
     try {
       final dir = await getApplicationSupportDirectory();
       await dir.create(recursive: true);
@@ -219,7 +223,17 @@ class Agent extends ChangeNotifier {
               rethrow;
             }
             await endpoint.delete();
+          } on FormatException {
+            // A descriptor left by an interrupted older build is not usable.
+            // Startup is serialized by the endpoint lock; remove only this file.
+            await endpoint.delete();
           }
+        }
+        // Observe is a dependent window. It must never resurrect a Teacher
+        // after Exit or start a new room when its endpoint has disappeared.
+        if (option('--observe-id') != null) {
+          await finishApplication();
+          return;
         }
         final executable = File(Platform.resolvedExecutable);
         final macHelper = File(
@@ -237,6 +251,10 @@ class Agent extends ChangeNotifier {
           throw StateError('Rust agent not found: $helper');
         }
         await Process.start(helper, [
+          if (await File('${dir.path}/teacher-settings.toml').exists()) ...[
+            '--config',
+            '${dir.path}/teacher-settings.toml',
+          ],
           '--role',
           'teacher',
           '--teacher-agent',
@@ -323,6 +341,18 @@ class Agent extends ChangeNotifier {
               if (!ready.isCompleted) {
                 ready.complete();
               }
+              final lifecycle = v['lifecycle'];
+              if (lifecycle == 'exit' ||
+                  (lifecycle == 'reconfigure' &&
+                      option('--observe-id') != null)) {
+                unawaited(finishApplication());
+              } else if (lifecycle == 'restart' || lifecycle == 'reconfigure') {
+                // Main console reconnects to the replacement. Observe leases
+                // belong to the old agent and their windows close with it.
+                if (option('--observe-id') != null) {
+                  unawaited(finishApplication());
+                }
+              }
             } else {
               pending.remove(v['id'])?.complete(v);
             }
@@ -343,7 +373,9 @@ class Agent extends ChangeNotifier {
         if (!ready.isCompleted) {
           ready.completeError(StateError('Agent disconnected'));
         }
-        if (!disposed) {
+        if (option('--observe-id') != null && !shutdownReceived) {
+          unawaited(finishApplication());
+        } else if (!disposed && !shutdownReceived) {
           notifyListeners();
           if (!exiting) {
             reconnect?.cancel();
@@ -494,13 +526,39 @@ class Agent extends ChangeNotifier {
     await temp.rename(f.path);
   }
 
-  Future<void> configure(String ip, int port) async {
+  Future<void> configure(
+    String ip,
+    int port, [
+    Map<String, dynamic>? settings,
+  ]) async {
     if (state['phase'] != 'idle' && connected) {
       return;
     }
     await savePreferences({'bind_ip': ip, 'port': port});
+    if (settings != null && dataDirectory != null) {
+      final content = StringBuffer();
+      for (final section in [
+        'app',
+        'network',
+        'video',
+        'monitoring',
+        'diagnostics',
+        'observe',
+      ]) {
+        final values = settings[section] as Map?;
+        if (values == null) continue;
+        content.writeln('[$section]');
+        for (final entry in values.entries) {
+          content.writeln('${entry.key} = ${jsonEncode(entry.value)}');
+        }
+      }
+      final file = File('${dataDirectory!.path}/teacher-settings.toml');
+      await file.writeAsString(content.toString(), flush: true);
+    }
+    reconfiguring = true;
+    exiting = true;
     if (connected) {
-      await command('quit');
+      await command('reconfigure');
     }
     for (var i = 0; i < 100 && await endpoint.exists(); i++) {
       await Future<void>.delayed(const Duration(milliseconds: 100));
@@ -511,8 +569,20 @@ class Agent extends ChangeNotifier {
       return;
     }
     exiting = false;
+    reconfiguring = false;
     state = {};
     await start();
+  }
+
+  Future<void> finishApplication() async {
+    if (shutdownReceived) return;
+    shutdownReceived = true;
+    exiting = true;
+    reconnect?.cancel();
+    observeMoveFlush?.cancel();
+    pendingObserveMoves.clear();
+    await log('application Exit received; closing dependent window');
+    await closeApplication?.call();
   }
 
   @override

@@ -11,6 +11,7 @@ import base64
 import hashlib
 import json
 import os
+import plistlib
 from pathlib import Path
 import re
 import subprocess
@@ -157,8 +158,18 @@ def main():
         if identifier:
             command += ['--identifier', identifier]
         if entitlements:
-            command += ['--entitlements', str(entitlements)]
-        run(*command, str(path))
+            # AMFI rejects some CRLF XML that plutil accepts. A Windows checkout
+            # must remain buildable on Mac; serialize the same entitlement values
+            # as canonical XML, without modifying the source or adding privileges.
+            with tempfile.TemporaryDirectory(prefix='classroom-entitlements-') as folder:
+                normalized = Path(folder) / 'entitlements.plist'
+                try:
+                    normalized.write_bytes(plistlib.dumps(plistlib.loads(entitlements.read_bytes())))
+                except (ValueError, plistlib.InvalidFileException) as error:
+                    raise RuntimeError(f'Invalid entitlements: {entitlements}') from error
+                run(*command, '--entitlements', str(normalized), str(path))
+        else:
+            run(*command, str(path))
 
     # Sign inside out. Keep framework identifiers from their own Info.plist.
     for path in sorted(args.app.rglob('*.dylib'), key=lambda p: len(p.parts), reverse=True):

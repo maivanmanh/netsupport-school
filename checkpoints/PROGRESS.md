@@ -2990,3 +2990,17 @@ Status: integration exercised; ARM/Wi-Fi smoothness and recovery fail acceptance
   controlled workload; compare wired/Wi-Fi ARM ingress/recovery, then headless/
   pacing probes if loss persists. Multi-second ARM recovery remains a blocker to
   smoothness acceptance; physical 40-PC and optical latency gates remain pending.
+
+## 2026-10-04 — Complete Exit, role settings, pointer and diagnostic ZIP collection
+
+Status: implementation and Windows/LAN integration verified; macOS native menu click and wired scaling remain pending.
+
+- Ordered Teacher lifecycle closes Flutter console/Observe and joins media/Observe children before publishing Exit. Observe cannot resurrect Teacher. Atomic endpoint publication prevents partial startup descriptors. Windows tray Exit with live Observe removed console, coordinator, Observe UI and receiver child; both apps restart from executable launches without CLI flags.
+- Added role-fixed Student settings and Teacher sidebar configuration; validated/persisted network, presentation, Observe and log options. Actual Save/restart and saved Wi-Fi 50/100 ms profile verified. Local presentation pointers hide on Windows/macOS and restore after Stop; owner confirmed Mac, native Windows cursor flags confirmed 0 -> 1.
+- Corrected IDR repair versus freshness expiry while preserving bounded latest-frame queues. ARM/Wi-Fi still shows loss and multi-second recovery; no performance acceptance claim.
+- Implemented missing Windows native Send file picker/staging and visible error reporting; actual class transfers verified, with SHA-256 and identical-file skip. Parallels shares Mac/Windows Student Desktop, so file observations require receiver-log evidence.
+- Added Teacher Diagnostics ZIP collection, selected/class request, optional auto after Stop, separate paced upload (512 KiB/s, one Student, bounded 2 MiB tails), explicit missing recipients and privacy filtering. Found/fixed asynchronous Stop race by retaining one Student request until presentation cleanup finishes. Final automatic ZIP collected both Students; read-back privacy and metadata checks passed.
+- Normalized macOS entitlement XML before signing to resolve Windows CRLF/AMFI rejection without changing entitlements. Both signed macOS apps rebuilt. Mac Teacher graceful IPC Exit/no-argument reopening verified; physical macOS status-menu Exit not independently verified because SSH GUI automation is denied Accessibility.
+- App tests 105 passed + 1 ignored; config 5; transport 20; fmt/Clippy, Flutter analyze + 21 tests and Windows x64/ARM + macOS builds passed. Test automation cleaned up; diagnostic archives retained privately on Teacher.
+- Details: diagnostics/2026-10-04-lifecycle-settings-diagnostics.md.
+- Exact next step: owner manual Mac status-menu Exit/Finder reopen; physical x64 Windows wired controlled workload and optical latency, then 1/5/10/20/40 acceptance ladder. Separate ARM/Wi-Fi ingress/recovery investigation remains necessary.

@@ -18,10 +18,10 @@ use windows::{
         UI::WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect,
             GetSystemMetrics, GetWindowLongW, GetWindowRect, IsIconic, IsWindowVisible,
-            PeekMessageW, PostQuitMessage, RegisterClassW, SetWindowPos, ShowWindow,
+            PeekMessageW, PostQuitMessage, RegisterClassW, SetCursor, SetWindowPos, ShowWindow,
             TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWL_EXSTYLE, HWND_TOPMOST,
             MSG, PM_REMOVE, SM_CXSCREEN, SM_CYSCREEN, SWP_SHOWWINDOW, SW_RESTORE, SW_SHOW,
-            WINDOW_EX_STYLE, WM_CLOSE, WM_DESTROY, WM_QUIT, WNDCLASSW, WS_EX_TOPMOST,
+            WINDOW_EX_STYLE, WM_CLOSE, WM_DESTROY, WM_QUIT, WM_SETCURSOR, WNDCLASSW, WS_EX_TOPMOST,
             WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE,
         },
     },
@@ -470,6 +470,12 @@ unsafe extern "system" fn presentation_window_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     match message {
+        WM_SETCURSOR if (lparam.0 & 0xffff) == 1 => {
+            // SAFETY: only this presentation's client cursor is hidden. No global
+            // ShowCursor counter is changed; menus and other windows retain theirs.
+            unsafe { SetCursor(None) };
+            LRESULT(1)
+        }
         // The Student presentation ends with the Teacher/control session, not via the
         // ordinary window-close command.
         WM_CLOSE => LRESULT(0),

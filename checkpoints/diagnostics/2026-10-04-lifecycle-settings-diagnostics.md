@@ -1,0 +1,38 @@
+# 2026-10-04 — Lifecycle, role settings, cursor and diagnostic collection
+
+## Changes
+
+- Teacher agent sends an ordered terminal lifecycle state after releasing media, Observe children, listeners and its IPC descriptor. Main and Observe Flutter windows close their processes on Exit. An Observe window never starts a replacement Teacher agent. Endpoint publication is atomic.
+- Student settings are role-fixed native sections (Connection, Presentation, Diagnostics); Teacher settings use Connection, Broadcast, Observe, Diagnostics. Validated overlays persist independently of the app bundle. Saved Student IP/ports and Wi-Fi 50 ms jitter / 100 ms repair survive an executable launch without flags. Teacher Save & reconnect preserves other effective settings and replaces the agent.
+- Student presentation hides only the local pointer: Windows client WM_SETCURSOR sets a null cursor; macOS balances cursor visibility on renderer destruction. The transmitted Teacher pointer remains part of presentation.
+- Incomplete IDR recovery gets its negotiated repair budget before bounded backlog expiry. The previous shorter freshness deadline could invalidate the repair before it arrived. This is a correctness repair, not proof that ARM/Wi-Fi freezes are resolved.
+- Windows Flutter implements the native file picker and stages a selected regular file off the UI thread. Errors surface in the UI. Staging uses the agent endpoint's directory, including isolated test endpoints. Existing paced, SHA-256 checked class file distribution is reused.
+- Diagnostics produces a ZIP from Teacher and selected/all current room Students. Manual requests during presentation wait for Stop; optional automatic collection runs after Stop. One Student uploads at a time on a separate TCP connection, paced to 512 KiB/s, with a 2 MiB runtime-log tail per process. Starting another presentation cancels collection and records remaining recipients as unavailable. A Student retains one pending request while its asynchronous Stop teardown finishes.
+- ZIP contains manifest, per-machine metadata and compact runtime logs, with timestamp, session ID, version/build ID, configuration, hostname/IP/device identity. Offline/disconnected/unavailable recipients are explicit. No traversal of screenshots, thumbnails, transferred files, message inboxes or IPC descriptors; sensitive log lines and metadata keys are filtered.
+- macOS signing canonicalizes entitlements as XML before codesign. Windows checkout CRLF caused AMFI to reject otherwise valid entitlements. Entitlement values are preserved; .gitattributes also specifies LF.
+
+## Executable evidence
+
+Teacher Windows 192.168.50.94; macOS Student .206; Windows ARM Student .205. The ARM Student VM runs on the Mac and shares its Desktop/CPU/NIC. These are independent OS endpoints, not three independent physical machines or wired 40-PC acceptance.
+
+- Windows Student: local cursor flags 0 during broadcast, flags 1 after Stop. Native tray Exit removed all Student processes. Settings saved Wi-Fi values, replaced the process, then launching ClassroomStudent.exe with no arguments reconnected using saved configuration and device identity.
+- Mac Student: owner confirmed local cursor hidden during actual presentation. Finder-style no-argument launch reconnected after updating the old saved Teacher IP. File receive and diagnostic upload worked. Native menu Exit was **not independently verified**: SSH System Events automation lacks Accessibility permission; no permission bypass was used. TERM used for owned deployment processes is not counted as tray Exit evidence.
+- Windows Teacher: native tray Settings opened the new sidebar. Save & reconnect changed 47800 to 48700 and enabled automatic diagnostics, replacing the Rust agent. No-argument launch starts the helper and restores saved room settings. Final native Exit with live Windows Observe verified four PIDs gone: console 6388, coordinator 11880, Observe window 5940, receiver child 9744. Earlier sharing + Observe-window Exit also ended both Flutter windows naturally (8684/2436) and the coordinator (9400).
+- Mac Teacher: signed bundle starts both console and embedded Rust helper without flags; graceful IPC Quit removed its descriptor and both processes. Repeated no-argument open/Exit worked. This verifies the shared terminal lifecycle path, not a physical click on the macOS status menu.
+- Windows Send file button opened the native picker. Classroom LAN test.txt (90 bytes) reached Mac Desktop with SHA-256 5e66bab5df35a589f3df4a73b5f6713801c9b9b9af7d9ed0f1ca2b5eaf52f58a. Windows reports its Desktop as C:\Mac\Home\Desktop and sees the same hash. A distinct 14,136-byte transfer completed at both endpoints; Windows log explicitly records saved-and-verified. Resending an identical file skipped it, as designed. Shared Desktop results must not be mistaken for independent disk copies.
+- Manual diagnostics collected both online Students plus an explicit offline old test identity; queued collection displayed waiting_for_stop, then collected 2/2 after Stop. First auto run exposed the asynchronous Student Stop race (1/2); after fixing the bounded pending request, the next auto run collected 2/2. ZIP entries and metadata were read back and checked for token/password/message/pixel fields.
+- The 63-second no-argument Windows ARM broadcast still had 19 missing packets, 12 depacketizer errors, 18 keyframe requests, zero decode errors; render about 12.0 FPS under changing/static workload. An earlier 44.5-second ARM run recorded 2.775-second worst recovery. No smoothness/performance acceptance claim.
+
+## Validation and artifacts
+
+- Rust app: 105 passed, 1 manual benchmark ignored; config: 5 passed; media transport: 20 passed. fmt and Clippy (no-deps, warnings denied, existing deprecated allowance) passed. Flutter analyze and 21 widget/lifecycle tests passed. Windows x64 Teacher/Student, native ARM Student and both signed macOS bundles built.
+- Runtime folders: target/windows-mac-wifi/20261004-141136, 20261004-144317, 20261004-145144. Final lifecycle evidence: target/teacher-final-exit.json and target/teacher-final-processes.json. Private endpoint descriptors are not published.
+- Successful final auto ZIP on Teacher: C:\Users\mvmanh\AppData\Roaming\com.classroom\classroom_console\diagnostics\Classroom-diagnostics-1791101746530-session-7320139628327924218.zip.
+- Teacher Windows: target/Classroom-Console-Windows-x64/classroom_console.exe; copy the complete portable folder. Student packages: target/Classroom-Student-Windows-x64 and target/Classroom-Student-Windows-arm64.
+- Mac Student: /Users/mvmanh/Classroom-windows-teacher-test/Classroom Student.app.
+- Mac Teacher: /Users/mvmanh/Classroom-windows-teacher-test/Classroom Console.app; helper Contents/Helpers/Classroom Agent.app/Contents/MacOS/Classroom. Ad-hoc updates can require renewed OS privacy grants.
+- Automatic collection restored to off after the test. Test controllers/probe tasks/owned LaunchAgent removed; final Windows Teacher and Student endpoints left idle for owner use.
+
+## Remaining checks
+
+Manual native status-menu Exit on macOS Student and Teacher, including immediate Finder reopen; macOS Accessibility grant for updated Student before Control. Then isolate a physical x64 Windows Student over wired Ethernet with controlled workload and optical latency, before the required 1/5/10/20/40-machine ladder. ARM/Wi-Fi multi-second recovery remains unresolved.

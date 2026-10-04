@@ -46,6 +46,9 @@ struct Snapshot {
     open_settings: bool,
     observe: Value,
     tools: Value,
+    lifecycle: &'static str,
+    settings: Value,
+    diagnostics: Value,
 }
 #[derive(Deserialize)]
 struct Command {
@@ -120,7 +123,8 @@ fn state_json(state: &Snapshot, sent: &mut HashMap<String, u64>) -> Value {
         "control_port":state.port,"phase":state.phase,"scope":state.scope,
         "recipients":state.recipients,"stream_id":state.stream_id,"error":state.error,
         "tray_available":state.tray,"ui_request":state.ui_request,"open_settings":state.open_settings,
-        "students":students,"observe":state.observe,"tools":state.tools})
+        "students":students,"observe":state.observe,"tools":state.tools,"lifecycle":state.lifecycle,
+        "settings":state.settings,"diagnostics":state.diagnostics})
 }
 async fn client(
     mut socket: TcpStream,
@@ -189,6 +193,9 @@ async fn client(
                 output.write_all(&bytes).await?;
                 Ok::<_, anyhow::Error>(())
             }).await??;
+            if payload["lifecycle"].as_str().is_some_and(|v| v != "running") {
+                break;
+            }
         }
         Ok::<_, anyhow::Error>(())
     }.await;
@@ -229,6 +236,7 @@ pub(super) fn run(
         Arc::clone(&roster),
     ));
     let tools_hub = Arc::new(super::classroom_tools::Hub::default());
+    let mut diagnostics = super::diagnostics::Collector::new(config, parent)?;
     let tools_server = super::classroom_tools::teacher(
         SocketAddrV4::new(
             bind_ip,
@@ -240,6 +248,7 @@ pub(super) fn run(
         ),
         Arc::clone(&roster),
         Arc::clone(&tools_hub),
+        Arc::clone(&diagnostics.service),
     )?;
     let outbox = parent.join("outbox");
     fs::create_dir_all(&outbox)?;
@@ -299,6 +308,9 @@ pub(super) fn run(
         open_settings: false,
         observe: Value::Null,
         tools: tools_hub.snapshot(),
+        lifecycle: "running",
+        settings: serde_json::to_value(config)?,
+        diagnostics: diagnostics.snapshot(),
     };
     let (states, receiver) = watch::channel(snapshot.clone());
     let (commands, mut requests) = mpsc::channel::<Request>(16);
@@ -328,10 +340,11 @@ pub(super) fn run(
     };
     let descriptor =
         json!({"protocol":IPC_VERSION,"port":port,"token":*token,"pid":std::process::id()});
+    let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(path)?;
+        .open(&temporary)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -340,14 +353,18 @@ pub(super) fn run(
     file.write_all(&serde_json::to_vec(&descriptor)?)?;
     file.sync_all()?;
     drop(file);
+    // A freshly launched console must never see half a JSON descriptor.
+    fs::rename(&temporary, path)?;
     info!(ipc_port=port,bind_ip=%bind_ip,control_port=config.network.control_port,"Flutter Teacher agent ready");
     let mut session: Option<Session> = None;
     let mut observe: Option<super::observe_coordinator::View> = None;
     let mut publish_due = Instant::now();
     let mut metrics = Instant::now();
     let mut restart_requested = false;
+    let mut pending_diagnostics: Option<Vec<String>> = None;
     let result = (|| -> Result<()> {
         'agent: loop {
+            diagnostics.poll();
             #[cfg(not(windows))]
             host.update();
             if server.is_finished() || ipc.is_finished() {
@@ -395,6 +412,20 @@ pub(super) fn run(
                     }
                     Err(_) => snapshot.error = Some("Media worker stopped unexpectedly".into()),
                 }
+                if let Some(selected) = pending_diagnostics
+                    .take()
+                    .or_else(|| config.diagnostics.auto_collect.then(Vec::new))
+                {
+                    if let Err(error) = diagnostics.start(
+                        Arc::clone(&tools_hub),
+                        roster.lock().unwrap().snapshot(),
+                        &selected,
+                        snapshot.stream_id,
+                        bind_ip,
+                    ) {
+                        snapshot.error = Some(format!("{error:#}"));
+                    }
+                }
                 publish_due = Instant::now();
             }
             for _ in 0..32 {
@@ -405,6 +436,27 @@ pub(super) fn run(
                 let command = request.command;
                 let id = command.id;
                 let response = match command.action.as_str() {
+                    "collect_diagnostics" => {
+                        if session.is_some() {
+                            pending_diagnostics = Some(command.selected.clone());
+                            snapshot.diagnostics = json!({"phase":"waiting_for_stop"});
+                            Ok(())
+                        } else {
+                            match diagnostics.start(
+                                Arc::clone(&tools_hub),
+                                roster.lock().unwrap().snapshot(),
+                                &command.selected,
+                                snapshot.stream_id,
+                                bind_ip,
+                            ) {
+                                Ok(()) => Ok(()),
+                                Err(error) => {
+                                    snapshot.error = Some(format!("{error:#}"));
+                                    Err("Diagnostics collection could not start")
+                                }
+                            }
+                        }
+                    }
                     "show_console" => {
                         snapshot.ui_request += 1;
                         snapshot.open_settings = false;
@@ -528,6 +580,7 @@ pub(super) fn run(
                         Ok(())
                     }
                     "share_class" | "share_selected" if session.is_none() => {
+                        diagnostics.cancel();
                         let rows = roster.lock().unwrap().snapshot();
                         let selected: HashSet<_> = command.selected.into_iter().collect();
                         let recipients = (command.action == "share_selected").then(|| {
@@ -589,8 +642,11 @@ pub(super) fn run(
                         }
                         Ok(())
                     }
-                    "quit" | "restart" => {
+                    "quit" | "restart" | "reconfigure" => {
                         restart_requested = command.action == "restart";
+                        if command.action == "reconfigure" {
+                            snapshot.lifecycle = "reconfigure";
+                        }
                         let _ = request.reply.send(json!({"type":"ack","id":id,"ok":true}));
                         break 'agent;
                     }
@@ -636,6 +692,9 @@ pub(super) fn run(
                     .map_or(Value::Null, super::observe_coordinator::View::state);
                 snapshot.rows = roster.lock().unwrap().snapshot();
                 snapshot.tools = tools_hub.snapshot();
+                if pending_diagnostics.is_none() {
+                    snapshot.diagnostics = diagnostics.snapshot();
+                }
                 states.send_replace(snapshot.clone());
                 publish_due = Instant::now() + Duration::from_millis(500);
             }
@@ -649,17 +708,34 @@ pub(super) fn run(
         }
         Ok(())
     })();
+    if snapshot.lifecycle == "running" {
+        snapshot.lifecycle = if restart_requested { "restart" } else { "exit" };
+    }
     if let Some(active) = session {
         active.stop.store(true, Ordering::Release);
         presentation.send_replace(None);
         let _ = active.worker.join();
     }
     drop(observe);
+    drop(diagnostics);
     server.abort();
-    ipc.abort();
     drop(tools_server);
     drop(monitor);
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while !server.is_finished() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(5));
+    }
     drop(endpoint);
+    // Notify dependent windows after releasing media/ports and removing the
+    // descriptor, so an immediate double-click starts a fresh, usable room.
+    // EOF alone is not Exit: the console recovers from an unexpected crash.
+    snapshot.phase = "stopping".into();
+    states.send_replace(snapshot);
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while clients.load(Ordering::Acquire) != 0 && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(5));
+    }
+    ipc.abort();
     info!("Flutter Teacher agent stopped; room and presentation released");
     result.map(|()| restart_requested)
 }

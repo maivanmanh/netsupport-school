@@ -49,6 +49,8 @@ jpeg-encoder = { version = "0.6", default-features = false, features = ["std"] }
 jpeg-decoder = { version = "0.3", default-features = false }
 sha2 = "0.10"
 fontdue = { version = "0.9", default-features = false }
+zip = { version = "=2.4.2", default-features = false, features = ["deflate-flate2", "flate2"] }
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 tray-icon = { version = "=0.21.3", default-features = false }

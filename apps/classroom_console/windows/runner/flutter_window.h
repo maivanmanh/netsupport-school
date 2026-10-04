@@ -8,6 +8,7 @@
 #include <flutter/standard_method_codec.h>
 #include <memory>
 
+#include "file_picker.h"
 #include "observe_texture.h"
 #include "win32_window.h"
 
@@ -26,6 +27,7 @@ protected:
                          LPARAM const lparam) noexcept override;
 
 private:
+  std::unique_ptr<FilePicker> file_picker_;
   // The project to run.
   flutter::DartProject project_;
 

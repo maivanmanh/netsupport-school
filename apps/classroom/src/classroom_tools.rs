@@ -58,7 +58,7 @@ fn configure(s: &TcpStream) -> Result<()> {
     s.set_write_timeout(Some(Duration::from_secs(4)))?;
     Ok(())
 }
-fn nonce() -> Result<String> {
+pub(crate) fn nonce() -> Result<String> {
     let mut b = [0; 16];
     getrandom::fill(&mut b).map_err(|e| anyhow::anyhow!("Tools nonce: {e}"))?;
     let hex = b"0123456789abcdef";
@@ -217,6 +217,20 @@ struct State {
 #[derive(Default)]
 pub struct Hub(Mutex<State>);
 impl Hub {
+    pub fn request_diagnostics(&self, student: &str, id: &str, token: &str) -> Result<()> {
+        let mut state = self.0.lock().unwrap();
+        anyhow::ensure!(
+            state.peers.contains_key(student),
+            "Student tools unavailable"
+        );
+        let queue = state.queues.entry(student.to_owned()).or_default();
+        anyhow::ensure!(queue.len() < 16, "Student tools queue full");
+        let mut request = packet("collect_diagnostics");
+        id.clone_into(&mut request.id);
+        token.clone_into(&mut request.token);
+        queue.push_back(request);
+        Ok(())
+    }
     pub fn snapshot(&self) -> Value {
         let s = self.0.lock().unwrap();
         json!({"ready":s.peers.keys().collect::<Vec<_>>(),"jobs":s.jobs.iter().map(|j|json!({"id":j.packet.id,"kind":j.packet.action,"name":j.packet.name,"size":j.packet.size,"text":j.packet.text.chars().take(240).collect::<String>(),"targets":j.targets.iter().map(|(id,t)|json!({"id":id,"status":t.status,"done":t.done,"reply":t.reply,"error":t.error})).collect::<Vec<_>>()})).collect::<Vec<_>>()})
@@ -528,6 +542,7 @@ pub fn teacher(
     address: SocketAddrV4,
     roster: Arc<Mutex<RoomRoster>>,
     hub: Arc<Hub>,
+    diagnostics: Arc<super::diagnostics::Service>,
 ) -> Result<Server> {
     let listener = TcpListener::bind(address)?;
     listener.set_nonblocking(true)?;
@@ -559,9 +574,10 @@ pub fn teacher(
                     let c = Arc::clone(&cancel);
                     let slots = Arc::clone(&slots);
                     let active = Arc::clone(&active);
+                    let diagnostics = Arc::clone(&diagnostics);
                     workers.push(thread::spawn(move || {
                         let key = s.local_addr().ok().zip(s.peer_addr().ok());
-                        let result = serve(&mut s, peer, &r, &h, &c, &slots);
+                        let result = serve(&mut s, peer, &r, &h, &c, &slots, &diagnostics);
                         if let Err(error) = result {
                             info!(%error,"Classroom tools connection ended");
                         }
@@ -596,6 +612,7 @@ fn registered(roster: &Arc<Mutex<RoomRoster>>, id: &str, peer: SocketAddr) -> bo
         r.online && r.instance_id == id && std::net::IpAddr::V4(*r.endpoint.ip()) == peer.ip()
     })
 }
+#[allow(clippy::too_many_arguments)]
 fn serve(
     s: &mut TcpStream,
     peer: SocketAddr,
@@ -603,6 +620,7 @@ fn serve(
     hub: &Arc<Hub>,
     stop: &AtomicBool,
     slots: &Arc<AtomicUsize>,
+    diagnostics: &super::diagnostics::Service,
 ) -> Result<()> {
     configure(s)?;
     let hello = read(s)?;
@@ -612,6 +630,10 @@ fn serve(
     );
     if hello.action == "download" {
         return serve_file(s, &hello, hub, stop, slots);
+    }
+    if hello.action == "diagnostics_upload" {
+        diagnostics.receive(s, &hello, stop)?;
+        return send(s, &packet("ok"));
     }
     anyhow::ensure!(hello.action == "hello", "Invalid tools handshake");
     let generation = {
@@ -888,7 +910,13 @@ fn start_download(
         worker,
     }
 }
-pub fn student(address: SocketAddrV4, identity: String, inbox: Arc<Inbox>) -> Client {
+pub fn student(
+    address: SocketAddrV4,
+    identity: String,
+    inbox: Arc<Inbox>,
+    source: super::diagnostics::Source,
+    presenting: Arc<AtomicBool>,
+) -> Client {
     let stop = Arc::new(AtomicBool::new(false));
     let cancel = Arc::clone(&stop);
     let socket = Arc::new(Mutex::new(None));
@@ -896,6 +924,8 @@ pub fn student(address: SocketAddrV4, identity: String, inbox: Arc<Inbox>) -> Cl
     let worker = thread::spawn(move || {
         let mut download: Option<Download> = None;
         let mut pending_downloads = VecDeque::<ToolPacket>::new();
+        let mut upload: Option<thread::JoinHandle<()>> = None;
+        let mut diagnostic_request: Option<ToolPacket> = None;
         while !cancel.load(Ordering::Acquire) {
             if let Ok(mut s) = TcpStream::connect_timeout(&address.into(), Duration::from_secs(2)) {
                 *active.lock().unwrap() = s.try_clone().ok();
@@ -915,6 +945,32 @@ pub fn student(address: SocketAddrV4, identity: String, inbox: Arc<Inbox>) -> Cl
                         }
                         send(&mut s, &packet("poll"))?;
                         let p = read(&mut s)?;
+                        if upload.as_ref().is_some_and(thread::JoinHandle::is_finished) {
+                            let _ = upload.take().unwrap().join();
+                        }
+                        // Stop is asynchronous at each Student; retain one request until teardown completes.
+                        if upload.is_none() && !presenting.load(Ordering::Acquire) {
+                            if let Some(p) = diagnostic_request.take() {
+                                let source = source.clone();
+                                let identity = identity.clone();
+                                let cancel = Arc::clone(&cancel);
+                                let presenting = Arc::clone(&presenting);
+                                upload = Some(thread::spawn(move || {
+                                    if upload_diagnostics(
+                                        address,
+                                        &identity,
+                                        &p,
+                                        &source,
+                                        &cancel,
+                                        &presenting,
+                                    )
+                                    .is_err()
+                                    {
+                                        info!("Student diagnostic upload unavailable or cancelled");
+                                    }
+                                }));
+                            }
+                        }
                         if download.as_ref().is_some_and(|d| d.worker.is_finished()) {
                             let _ = download.take().unwrap().worker.join();
                         }
@@ -930,6 +986,7 @@ pub fn student(address: SocketAddrV4, identity: String, inbox: Arc<Inbox>) -> Cl
                             }
                         }
                         match p.action.as_str() {
+                            "collect_diagnostics" => diagnostic_request = Some(p),
                             "message" => {
                                 let mut q = inbox.messages.lock().unwrap();
                                 if q.len() < 16 {
@@ -1001,12 +1058,48 @@ pub fn student(address: SocketAddrV4, identity: String, inbox: Arc<Inbox>) -> Cl
             d.cancel.store(true, Ordering::Release);
             let _ = d.worker.join();
         }
+        if let Some(upload) = upload {
+            let _ = upload.join();
+        }
     });
     Client {
         stop,
         socket,
         worker: Some(worker),
     }
+}
+fn upload_diagnostics(
+    address: SocketAddrV4,
+    identity: &str,
+    request: &ToolPacket,
+    source: &super::diagnostics::Source,
+    stop: &AtomicBool,
+    presenting: &AtomicBool,
+) -> Result<()> {
+    let (metadata, log) = source.capture()?;
+    let mut socket = TcpStream::connect_timeout(&address.into(), Duration::from_secs(2))?;
+    configure(&socket)?;
+    let mut header = packet("diagnostics_upload");
+    header.id.clone_from(&request.id);
+    header.token.clone_from(&request.token);
+    identity.clone_into(&mut header.student);
+    header.size = log.len() as u64;
+    header.text = serde_json::to_string(&metadata)?;
+    send(&mut socket, &header)?;
+    for chunk in log.chunks(super::diagnostics::CHUNK) {
+        anyhow::ensure!(
+            !stop.load(Ordering::Acquire) && !presenting.load(Ordering::Acquire),
+            "diagnostic upload cancelled"
+        );
+        let started = Instant::now();
+        socket.write_all(chunk)?;
+        thread::sleep(super::diagnostics::PACE.saturating_sub(started.elapsed()));
+    }
+    anyhow::ensure!(
+        read(&mut socket)?.action == "ok",
+        "diagnostic upload rejected"
+    );
+    Ok(())
 }
 struct Partial(PathBuf);
 impl Drop for Partial {

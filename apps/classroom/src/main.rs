@@ -39,6 +39,7 @@ mod classroom_tools;
 mod compact_log;
 mod dashboard_view;
 mod desktop_tray;
+mod diagnostics;
 mod fanout;
 mod keyframe_gate;
 mod launcher;
@@ -58,6 +59,7 @@ mod startup;
 mod stream_profile;
 mod student_file_ui;
 mod student_presentation;
+mod student_settings;
 mod student_tools_ui;
 mod teacher_agent;
 mod teacher_dashboard;
@@ -137,7 +139,7 @@ struct Cli {
     #[arg(long)]
     setup: bool,
     /// Save the explicit CLI role and Teacher IP for subsequent double-clicks.
-    #[arg(long, requires = "role")]
+    #[arg(long)]
     remember: bool,
     /// Isolated per-user launch profile override (also useful for automation).
     #[arg(long)]
@@ -343,6 +345,9 @@ async fn run(
         None
     };
     let (mut config, config_path) = Config::load(cli.config.as_deref())?;
+    if student_only || matches!(cli.role, Some(CliRole::Student)) {
+        student_settings::apply_saved(&mut config, &profile_path)?;
+    }
     let selected_role = cli
         .role
         .map(|role| Role::from(role).to_string())
@@ -1847,6 +1852,7 @@ async fn run_student_media(
             std::sync::Arc::clone(&inbox),
         ));
     }
+    let presenting = std::sync::Arc::new(AtomicBool::new(false));
     let tools = classroom_tools::student(
         SocketAddrV4::new(
             teacher_ip,
@@ -1858,9 +1864,10 @@ async fn run_student_media(
         ),
         registration.instance_id.clone(),
         inbox,
+        diagnostics::Source::new(config, &registration.hostname)?,
+        std::sync::Arc::clone(&presenting),
     );
     let mut restart_requested = false;
-    let presenting = std::sync::Arc::new(AtomicBool::new(false));
     let monitor = config.monitoring.enabled.then(|| {
         monitoring::student(
             SocketAddrV4::new(teacher_ip, config.network.control_port + 1),
@@ -1880,12 +1887,19 @@ async fn run_student_media(
             }
             if desktop.settings_requested {
                 desktop.settings_requested = false;
-                if let Some(selection) = launcher::show_settings(launcher::LaunchSelection {
-                    role: Role::Student,
-                    teacher_ip,
-                })? {
-                    startup::save(profile_path, selection)?;
+                if let Some(updated) = student_settings::show(config, teacher_ip, desktop)? {
+                    student_settings::save(&updated, profile_path)?;
+                    startup::save(
+                        profile_path,
+                        launcher::LaunchSelection {
+                            role: Role::Student,
+                            teacher_ip: updated.network.teacher_ip,
+                        },
+                    )?;
                     restart_requested = true;
+                    break 'agent;
+                }
+                if desktop.exit_requested {
                     break 'agent;
                 }
             }
@@ -2490,9 +2504,7 @@ fn run_student_receiver(
         }
         // P-frames cannot be dropped independently: abandon stale compressed
         // backlog and recover from an IDR rather than decoding old reference chains.
-        if jitter.oldest_age(Instant::now())
-            > Duration::from_millis(u64::from(config.video.jitter_buffer_ms).saturating_add(120))
-        {
+        if jitter.backlog_is_stale(Instant::now()) {
             stale_backlog_packets += jitter.discard_backlog() as u64;
             depacketizer.reset();
             frame_timings.clear();

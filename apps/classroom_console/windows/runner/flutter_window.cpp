@@ -135,6 +135,7 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+  file_picker_ = std::make_unique<FilePicker>(GetHandle());
   auto *registrar =
       flutter::PluginRegistrarManager::GetInstance()
           ->GetRegistrar<flutter::PluginRegistrarWindows>(
@@ -195,9 +196,27 @@ bool FlutterWindow::OnCreate() {
           flutter_controller_->engine()->messenger(), "classroom/files",
           &flutter::StandardMethodCodec::GetInstance());
   files_channel_->SetMethodCallHandler(
-      [](const auto &call,
-         std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>
-             result) {
+      [this](const auto &call,
+             std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>
+                 result) {
+        if (call.method_name() == "chooseFile") {
+          const auto *args =
+              std::get_if<flutter::EncodableMap>(call.arguments());
+          if (!args) {
+            result->Error("invalid_directory", "Outgoing folder missing.");
+            return;
+          }
+          const auto entry = args->find(flutter::EncodableValue("directory"));
+          const auto *directory =
+              entry == args->end() ? nullptr
+                                   : std::get_if<std::string>(&entry->second);
+          if (!directory) {
+            result->Error("invalid_directory", "Outgoing folder missing.");
+            return;
+          }
+          file_picker_->Begin(*directory, std::move(result));
+          return;
+        }
         if (call.method_name() != "saveScreenshot") {
           result->NotImplemented();
           return;
@@ -237,6 +256,7 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  file_picker_.reset();
   if (texture_timer_)
     KillTimer(GetHandle(), texture_timer_);
   texture_timer_ = 0;
@@ -255,6 +275,8 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  if (file_picker_ && file_picker_->Handle(message, lparam))
+    return 0;
   // window_manager can consume WM_TIMER. Handle our refresh before plugins
   // so the native Observe texture keeps advancing beyond its first frame.
   if (message == WM_TIMER && texture_timer_ && wparam == texture_timer_) {

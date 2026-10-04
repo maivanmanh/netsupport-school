@@ -19,6 +19,15 @@ pub struct Config {
     pub monitoring: MonitoringConfig,
     #[serde(default)]
     pub observe: ObserveConfig,
+    #[serde(default)]
+    pub diagnostics: DiagnosticsConfig,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct DiagnosticsConfig {
+    /// Collect bounded, sanitized runtime logs after a presentation stops.
+    pub auto_collect: bool,
 }
 
 /// One-to-one Observe/Control tuning. When `enhanced`, the Teacher offers what
@@ -252,6 +261,21 @@ impl Config {
         self.validate()
     }
 
+    /// Applies saved role settings after external defaults and before CLI overrides.
+    /// The candidate is validated before changing the live configuration.
+    ///
+    /// # Errors
+    /// Returns invalid TOML or configuration errors without changing `self`.
+    pub fn apply_saved(&mut self, contents: &str) -> Result<(), ConfigError> {
+        let mut merged = toml::Value::try_from(&*self)
+            .map_err(|error| ConfigError::Validation(error.to_string()))?;
+        merge_toml(&mut merged, toml::from_str(contents)?);
+        let candidate: Self = merged.try_into()?;
+        candidate.validate()?;
+        *self = candidate;
+        Ok(())
+    }
+
     #[allow(clippy::too_many_lines)]
     fn validate(&self) -> Result<(), ConfigError> {
         let m = &self.monitoring;
@@ -291,6 +315,14 @@ impl Config {
             self.network.media_port,
             self.network.feedback_port,
         ];
+        if self.network.control_port > 65533
+            || [self.network.media_port, self.network.feedback_port]
+                .contains(&self.network.control_port.saturating_add(2))
+        {
+            return Err(ConfigError::Validation(
+                "control port must leave room for tools (+2), without a UDP port collision".into(),
+            ));
+        }
         if ports.contains(&0)
             || ports[0] == ports[1]
             || ports[0] == ports[2]

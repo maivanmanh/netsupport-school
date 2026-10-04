@@ -591,6 +591,16 @@ impl JitterBuffer {
             .max()
             .unwrap_or_default()
     }
+    /// Freshness deadline accounts for the active NACK repair window. A fixed
+    /// 120 ms allowance would discard a recovering IDR before its 250 ms repair
+    /// budget elapsed. Normal wired playback retains the previous allowance.
+    #[must_use]
+    pub fn backlog_is_stale(&self, now: Instant) -> bool {
+        self.oldest_age(now)
+            > self.target_delay
+                + self.repair_budget.max(Duration::from_millis(100))
+                + Duration::from_millis(20)
+    }
     #[must_use]
     pub fn queued_packets(&self) -> usize {
         self.packets.len()
@@ -727,6 +737,47 @@ mod tests {
         assert!(jitter.pop_ready(held).is_none());
         assert_eq!(jitter.take_missing_sequences(), vec![1]);
         let repaired = held + Duration::from_millis(3);
+        jitter.push(RtpPacket::parse(&packets[1]).unwrap(), repaired);
+        let mut output = None;
+        while let Some(packet) = jitter.pop_ready(repaired) {
+            output = depacketizer.push(&packet).unwrap().or(output);
+        }
+        assert_eq!(output.unwrap().bytes, bytes);
+        assert_eq!(jitter.statistics().missing_sequences, 0);
+        assert_eq!(jitter.statistics().repaired_gaps, 1);
+    }
+    #[test]
+    fn delayed_idr_repair_survives_freshness_deadline_but_unrepaired_backlog_expires() {
+        let start = Instant::now();
+        let mut jitter =
+            JitterBuffer::with_repair_budget(Duration::from_millis(20), Duration::from_millis(250));
+        jitter.push(test_packet(65535, 0, true), start);
+        let sent = start + Duration::from_millis(20);
+        assert!(jitter.pop_ready(sent).is_some());
+        let mut bytes = vec![0, 0, 0, 1, 0x65];
+        bytes.extend(vec![77; MAX_RTP_PAYLOAD_BYTES * 3]);
+        let packets = H264Packetizer::new(1).packetize(EncodedAccessUnitRef {
+            bytes: &bytes,
+            timestamp: Duration::from_millis(33),
+            is_keyframe: true,
+        });
+        for (i, wire) in packets.iter().enumerate() {
+            if i != 1 {
+                jitter.push(RtpPacket::parse(wire).unwrap(), sent);
+            }
+        }
+        let gap = sent + Duration::from_millis(20);
+        let mut depacketizer = H264Depacketizer::default();
+        assert!(depacketizer
+            .push(&jitter.pop_ready(gap).unwrap())
+            .unwrap()
+            .is_none());
+        assert!(jitter.pop_ready(gap).is_none());
+        assert_eq!(jitter.take_missing_sequences(), vec![1]);
+        let repaired = gap + Duration::from_millis(180);
+        assert!(jitter.oldest_age(repaired) > Duration::from_millis(140));
+        assert!(!jitter.backlog_is_stale(repaired));
+        assert!(jitter.backlog_is_stale(sent + Duration::from_millis(291)));
         jitter.push(RtpPacket::parse(&packets[1]).unwrap(), repaired);
         let mut output = None;
         while let Some(packet) = jitter.pop_ready(repaired) {

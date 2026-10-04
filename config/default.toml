@@ -78,3 +78,7 @@ enhanced = true
 codec = "auto"              # auto | h265 | h264
 max_fps = 60
 bitrate_kbps = 0            # 0 = derived from [video] and the frame rate
+
+[diagnostics]
+# Collect a bounded Teacher/Student log ZIP after each presentation stops.
+auto_collect = false

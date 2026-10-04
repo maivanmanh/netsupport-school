@@ -7,6 +7,7 @@ import 'agent.dart';
 import 'observe.dart';
 import 'observe_startup.dart';
 import 'classroom_tools_ui.dart';
+import 'settings.dart';
 
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -21,7 +22,21 @@ Future<void> main(List<String> args) async {
     await loader.load();
   }
   await windowManager.ensureInitialized();
-  final agent = Agent(List.of(args));
+  final agent = Agent(
+    List.of(args),
+    closeApplication: () async {
+      // Exit must terminate a hidden console as well as a visible window.
+      // The agent releases media children; this closes each authenticated UI.
+      try {
+        await windowManager
+            .setPreventClose(false)
+            .timeout(const Duration(seconds: 1));
+        await windowManager.destroy().timeout(const Duration(seconds: 1));
+      } finally {
+        exit(0);
+      }
+    },
+  );
   final observeId = agent.option('--observe-id');
   const lifecycle = MethodChannel('classroom/lifecycle');
   lifecycle.setMethodCallHandler((call) async {
@@ -211,16 +226,22 @@ class _ConsoleState extends State<Console> with WindowListener {
     try {
       final picked = await files.invokeMapMethod<String, dynamic>(
         'chooseFile',
-        {'directory': directory.path},
+        {'directory': agent.endpoint.parent.path},
       );
       if (picked == null || !mounted) return;
       final recipients = toolRecipients;
       if (recipients.isEmpty) return;
       await agent.command('tool_file', recipients, picked);
-    } on PlatformException catch (e) {
+    } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(e.message ?? 'Could not stage the file')),
+          SnackBar(
+            content: Text(
+              e is PlatformException
+                  ? e.message ?? 'Could not stage the file'
+                  : 'Could not prepare the file: $e',
+            ),
+          ),
         );
       }
     } finally {
@@ -924,73 +945,14 @@ class _ConsoleState extends State<Console> with WindowListener {
   );
 
   Future<void> settings() async {
-    final ip = TextEditingController(
-      text: agent.preferences['bind_ip'] == 'auto'
-          ? ''
-          : agent.preferences['bind_ip'] as String? ?? '',
-    );
-    final port = TextEditingController(
-      text: '${agent.preferences['port'] ?? 47800}',
-    );
-    await showDialog<void>(
+    final result = await showDialog<TeacherSettings>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Classroom connection'),
-        content: SizedBox(
-          width: 400,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text(
-                'Leave IP blank to select the active network adapter automatically.',
-              ),
-              const SizedBox(height: 20),
-              TextField(
-                controller: ip,
-                decoration: const InputDecoration(
-                  labelText: 'Teacher local IP',
-                  hintText: 'Automatic',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: port,
-                decoration: const InputDecoration(
-                  labelText: 'Control port',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () async {
-              final n = int.tryParse(port.text);
-              final address = ip.text.trim();
-              if (n == null ||
-                  n < 1024 ||
-                  n > 65514 ||
-                  (address.isNotEmpty &&
-                      InternetAddress.tryParse(address)?.type !=
-                          InternetAddressType.IPv4)) {
-                return;
-              }
-              Navigator.pop(context);
-              await agent.configure(address.isEmpty ? 'auto' : address, n);
-            },
-            child: const Text('Save & reconnect'),
-          ),
-        ],
-      ),
+      builder: (_) =>
+          TeacherSettingsDialog(agent: agent, selected: selected.toList()),
     );
-    ip.dispose();
-    port.dispose();
+    if (result != null) {
+      await agent.configure(result.ip, result.port, result.overlay);
+    }
   }
 
   String status(Map<String, dynamic> r) {
