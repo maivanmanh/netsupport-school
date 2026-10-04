@@ -1,7 +1,9 @@
-param([Parameter(Mandatory=$true)][string]$RustAgent)
+param([Parameter(Mandatory=$true)][string]$RustAgent, [string]$RuntimeDirectory)
 $ErrorActionPreference='Stop'
+. "$PSScriptRoot/windows-portable-runtime.ps1"
 $root=Split-Path $PSScriptRoot -Parent
 $RustAgent=(Resolve-Path -LiteralPath $RustAgent).Path
+if ((Get-ClassroomWindowsArchitecture $RustAgent) -ne 'x64') { throw 'The x64 Flutter bundle requires an x64 Rust agent' }
 Push-Location "$root/apps/classroom_console"
 try {
  flutter pub get
@@ -11,6 +13,7 @@ try {
  $destination="$root/target/Classroom-Console-Windows-x64"
  New-Item -ItemType Directory -Force $destination | Out-Null
  Copy-Item 'build/windows/x64/runner/Release/*' $destination -Recurse -Force
+ Copy-ClassroomWindowsRuntime 'x64' $destination $RuntimeDirectory
  Copy-Item $RustAgent "$destination/ClassroomAgent.exe" -Force
  $student=Join-Path (Split-Path $RustAgent -Parent) 'ClassroomStudent.exe'
  if(Test-Path -LiteralPath $student){Copy-Item -LiteralPath $student "$destination/ClassroomStudent.exe" -Force}

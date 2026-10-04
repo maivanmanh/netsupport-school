@@ -112,6 +112,129 @@ mod native {
 #[cfg(any(windows, target_os = "macos"))]
 pub use native::DesktopTray;
 
+#[cfg(windows)]
+#[allow(unsafe_code)] // Small Win32 boundary: cancel only this worker's windows.
+mod windows_teacher {
+    use super::{Command, DesktopTray, Result};
+    use anyhow::Context;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver},
+        Arc, Mutex,
+    };
+    use std::thread;
+    use std::time::Duration;
+    use windows::core::BOOL;
+    use windows::Win32::{
+        Foundation::{HWND, LPARAM, WPARAM},
+        UI::WindowsAndMessaging::{
+            EnumThreadWindows, GetWindowThreadProcessId, PostMessageW, WM_CANCELMODE,
+        },
+    };
+
+    /// All native tray objects stay on one dedicated message-pump thread.
+    /// Status is a single latest-value slot; commands have a small fixed bound.
+    pub struct WindowsTeacherTray {
+        status: Arc<Mutex<(String, bool)>>,
+        last: (String, bool),
+        commands: Receiver<Command>,
+        stop: Arc<AtomicBool>,
+        thread_id: u32,
+        worker: Option<thread::JoinHandle<()>>,
+    }
+    impl WindowsTeacherTray {
+        pub fn new() -> Result<Self> {
+            let status = Arc::new(Mutex::new((String::new(), true)));
+            let latest = Arc::clone(&status);
+            let stop = Arc::new(AtomicBool::new(false));
+            let canceled = Arc::clone(&stop);
+            let (send, commands) = mpsc::sync_channel(8);
+            let (ready, startup) = mpsc::sync_channel(1);
+            let worker = thread::spawn(move || {
+                let run = || -> Result<()> {
+                    let mut host = minifb::Window::new(
+                        "Classroom Teacher tray",
+                        1,
+                        1,
+                        minifb::WindowOptions {
+                            visible: false,
+                            background: true,
+                            borderless: true,
+                            title: false,
+                            ..Default::default()
+                        },
+                    )?;
+                    host.set_target_fps(0);
+                    host.update();
+                    let mut tray = DesktopTray::new(true)?;
+                    // SAFETY: minifb owns this live HWND on the current thread.
+                    let thread_id =
+                        unsafe { GetWindowThreadProcessId(HWND(host.get_window_handle()), None) };
+                    let _ = ready.send(Ok(thread_id));
+                    while !canceled.load(Ordering::Acquire) {
+                        host.update();
+                        if canceled.load(Ordering::Acquire) {
+                            break;
+                        }
+                        let (text, enabled) = latest.lock().unwrap().clone();
+                        tray.update(&text, enabled);
+                        while let Some(command) = tray.poll() {
+                            let _ = send.try_send(command);
+                        }
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Ok(())
+                };
+                if let Err(error) = run() {
+                    let _ = ready.try_send(Err(format!("{error:#}")));
+                    tracing::warn!(%error, "Teacher tray worker stopped");
+                }
+            });
+            let thread_id = startup
+                .recv()
+                .context("Teacher tray startup channel closed")?
+                .map_err(anyhow::Error::msg)?;
+            Ok(Self {
+                status,
+                last: (String::new(), true),
+                commands,
+                stop,
+                thread_id,
+                worker: Some(worker),
+            })
+        }
+        pub fn update(&mut self, text: &str, enabled: bool) {
+            if self.last.0 != text || self.last.1 != enabled {
+                text.clone_into(&mut self.last.0);
+                self.last.1 = enabled;
+                *self.status.lock().unwrap() = self.last.clone();
+            }
+        }
+        pub fn poll(&self) -> Option<Command> {
+            self.commands.try_recv().ok()
+        }
+    }
+    unsafe extern "system" fn cancel_menu(window: HWND, _: LPARAM) -> BOOL {
+        // SAFETY: EnumThreadWindows supplies live windows belonging only to our
+        // tray thread. WM_CANCELMODE releases its modal menu without user input.
+        let _ = unsafe { PostMessageW(Some(window), WM_CANCELMODE, WPARAM(0), LPARAM(0)) };
+        BOOL(1)
+    }
+    impl Drop for WindowsTeacherTray {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            // SAFETY: this worker remains alive until join; enumeration and the
+            // callback do not retain HWNDs or touch another thread's windows.
+            let _ = unsafe { EnumThreadWindows(self.thread_id, Some(cancel_menu), LPARAM(0)) };
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
+        }
+    }
+}
+#[cfg(windows)]
+pub use windows_teacher::WindowsTeacherTray;
+
 pub struct StudentDesktop {
     pub tools: Option<super::student_tools_ui::StudentToolsUi>,
     host: minifb::Window,

@@ -262,7 +262,11 @@ pub(super) fn run(
             )
         })
         .transpose()?;
-    // Native host/tray are UI-thread owned; capture/codec stay in media workers.
+    // Windows tray menus run a nested modal message loop. Keep that loop off
+    // the coordinator so opening the menu cannot suspend Stop or Observe leases.
+    #[cfg(windows)]
+    let mut tray = super::desktop_tray::WindowsTeacherTray::new().ok();
+    #[cfg(not(windows))]
     let mut host = minifb::Window::new(
         "Classroom Teacher agent",
         1,
@@ -275,8 +279,11 @@ pub(super) fn run(
             ..Default::default()
         },
     )?;
+    #[cfg(not(windows))]
     host.set_target_fps(0);
+    #[cfg(not(windows))]
     host.update();
+    #[cfg(not(windows))]
     let mut tray = super::desktop_tray::DesktopTray::new(true).ok();
     let mut snapshot = Snapshot {
         rows: vec![],
@@ -341,6 +348,7 @@ pub(super) fn run(
     let mut restart_requested = false;
     let result = (|| -> Result<()> {
         'agent: loop {
+            #[cfg(not(windows))]
             host.update();
             if server.is_finished() || ipc.is_finished() {
                 anyhow::bail!("Teacher listener stopped; inspect log.txt for bind errors");

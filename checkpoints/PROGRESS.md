@@ -2957,3 +2957,36 @@ Status: Windows VM integration verified; physical LAN acceptance remains pending
   input/screenshot not exercised; Windows file picker still unimplemented.
 - Exact next step: one separate physical Windows Student + controlled text/scroll
   and visual cursor/Observe check, optical latency, then wired 1/5/10/20/40 ladder.
+
+## 2026-10-04 — Windows Teacher with Mac and ARM Windows Students over Wi-Fi
+
+Status: integration exercised; ARM/Wi-Fi smoothness and recovery fail acceptance.
+
+- Built/deployed Mac Student to the exact announced app path under
+  /Users/mvmanh/Classroom-windows-teacher-test; native ARM Student to Windows .205.
+  Mac .206 hosts that Windows VM (confirmed by prlctl hostname): two Student OS
+  endpoints share CPU/NIC. Teacher .94 remains x64 Flutter/Rust on Parallels ARM.
+- Fixed Windows tray popup blocking coordinator/IPC/Observe leases by moving
+  Teacher tray native ownership to its own bounded worker. Actual open-menu
+  Stop/Share Selected, continuous Observe/rescan and graceful Quit verified.
+- Fresh ARM Windows exposed missing VCRUNTIME140.dll (0xC0000135). App-local
+  matching CRT fixed launch; both Student architectures and Flutter packager now
+  include VC runtime DLLs. PE architecture gates reject mismatched runtime/helper.
+- One Mac broadcast: render 20.75 FPS, encode p95 19.14 ms, zero missing/decode/
+  depacketizer errors. Two Students still use one encoder; source send errors zero.
+- ARM default: render 7.00 FPS, 119 missing packets, 56 depacketizer errors,
+  95 keyframe requests, 7.40 s worst recovery. Opt-in Wi-Fi 50/100 ms profile:
+  render 10.65 FPS, 56 missing, 28 depacketizer errors, 4.64 s recovery. Different
+  run durations/load prevent a causal claim; this profile does not resolve failure.
+- Mac receiver had zero missing/decode/depacketizer errors in both two-peer runs.
+  Actual Flutter Observe updated from both platforms; Mac Control acknowledged
+  with native input permission. Reconnect retained IDs; Share/Stop repeated.
+- Passed app tests (102 + 1 ignored), config tests (5), fmt, Clippy with existing
+  deprecated warning allowance, PowerShell syntax, packaging and native scenarios.
+  All owned test processes/tasks stopped; artifacts and private logs retained.
+- Details: diagnostics/2026-10-04-windows-teacher-wifi.md; evidence under
+  target/windows-mac-wifi/. Do not publish IPC endpoint tokens.
+- Exact next step: isolated physical x64 Windows Student + wired Ethernet with
+  controlled workload; compare wired/Wi-Fi ARM ingress/recovery, then headless/
+  pacing probes if loss persists. Multi-second ARM recovery remains a blocker to
+  smoothness acceptance; physical 40-PC and optical latency gates remain pending.

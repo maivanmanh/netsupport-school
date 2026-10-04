@@ -1,0 +1,6 @@
+# Optional diagnostic profile for Wi-Fi / virtual adapters. Wired LAN defaults
+# remain in default.toml. Complete frames bypass the hold; missing packets get
+# a bounded repair window rather than triggering repeated reference resets.
+[video]
+jitter_buffer_ms = 50
+nack_repair_ms = 100
