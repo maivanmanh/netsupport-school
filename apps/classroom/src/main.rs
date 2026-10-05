@@ -39,6 +39,7 @@ mod classroom_tools;
 mod compact_log;
 mod dashboard_view;
 mod desktop_tray;
+mod dev_update;
 mod diagnostics;
 mod encode_pacer;
 mod fanout;
@@ -259,6 +260,9 @@ enum RestartRequest {
 }
 
 fn main() -> Result<()> {
+    if let Some(result) = dev_update::early_operation() {
+        return result;
+    }
     let runtime = tokio::runtime::Runtime::new()?;
     let mut log_guard = None;
     let mut restart_profile = None;
@@ -1871,7 +1875,7 @@ async fn run_student_media(
                 .context("Tools port overflow")?,
         ),
         registration.instance_id.clone(),
-        inbox,
+        std::sync::Arc::clone(&inbox),
         diagnostics::Source::new(config, &registration.hostname)?,
         std::sync::Arc::clone(&presenting),
     );
@@ -1888,6 +1892,9 @@ async fn run_student_media(
     let started = Instant::now();
     let ends = share_seconds.map(|seconds| started + Duration::from_secs(seconds));
     'agent: loop {
+        if inbox.update_exit.load(Ordering::Acquire) {
+            break 'agent;
+        }
         if let Some(desktop) = desktop.as_mut() {
             desktop.pump(&format!("Connecting to Teacher {teacher_ip}"), false);
             if desktop.exit_requested {
@@ -1921,6 +1928,7 @@ async fn run_student_media(
             tokio::select! {
                 result = &mut registration_future => break result,
                 () = tokio::time::sleep(Duration::from_millis(20)) => {
+                    if inbox.update_exit.load(Ordering::Acquire) { break 'agent; }
                     if let Some(desktop) = desktop.as_mut() {
                         desktop.pump(&format!("Connecting to Teacher {teacher_ip}"), false);
                         if desktop.exit_requested {
@@ -1945,6 +1953,9 @@ async fn run_student_media(
         let mut next = presentation;
         let mut last_probe = Instant::now();
         while control.is_connected() {
+            if inbox.update_exit.load(Ordering::Acquire) {
+                break 'agent;
+            }
             if let Some(desktop) = desktop.as_mut() {
                 desktop.pump(&format!("Connected to Teacher {teacher_ip}"), false);
                 if desktop.exit_requested {
@@ -1984,8 +1995,12 @@ async fn run_student_media(
                 headless,
                 &mut desktop,
                 None,
+                Some(&inbox.update_exit),
             );
             presenting.store(false, Ordering::Release);
+            if inbox.update_exit.load(Ordering::Acquire) {
+                break 'agent;
+            }
             if desktop
                 .as_ref()
                 .is_some_and(|desktop| desktop.exit_requested)
@@ -2024,7 +2039,7 @@ async fn run_student_media(
         restart_requested,
         "Student workers stopped; agent shutdown complete"
     );
-    Ok(restart_requested)
+    Ok(restart_requested && !inbox.update_exit.load(Ordering::Acquire))
 }
 
 /// Cumulative fan-out counters read once per telemetry interval.
@@ -2097,6 +2112,7 @@ fn run_student_media_loop(
     headless: bool,
     desktop: &mut Option<desktop_tray::StudentDesktop>,
     mut observation: Option<&mut observation::Output>,
+    update_exit: Option<&AtomicBool>,
 ) -> Result<StudentSessionOutcome> {
     let _activity = media_activity::MediaActivity::begin();
     let shared = Mutex::new(StudentPresentation::new(
@@ -2157,6 +2173,9 @@ fn run_student_media_loop(
             let mut pointer_updates = 0_u64;
             let mut last_present = Instant::now();
             while !worker.is_finished() {
+                if update_exit.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+                    break;
+                }
                 if renderer.is_some() {
                     let update = ingress.lock().unwrap().pointer.take_update();
                     if let (Some(overlay), Some(renderer)) = (update, renderer.as_mut()) {

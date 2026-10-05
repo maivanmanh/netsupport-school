@@ -10,7 +10,9 @@ case "$SIGN_MODE" in
 esac
 cargo build --release --bin ClassroomStudent
 STAGING="$ROOT/target/student-macos-staging/Classroom Student.app"
-APP="$ROOT/target/Classroom Student.app"
+OUTPUT_DIR="${CLASSROOM_MAC_OUTPUT_DIR:-$ROOT/target}"
+mkdir -p "$OUTPUT_DIR"
+APP="$OUTPUT_DIR/Classroom Student.app"
 mkdir -p "$STAGING/Contents/MacOS"
 cp target/release/ClassroomStudent "$STAGING/Contents/MacOS/ClassroomStudent"
 cat > "$STAGING/Contents/Info.plist" <<'PLIST'

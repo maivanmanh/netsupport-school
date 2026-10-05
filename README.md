@@ -239,3 +239,11 @@ Các giới hạn còn lại:
 - [Hướng dẫn sử dụng Phase 2](docs/14_PHASE2_USAGE.md)
 - [Telemetry](docs/12_TELEMETRY.md)
 - [Tiến độ và bằng chứng kiểm thử](checkpoints/PROGRESS.md)
+
+## Cập nhật Student dành cho dev
+
+Teacher có thể gửi bản Student mới qua tools TCP và tự động restart/reconnect,
+không cần SSH sau lần bootstrap đầu. Có UI trong Settings → Student updates
+và CLI không cần click giao diện: `scripts/classroom-dev-update.py`. Gói update
+được kiểm tra checksum/OS/kiến trúc; lỗi startup/reconnect có rollback.
+Xem [hướng dẫn và giới hạn](docs/19_DEV_STUDENT_UPDATES.md).

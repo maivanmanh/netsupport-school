@@ -136,3 +136,14 @@ to every Student) — the AGENTS.md H.264 baseline still applies to it.
   `bitrate_kbps` (0 = derived). Receiver pacing ceiling raised 30 → 60 (broadcast
   config stays 30); FPS ladder gains 48/30 steps that only matter above 30.
 - UI: negotiated codec + fps ceiling shown in Session stats and the Observe footer.
+
+## D-DevUpdate — 2026-10-05, owner authorization
+
+Owner explicitly authorized Student self-update for development iteration,
+including unattended transfer with no UI/SSH interaction after bootstrap.
+Reuse the separately paced tools TCP downloads and authenticated local Teacher
+IPC; keep media protocol/queues unchanged. Use per-OS/architecture ZIP manifests,
+pre-exit Student compatibility probe, same-volume supervised swap, receipt-confirmed
+reconnect and rollback. This is not production release authentication or OS
+permission automation. See `19_DEV_STUDENT_UPDATES.md`. Physical Windows wired
+1/5/10/20/40 acceptance remains pending and is not altered by this scope.

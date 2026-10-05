@@ -13,7 +13,9 @@ cargo build --release --bin Classroom
 cd apps/classroom_console
 "$FLUTTER" build macos --release
 BUILD_APP="$ROOT/apps/classroom_console/build/macos/Build/Products/Release/classroom_console.app"
-APP="$ROOT/target/Classroom Console.app"
+OUTPUT_DIR="${CLASSROOM_MAC_OUTPUT_DIR:-$ROOT/target}"
+mkdir -p "$OUTPUT_DIR"
+APP="$OUTPUT_DIR/Classroom Console.app"
 AGENT_APP="$BUILD_APP/Contents/Helpers/Classroom Agent.app"
 mkdir -p "$AGENT_APP/Contents/MacOS"
 # A raw helper inside the console bundle is registered by LaunchServices as

@@ -121,7 +121,8 @@ class ToolActivity extends ChangeNotifier {
           !isActive(job) &&
           !finished.contains(id) &&
           !_hidden.contains(id) &&
-          (job['kind'] == 'file' || targets.any((t) => t['status'] == 'error'));
+          ((job['kind'] == 'file' || job['kind'] == 'update') ||
+              targets.any((t) => t['status'] == 'error'));
       if (announce) {
         finished.insert(0, id);
         changed = true;
@@ -206,7 +207,11 @@ class ClassroomToolsOverlay extends StatelessWidget {
         final jobs = activity.jobs;
         final byId = {for (final j in jobs) '${j['id']}': j};
         final active = jobs.reversed
-            .where((j) => j['kind'] == 'file' && ToolActivity.isActive(j))
+            .where(
+              (j) =>
+                  (j['kind'] == 'file' || j['kind'] == 'update') &&
+                  ToolActivity.isActive(j),
+            )
             .toList();
         final cards = <Widget>[
           if (preparingFile) const _PreparingCard(),
@@ -359,7 +364,7 @@ class _FileProgressCard extends StatelessWidget {
       children: [
         _header(
           Icons.upload_file,
-          'Sending ${job['name'] ?? 'file'}',
+          '${job['kind'] == 'update' ? 'Updating' : 'Sending'} ${job['name'] ?? 'file'}',
           tooltip: 'Cancel transfer',
           onClose: () =>
               agent.command('tool_cancel', const [], {'id': job['id']}),
@@ -408,10 +413,14 @@ class _FinishedCard extends StatelessWidget {
     final failed = targets
         .where((t) => t['status'] == 'error' || t['status'] == 'cancelled')
         .toList();
-    final isFile = job['kind'] == 'file';
+    final isFile = (job['kind'] == 'file' || job['kind'] == 'update');
     final skipped = targets.where((t) => t['status'] == 'skipped').length;
     final ok = targets.length - failed.length;
-    final title = isFile
+    final title = job['kind'] == 'update'
+        ? (failed.isEmpty
+              ? 'Students updated and reconnected'
+              : 'Student update failed')
+        : isFile
         ? (failed.isEmpty
               ? 'Sent ${job['name'] ?? 'file'}'
               : 'Could not send ${job['name'] ?? 'file'}')

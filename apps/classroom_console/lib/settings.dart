@@ -23,9 +23,16 @@ class TeacherSettingsDialog extends StatefulWidget {
 }
 
 class _TeacherSettingsDialogState extends State<TeacherSettingsDialog> {
-  static const sections = ['Connection', 'Broadcast', 'Observe', 'Diagnostics'];
+  static const sections = [
+    'Connection',
+    'Broadcast',
+    'Observe',
+    'Diagnostics',
+    'Student updates',
+  ];
   int page = 0;
   String? error;
+  bool preparingUpdate = false;
   late final TextEditingController ip, port, adapter;
   int resolution = 1920, fps = 30, observeFps = 60, interval = 2000;
   double bitrate = 6;
@@ -144,6 +151,25 @@ class _TeacherSettingsDialogState extends State<TeacherSettingsDialog> {
       ]);
     } catch (e) {
       if (mounted) setState(() => error = 'Could not open logs: $e');
+    }
+  }
+
+  Future<void> updateStudents() async {
+    setState(() {
+      preparingUpdate = true;
+      error = null;
+    });
+    try {
+      final picked = await const MethodChannel('classroom/files')
+          .invokeMapMethod<String, dynamic>('chooseFile', {
+            'directory': widget.agent.endpoint.parent.path,
+          });
+      if (picked == null) return;
+      await widget.agent.command('tool_update', widget.selected, picked);
+    } catch (e) {
+      if (mounted) setState(() => error = 'Could not start dev update: $e');
+    } finally {
+      if (mounted) setState(() => preparingUpdate = false);
     }
   }
 
@@ -376,6 +402,84 @@ class _TeacherSettingsDialogState extends State<TeacherSettingsDialog> {
         Text('Teacher · ${Platform.operatingSystem}'),
         const Text(
           'Closing the console hides it in the tray. Exit Classroom closes all windows and media processes.',
+        ),
+      ],
+      [
+        const Text(
+          'Student updates · Development',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+        ),
+        const SizedBox(height: 12),
+        const Text(
+          'Choose a dev-update ZIP made with classroom-dev-update.py. '
+          'The Student receives, verifies, restarts and reconnects automatically. '
+          'Stop sharing and close Observe first. Configuration and logs are preserved.',
+        ),
+        const SizedBox(height: 16),
+        FilledButton.icon(
+          onPressed: preparingUpdate ? null : updateStudents,
+          icon: const Icon(Icons.system_update_alt),
+          label: Text(
+            preparingUpdate
+                ? 'Preparing package…'
+                : widget.selected.isEmpty
+                ? 'Update compatible Students…'
+                : 'Update ${widget.selected.length} selected…',
+          ),
+        ),
+        const SizedBox(height: 12),
+        const Text(
+          'An updater-enabled Student must be installed once manually. '
+          'macOS may still request privacy permissions for a new build. '
+          'Automatic deployment is also available through the CLI, without UI or SSH.',
+        ),
+        const SizedBox(height: 16),
+        AnimatedBuilder(
+          animation: widget.agent,
+          builder: (_, _) {
+            final tools = widget.agent.state['tools'] as Map? ?? const {};
+            final jobs = (tools['jobs'] as List? ?? const [])
+                .where((j) => j['kind'] == 'update')
+                .toList();
+            final caps = tools['capabilities'] as Map? ?? const {};
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${caps.values.where((c) => c['dev_update'] == 1).length} Students ready for dev updates',
+                ),
+                for (final job in jobs.reversed.take(4)) ...[
+                  const SizedBox(height: 14),
+                  Text(
+                    '${job['name']}',
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 6),
+                  for (final target in job['targets'] as List) ...[
+                    Text(
+                      '${target['id']} · ${target['status']}'
+                      '${target['error'] == '' ? '' : ' · ${target['error']}'}'
+                      '${target['reply'] == '' ? '' : ' · ${target['reply']}'}',
+                    ),
+                    if (![
+                      'complete',
+                      'error',
+                      'cancelled',
+                    ].contains(target['status']))
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 6),
+                        child: LinearProgressIndicator(
+                          value: job['size'] == 0
+                              ? null
+                              : ((target['done'] as num) / (job['size'] as num))
+                                    .clamp(0.0, 1.0),
+                        ),
+                      ),
+                  ],
+                ],
+              ],
+            );
+          },
         ),
       ],
     ];

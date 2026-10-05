@@ -147,7 +147,7 @@ async fn client(
     anyhow::ensure!(count < MAX_CLIENTS, "too many console clients");
     // Observe is an independent IPC client, not a main console. Its presence
     // must not prevent the tray/Finder from reopening a closed Teacher window.
-    let _console_owned = if hello["ui_role"] == "observe" {
+    let _console_owned = if hello["ui_role"] == "observe" || hello["ui_role"] == "automation" {
         None
     } else {
         consoles.fetch_add(1, Ordering::AcqRel);
@@ -435,6 +435,7 @@ pub(super) fn run(
                 let started = Instant::now();
                 let command = request.command;
                 let id = command.id;
+                let mut job_id: Option<String> = None;
                 let response = match command.action.as_str() {
                     "collect_diagnostics" => {
                         if session.is_some() {
@@ -471,9 +472,15 @@ pub(super) fn run(
                         publish_due = Instant::now();
                         Ok(())
                     }
-                    "tool_message" | "tool_file" => {
+                    "tool_message" | "tool_file" | "tool_update" => {
+                        if command.action == "tool_update"
+                            && (session.is_some() || observe.is_some())
+                        {
+                            let _ = request.reply.send(json!({"type":"ack","id":id,"ok":false,"error":"Stop sharing and close Observe before dev updates"}));
+                            continue;
+                        }
                         let rows = roster.lock().unwrap().snapshot();
-                        let recipients: Vec<String> = rows
+                        let mut recipients: Vec<String> = rows
                             .iter()
                             .filter(|r| {
                                 r.online
@@ -482,8 +489,23 @@ pub(super) fn run(
                             })
                             .map(|r| r.instance_id.clone())
                             .collect();
+                        if command.action == "tool_update" && command.selected.is_empty() {
+                            let package = command.input["path"].as_str().map(Path::new);
+                            if let Some(m) =
+                                package.and_then(|path| super::dev_update::manifest(path).ok())
+                            {
+                                let caps = tools_hub.snapshot()["capabilities"].clone();
+                                recipients.retain(|id| {
+                                    caps[id]["dev_update"] == 1
+                                        && caps[id]["os"] == m.os
+                                        && caps[id]["arch"] == m.arch
+                                });
+                            }
+                        }
                         match tools_hub.submit(
-                            if command.action == "tool_file" {
+                            if command.action == "tool_update" {
+                                "update"
+                            } else if command.action == "tool_file" {
                                 "file"
                             } else {
                                 "message"
@@ -492,7 +514,8 @@ pub(super) fn run(
                             &command.input,
                             &outbox,
                         ) {
-                            Ok(()) => {
+                            Ok(job) => {
+                                job_id = Some(job);
                                 publish_due = Instant::now();
                                 Ok(())
                             }
@@ -668,7 +691,7 @@ pub(super) fn run(
                     _ => Err("Command unavailable in the current presentation state"),
                 };
                 let _ = request.reply.send(
-                    json!({"type":"ack","id":id,"ok":response.is_ok(),"error":response.err()}),
+                    json!({"type":"ack","id":id,"ok":response.is_ok(),"error":response.err(),"job_id":job_id}),
                 );
                 if command.action != "observe_input" {
                     info!(id,action=%command.action,elapsed_ms=started.elapsed().as_secs_f64()*1000.0,"Flutter agent command processed");

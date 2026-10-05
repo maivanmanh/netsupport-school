@@ -200,6 +200,7 @@ struct Target {
     done: u64,
     reply: String,
     error: String,
+    changed: Instant,
 }
 struct Job {
     packet: ToolPacket,
@@ -213,6 +214,7 @@ struct State {
     queues: HashMap<String, VecDeque<ToolPacket>>,
     peers: HashMap<String, u64>,
     generation: u64,
+    capabilities: HashMap<String, Value>,
 }
 #[derive(Default)]
 pub struct Hub(Mutex<State>);
@@ -232,8 +234,19 @@ impl Hub {
         Ok(())
     }
     pub fn snapshot(&self) -> Value {
-        let s = self.0.lock().unwrap();
-        json!({"ready":s.peers.keys().collect::<Vec<_>>(),"jobs":s.jobs.iter().map(|j|json!({"id":j.packet.id,"kind":j.packet.action,"name":j.packet.name,"size":j.packet.size,"text":j.packet.text.chars().take(240).collect::<String>(),"targets":j.targets.iter().map(|(id,t)|json!({"id":id,"status":t.status,"done":t.done,"reply":t.reply,"error":t.error})).collect::<Vec<_>>()})).collect::<Vec<_>>()})
+        let mut s = self.0.lock().unwrap();
+        for job in &mut s.jobs {
+            for target in job.targets.values_mut() {
+                if job.packet.action == "update"
+                    && target.status == "restarting"
+                    && target.changed.elapsed() > Duration::from_secs(120)
+                {
+                    target.status = "error".into();
+                    target.error = "Updated Student did not confirm reconnect; inspect updater.log or retry after rollback".into();
+                }
+            }
+        }
+        json!({"capabilities":s.capabilities,"ready":s.peers.keys().collect::<Vec<_>>(),"jobs":s.jobs.iter().map(|j|json!({"id":j.packet.id,"kind":j.packet.action,"name":j.packet.name,"size":j.packet.size,"text":j.packet.text.chars().take(240).collect::<String>(),"targets":j.targets.iter().map(|(id,t)|json!({"id":id,"status":t.status,"done":t.done,"reply":t.reply,"error":t.error})).collect::<Vec<_>>()})).collect::<Vec<_>>()})
     }
     /// Hashes a staged file off the caller's thread, then offers it to every
     /// recipient that has not been cancelled meanwhile. The hash lets Students
@@ -278,10 +291,10 @@ impl Hub {
         recipients: &[String],
         input: &Value,
         outbox: &Path,
-    ) -> Result<()> {
+    ) -> Result<String> {
         let mut p = packet(action);
         p.id = nonce()?;
-        let source = if action == "file" {
+        let source = if action == "file" || action == "update" {
             let path = PathBuf::from(input["path"].as_str().context("File path missing")?);
             let root = outbox
                 .canonicalize()
@@ -301,6 +314,14 @@ impl Hub {
                 .take(140)
                 .collect();
             p.token = nonce()?;
+            if action == "update" {
+                let manifest = super::dev_update::manifest(&source.0)?;
+                p.text = serde_json::to_string(&manifest)?;
+                anyhow::ensure!(
+                    p.size <= super::dev_update::MAX_PACKAGE,
+                    "Update exceeds 512 MiB"
+                );
+            }
             Some(source)
         } else {
             input["text"]
@@ -330,6 +351,28 @@ impl Hub {
                 .all(|id| s.queues.get(id).is_none_or(|q| q.len() < 16)),
             "Student has too many pending tools"
         );
+        if action == "update" {
+            let m: super::dev_update::Manifest = serde_json::from_str(&p.text)?;
+            for id in recipients {
+                let capability = s
+                    .capabilities
+                    .get(id)
+                    .context("Student has no update capability; bootstrap once manually")?;
+                anyhow::ensure!(
+                    capability["dev_update"] == 1
+                        && capability["os"] == m.os
+                        && capability["arch"] == m.arch,
+                    "Student {id} needs an updater-enabled build matching {}/{}",
+                    m.os,
+                    m.arch
+                );
+                anyhow::ensure!(
+                    !s.jobs.iter().any(|j| j.packet.action == "update"
+                        && j.targets.get(id).is_some_and(|t| !terminal(&t.status))),
+                    "Student {id} already has an active update"
+                );
+            }
+        }
         if s.jobs.len() >= 32 {
             let i = s
                 .jobs
@@ -363,6 +406,7 @@ impl Hub {
                         done: 0,
                         reply: String::new(),
                         error: String::new(),
+                        changed: Instant::now(),
                     },
                 )
             })
@@ -377,6 +421,7 @@ impl Hub {
         let prepare = source
             .as_ref()
             .map(|src| (p.id.clone(), src.0.clone(), Arc::clone(&cancel)));
+        let job_id = p.id.clone();
         s.jobs.push_back(Job {
             packet: p,
             source,
@@ -387,7 +432,7 @@ impl Hub {
         if let Some((id, path, cancel)) = prepare {
             self.prepare_file(id, path, cancel);
         }
-        Ok(())
+        Ok(job_id)
     }
     pub fn cancel(&self, id: &str) -> Result<()> {
         let mut s = self.0.lock().unwrap();
@@ -396,6 +441,10 @@ impl Hub {
             .iter_mut()
             .find(|j| j.packet.id == id)
             .context("Job not found")?;
+        anyhow::ensure!(
+            j.packet.action != "update" || !j.targets.values().any(|t| t.status == "restarting"),
+            "Update already committed; wait for reconnect or automatic rollback"
+        );
         j.cancel.store(true, Ordering::Release);
         let targets = j.targets.keys().cloned().collect::<Vec<_>>();
         for t in j.targets.values_mut().filter(|t| !terminal(&t.status)) {
@@ -414,12 +463,14 @@ impl Hub {
         Ok(())
     }
     pub fn retry(self: &Arc<Self>, id: &str, outbox: &Path) -> Result<()> {
-        let (targets, input) = {
+        let (targets, input, action) = {
             let s = self.0.lock().unwrap();
             let j = s
                 .jobs
                 .iter()
-                .find(|j| j.packet.id == id && j.packet.action == "file")
+                .find(|j| {
+                    j.packet.id == id && (j.packet.action == "file" || j.packet.action == "update")
+                })
                 .context("File job not found")?;
             let src = j
                 .source
@@ -432,6 +483,7 @@ impl Hub {
                     .map(|(id, _)| id.clone())
                     .collect::<Vec<_>>(),
                 json!({"path":src.0,"name":j.packet.name}),
+                j.packet.action.clone(),
             )
         };
         // Retrying uses a new staged file/job identity; the previous attempt cannot overwrite it.
@@ -439,11 +491,12 @@ impl Hub {
         let next = outbox.join(nonce()?);
         fs::copy(old, &next)?;
         self.submit(
-            "file",
+            &action,
             &targets,
             &json!({"path":next,"name":input["name"]}),
             outbox,
         )
+        .map(|_| ())
     }
     fn event(&self, student: &str, p: &ToolPacket) -> Result<()> {
         let mut s = self.0.lock().unwrap();
@@ -469,7 +522,8 @@ impl Hub {
                 "complete",
                 "skipped",
                 "error",
-                "cancelled"
+                "cancelled",
+                "restarting"
             ]
             .contains(&p.status.as_str()),
             "Invalid tools status"
@@ -493,6 +547,7 @@ impl Hub {
             t.error = p.text.chars().take(300).collect();
         }
         t.status.clone_from(&p.status);
+        t.changed = Instant::now();
         t.done = t.done.max(p.done);
         if terminal(&t.status) {
             info!(job_id=%p.id,student_id=student,status=%t.status,bytes=t.done,"Classroom tools recipient finished");
@@ -505,15 +560,81 @@ impl Hub {
         }
         Ok(())
     }
+    fn commit_update(&self, student: &str, id: &str, size: u64) -> Result<()> {
+        let mut state = self.0.lock().unwrap();
+        let job = state
+            .jobs
+            .iter_mut()
+            .find(|j| j.packet.id == id)
+            .context("Update job disappeared")?;
+        anyhow::ensure!(
+            !job.cancel.load(Ordering::Acquire),
+            "Update cancelled before commit"
+        );
+        let target = job
+            .targets
+            .get_mut(student)
+            .context("Update recipient missing")?;
+        anyhow::ensure!(
+            !terminal(&target.status),
+            "Update recipient no longer active"
+        );
+        target.status = "restarting".into();
+        target.done = size;
+        target.changed = Instant::now();
+        Ok(())
+    }
+    fn confirm_update(&self, student: &str, capability: &Value) -> bool {
+        let receipt = &capability["last_update"];
+        let mut s = self.0.lock().unwrap();
+        let Some(job) = s.jobs.iter_mut().find(|j| {
+            j.packet.action == "update"
+                && receipt["id"] == j.packet.id
+                && receipt["token"] == j.packet.token
+        }) else {
+            return false;
+        };
+        let Ok(m) = serde_json::from_str::<super::dev_update::Manifest>(&job.packet.text) else {
+            return false;
+        };
+        if receipt["sha256"] != m.sha256 || receipt["version"] != m.version {
+            return false;
+        }
+        let mut confirmed = false;
+        if let Some(target) = job.targets.get_mut(student) {
+            confirmed = target.status == "complete";
+            if target.status == "restarting" {
+                if receipt["outcome"] == "rolled_back" {
+                    target.status = "error".into();
+                    target.error =
+                        "New build could not reconnect; previous build automatically restored"
+                            .into();
+                    return false;
+                }
+                confirmed = true;
+                target.status = "complete".into();
+                target.done = job.packet.size;
+                target.reply = format!("{} ({})", m.version, capability["build"]);
+                info!(job_id=%job.packet.id,student_id=student,version=%m.version,"Student dev update reconnected and confirmed");
+            }
+        }
+        if job.targets.values().all(|t| terminal(&t.status)) {
+            job.source = None;
+        }
+        confirmed
+    }
     fn disconnected(&self, student: &str, generation: u64) {
         let mut state = self.0.lock().unwrap();
         if state.peers.get(student) != Some(&generation) {
             return;
         }
         state.peers.remove(student);
+        state.capabilities.remove(student);
         for job in &mut state.jobs {
             if let Some(target) = job.targets.get_mut(student) {
-                if !terminal(&target.status) {
+                if !(terminal(&target.status)
+                    || job.packet.action == "update" && target.status == "restarting")
+                {
                     target.status = "error".into();
                     target.error = "Student classroom tools connection interrupted".into();
                     info!(job_id=%job.packet.id,student_id=student,status=%target.status,"Classroom tools recipient finished");
@@ -636,15 +757,26 @@ fn serve(
         return send(s, &packet("ok"));
     }
     anyhow::ensure!(hello.action == "hello", "Invalid tools handshake");
+    let capability = serde_json::from_str::<Value>(&hello.text).ok();
     let generation = {
         let mut st = hub.0.lock().unwrap();
         st.generation += 1;
         let g = st.generation;
         st.peers.insert(hello.student.clone(), g);
+        if let Some(c) = &capability {
+            st.capabilities.insert(hello.student.clone(), json!({"dev_update":c["dev_update"],"os":c["os"],"arch":c["arch"],"build":c["build"],"pid":c["pid"]}));
+        }
         g
     };
+    let confirmed = capability
+        .as_ref()
+        .is_some_and(|c| hub.confirm_update(&hello.student, c));
     let result = (|| {
-        send(s, &packet("ok"))?;
+        let mut ack = packet("ok");
+        if confirmed {
+            ack.status = "update_confirmed".into();
+        }
+        send(s, &ack)?;
         while !stop.load(Ordering::Acquire) {
             let p = read(s)?;
             anyhow::ensure!(
@@ -685,14 +817,14 @@ fn serve_file(
     stop: &AtomicBool,
     slots: &Arc<AtomicUsize>,
 ) -> Result<()> {
-    let (source, cancel, total) = {
+    let (source, cancel, total, updating) = {
         let st = hub.0.lock().unwrap();
         let j = st
             .jobs
             .iter()
             .find(|j| {
                 j.packet.id == p.id
-                    && j.packet.action == "file"
+                    && (j.packet.action == "file" || j.packet.action == "update")
                     && j.packet.token == p.token
                     && j.targets.contains_key(&p.student)
             })
@@ -702,6 +834,7 @@ fn serve_file(
             Arc::clone(j.source.as_ref().context("File source unavailable")?),
             Arc::clone(&j.cancel),
             j.packet.size,
+            j.packet.action == "update",
         )
     };
     if slots
@@ -747,9 +880,14 @@ fn serve_file(
     );
     let mut event = packet("event");
     event.id.clone_from(&p.id);
-    event.status = "complete".into();
+    event.status = if updating { "restarting" } else { "complete" }.into();
     event.done = total;
-    hub.event(&p.student, &event)?;
+    if updating {
+        hub.commit_update(&p.student, &p.id, total)?;
+        send(s, &packet("ok"))?;
+    } else {
+        hub.event(&p.student, &event)?;
+    }
     Ok(())
 }
 /// 2 minutes plus 10 MiB/s of local copy time.
@@ -761,6 +899,7 @@ pub struct Inbox {
     messages: Mutex<VecDeque<ToolPacket>>,
     events: Mutex<VecDeque<ToolPacket>>,
     transfers: Mutex<VecDeque<Transfer>>,
+    pub update_exit: AtomicBool,
 }
 /// Student-side view of one incoming file, for the local progress window.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -933,8 +1072,13 @@ pub fn student(
                     configure(&s)?;
                     let mut hello = packet("hello");
                     hello.student.clone_from(&identity);
+                    hello.text = super::dev_update::capabilities().to_string();
                     send(&mut s, &hello)?;
-                    anyhow::ensure!(read(&mut s)?.action == "ok", "Tools handshake rejected");
+                    let ack = read(&mut s)?;
+                    anyhow::ensure!(ack.action == "ok", "Tools handshake rejected");
+                    if ack.status == "update_confirmed" {
+                        super::dev_update::connected();
+                    }
                     info!("Student classroom tools ready");
                     while !cancel.load(Ordering::Acquire) {
                         for _ in 0..16 {
@@ -996,8 +1140,10 @@ pub fn student(
                                     inbox.event(&p.id, "error", "Student message inbox is full", 0);
                                 }
                             }
-                            "file" => {
-                                inbox.track_file(&p);
+                            "file" | "update" => {
+                                if p.action == "file" {
+                                    inbox.track_file(&p);
+                                }
                                 if download.is_some() {
                                     if pending_downloads.len() < 8 {
                                         inbox.event(&p.id, "waiting", "", 0);
@@ -1115,6 +1261,14 @@ fn receive_file(
     cancel: &AtomicBool,
     stop: &AtomicBool,
 ) -> Result<()> {
+    if p.action == "update" {
+        let folder = std::env::temp_dir().join(format!("Classroom-update-download-{}", p.id));
+        fs::create_dir_all(&folder)?;
+        let result =
+            receive_file_to_folder(address, student, p, inbox, cancel, stop, &folder, &folder);
+        let _ = fs::remove_dir_all(folder);
+        return result;
+    }
     let folder = desktop_folder()?;
     // Stage outside the Desktop so a transfer in progress never shows up there.
     let staging = std::env::temp_dir().join("Classroom-incoming");
@@ -1131,7 +1285,15 @@ fn receive_file_to_folder(
     folder: &Path,
     staging: &Path,
 ) -> Result<()> {
-    anyhow::ensure!(p.size <= MAX_FILE, "File exceeds 4 GiB limit");
+    anyhow::ensure!(
+        p.size
+            <= if p.action == "update" {
+                super::dev_update::MAX_PACKAGE
+            } else {
+                MAX_FILE
+            },
+        "File exceeds size limit"
+    );
     anyhow::ensure!(
         p.id.len() == 32 && p.id.bytes().all(|b| b.is_ascii_hexdigit()),
         "Invalid file job id"
@@ -1212,7 +1374,7 @@ fn receive_file_to_folder(
     let checksum = read(&mut s)?;
     let digest = format!("{:x}", hash.finalize());
     anyhow::ensure!(
-        checksum.action == "checksum" && checksum.hash == digest,
+        checksum.action == "checksum" && checksum.hash == digest && digest == p.hash,
         "File checksum mismatch"
     );
     anyhow::ensure!(
@@ -1221,6 +1383,25 @@ fn receive_file_to_folder(
     );
     file.sync_all()?;
     drop(file);
+    if p.action == "update" {
+        let plan = super::dev_update::prepare(&partial.0, &p.id, &p.token, cancel)?;
+        anyhow::ensure!(
+            !cancel.load(Ordering::Acquire) && !stop.load(Ordering::Acquire),
+            "Update cancelled before commit"
+        );
+        let mut ack = packet("stored");
+        ack.hash = digest;
+        send(&mut s, &ack)?;
+        anyhow::ensure!(
+            read(&mut s)?.action == "ok",
+            "Teacher did not commit update"
+        );
+        // Spawn first; failure keeps the current Student alive.
+        super::dev_update::launch_worker(&plan)?;
+        inbox.update_exit.store(true, Ordering::Release);
+        info!(job_id=%p.id,plan=%plan.display(),"Student dev update prepared; releasing all workers before swap");
+        return Ok(());
+    }
     // Publish with create_new + copy instead of hard links/rename: redirected
     // Windows Desktops (e.g. a Parallels shared folder) reject hard links with
     // error 87, and rename could overwrite. create_new never replaces a file.
@@ -1294,6 +1475,71 @@ fn desktop_folder() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn update_job() -> (Hub, Value) {
+        let hub = Hub::default();
+        let manifest = json!({"format":1,"os":"windows","arch":"x86_64","version":"dev-test",
+            "root":"ClassroomStudent.exe","executable":"ClassroomStudent.exe","sha256":"a".repeat(64)});
+        let mut offer = packet("update");
+        offer.id = "update-id".into();
+        offer.token = "private-update-token".into();
+        offer.text = manifest.to_string();
+        offer.size = 100;
+        hub.0.lock().unwrap().jobs.push_back(Job {
+            packet: offer,
+            source: None,
+            targets: HashMap::from([(
+                "student".into(),
+                Target {
+                    status: "receiving".into(),
+                    done: 99,
+                    reply: String::new(),
+                    error: String::new(),
+                    changed: Instant::now(),
+                },
+            )]),
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
+        hub.0.lock().unwrap().peers.insert("student".into(), 1);
+        let receipt = json!({"build":"new-build","last_update":{"id":"update-id","token":"private-update-token",
+            "version":"dev-test","sha256":"a".repeat(64),"outcome":"installed"}});
+        (hub, receipt)
+    }
+    #[test]
+    fn update_success_requires_committed_reconnect_and_matching_receipt() {
+        let (hub, receipt) = update_job();
+        assert!(!hub.confirm_update("student", &receipt));
+        hub.commit_update("student", "update-id", 100).unwrap();
+        assert!(hub.cancel("update-id").is_err());
+        hub.disconnected("student", 1);
+        assert_eq!(
+            hub.snapshot()["jobs"][0]["targets"][0]["status"],
+            "restarting"
+        );
+        let mut wrong = receipt.clone();
+        wrong["last_update"]["token"] = json!("wrong");
+        assert!(!hub.confirm_update("student", &wrong));
+        wrong = receipt.clone();
+        wrong["last_update"]["sha256"] = json!("b".repeat(64));
+        assert!(!hub.confirm_update("student", &wrong));
+        assert!(!hub.confirm_update("other-student", &receipt));
+        assert!(hub.confirm_update("student", &receipt));
+        assert_eq!(
+            hub.snapshot()["jobs"][0]["targets"][0]["status"],
+            "complete"
+        );
+        assert!(hub.confirm_update("student", &receipt)); // idempotent reconnect
+    }
+    #[test]
+    fn cancelled_update_cannot_commit_and_rollback_is_reported_as_failure() {
+        let (hub, _) = update_job();
+        hub.cancel("update-id").unwrap();
+        assert!(hub.commit_update("student", "update-id", 100).is_err());
+        let (hub, mut receipt) = update_job();
+        hub.commit_update("student", "update-id", 100).unwrap();
+        receipt["last_update"]["outcome"] = json!("rolled_back");
+        assert!(!hub.confirm_update("student", &receipt));
+        assert_eq!(hub.snapshot()["jobs"][0]["targets"][0]["status"], "error");
+    }
     fn test_folder() -> PathBuf {
         let path = std::env::temp_dir().join(format!("classroom-tools-{}", nonce().unwrap()));
         fs::create_dir_all(&path).unwrap();

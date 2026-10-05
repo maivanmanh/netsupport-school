@@ -96,3 +96,6 @@ __pycache__/
 ._*
 .vscode/*
 !.vscode/extensions.json
+
+# Private development updater transactions (plans/receipts contain session tokens)
+**/.classroom-update-*/
