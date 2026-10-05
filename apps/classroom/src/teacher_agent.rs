@@ -43,6 +43,7 @@ struct Snapshot {
     error: Option<String>,
     tray: bool,
     ui_request: u64,
+    observe_focus: (String, u64, u32),
     open_settings: bool,
     observe: Value,
     tools: Value,
@@ -124,7 +125,8 @@ fn state_json(state: &Snapshot, sent: &mut HashMap<String, u64>) -> Value {
         "recipients":state.recipients,"stream_id":state.stream_id,"error":state.error,
         "tray_available":state.tray,"ui_request":state.ui_request,"open_settings":state.open_settings,
         "students":students,"observe":state.observe,"tools":state.tools,"lifecycle":state.lifecycle,
-        "settings":state.settings,"diagnostics":state.diagnostics})
+        "settings":state.settings,"diagnostics":state.diagnostics,
+        "observe_focus":state.observe_focus})
 }
 async fn client(
     mut socket: TcpStream,
@@ -305,6 +307,7 @@ pub(super) fn run(
         error: None,
         tray: tray.is_some(),
         ui_request: 0,
+        observe_focus: (String::new(), 0, 0),
         open_settings: false,
         observe: Value::Null,
         tools: tools_hub.snapshot(),
@@ -358,6 +361,9 @@ pub(super) fn run(
     info!(ipc_port=port,bind_ip=%bind_ip,control_port=config.network.control_port,"Flutter Teacher agent ready");
     let mut session: Option<Session> = None;
     let mut observe: Option<super::observe_coordinator::View> = None;
+    // The persistent coordinator owns UI launches, including windows that are
+    // still starting or outlive a reopened main console.
+    let mut observe_windows: HashMap<String, std::process::Child> = HashMap::new();
     let mut publish_due = Instant::now();
     let mut metrics = Instant::now();
     let mut restart_requested = false;
@@ -458,6 +464,74 @@ pub(super) fn run(
                             }
                         }
                     }
+                    "observe_window" => {
+                        observe_windows.retain(|_, child| matches!(child.try_wait(), Ok(None)));
+                        let rows = roster.lock().unwrap().snapshot();
+                        if let Some(row) = rows
+                            .iter()
+                            .find(|r| r.online && command.selected.first() == Some(&r.instance_id))
+                        {
+                            if observe_windows.contains_key(&row.instance_id) {
+                                snapshot.observe_focus.0 = row.instance_id.clone();
+                                snapshot.observe_focus.1 += 1;
+                                snapshot.observe_focus.2 = observe_windows[&row.instance_id].id();
+                                publish_due = Instant::now();
+                                Ok(())
+                            } else if let Some(console) = console {
+                                if observe_windows.len() >= MAX_CLIENTS - 1 {
+                                    Err("Close an Observe window before opening another")
+                                } else {
+                                    let mut launch = std::process::Command::new(console);
+                                    launch
+                                        .arg("--observe-id")
+                                        .arg(&row.instance_id)
+                                        .arg("--observe-name")
+                                        .arg(&row.hostname)
+                                        .arg("--ipc-file")
+                                        .arg(path);
+                                    for (input, flag) in [
+                                        ("center_x", "--teacher-center-x"),
+                                        ("center_y", "--teacher-center-y"),
+                                    ] {
+                                        if let Some(value) =
+                                            command.input[input].as_f64().filter(|v| v.is_finite())
+                                        {
+                                            launch.arg(flag).arg(value.to_string());
+                                        }
+                                    }
+                                    match launch.spawn() {
+                                        Ok(child) => {
+                                            snapshot.observe_focus.0 = row.instance_id.clone();
+                                            snapshot.observe_focus.1 += 1;
+                                            snapshot.observe_focus.2 = child.id();
+                                            publish_due = Instant::now();
+                                            info!(student_id=%row.instance_id,pid=child.id(),"Observe window launched");
+                                            observe_windows.insert(row.instance_id.clone(), child);
+                                            Ok(())
+                                        }
+                                        Err(error) => {
+                                            snapshot.error = Some(error.to_string());
+                                            Err("Could not open Observe window")
+                                        }
+                                    }
+                                }
+                            } else {
+                                Err("Teacher console executable unavailable")
+                            }
+                        } else {
+                            Err("Student is offline")
+                        }
+                    }
+                    "focus_observe" => {
+                        snapshot.observe_focus.0 =
+                            command.selected.first().cloned().unwrap_or_default();
+                        snapshot.observe_focus.1 += 1;
+                        snapshot.observe_focus.2 = observe_windows
+                            .get(&snapshot.observe_focus.0)
+                            .map_or(0, std::process::Child::id);
+                        publish_due = Instant::now();
+                        Ok(())
+                    }
                     "show_console" => {
                         snapshot.ui_request += 1;
                         snapshot.open_settings = false;
@@ -502,7 +576,7 @@ pub(super) fn run(
                                 });
                             }
                         }
-                        match tools_hub.submit(
+                        match tools_hub.submit_with_limit(
                             if command.action == "tool_update" {
                                 "update"
                             } else if command.action == "tool_file" {
@@ -513,6 +587,7 @@ pub(super) fn run(
                             &recipients,
                             &command.input,
                             &outbox,
+                            u64::from(config.tools.max_file_mb) * 1024 * 1024,
                         ) {
                             Ok(job) => {
                                 job_id = Some(job);
@@ -530,7 +605,11 @@ pub(super) fn run(
                         let result = if command.action == "tool_cancel" {
                             tools_hub.cancel(job)
                         } else {
-                            tools_hub.retry(job, &outbox)
+                            tools_hub.retry_with_limit(
+                                job,
+                                &outbox,
+                                u64::from(config.tools.max_file_mb) * 1024 * 1024,
+                            )
                         };
                         match result {
                             Ok(()) => {
@@ -594,10 +673,13 @@ pub(super) fn run(
                         }
                     }
                     "observe_close" => {
-                        if observe
-                            .as_ref()
-                            .is_some_and(|v| command.selected.first() == Some(&v.id))
-                        {
+                        if observe.as_ref().is_some_and(|v| {
+                            command.selected.first() == Some(&v.id)
+                                && command
+                                    .input
+                                    .get("surface")
+                                    .is_none_or(|surface| surface == &v.state()["surface"])
+                        }) {
                             observe.take();
                         }
                         Ok(())
@@ -757,6 +839,13 @@ pub(super) fn run(
     let deadline = Instant::now() + Duration::from_secs(1);
     while clients.load(Ordering::Acquire) != 0 && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(5));
+    }
+    // Also cover a freshly spawned UI that has not attached to IPC yet.
+    for child in observe_windows.values_mut() {
+        if matches!(child.try_wait(), Ok(None)) {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
     ipc.abort();
     info!("Flutter Teacher agent stopped; room and presentation released");

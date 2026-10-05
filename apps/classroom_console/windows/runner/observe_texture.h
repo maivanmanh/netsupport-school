@@ -32,14 +32,17 @@ private:
     std::vector<uint8_t> pixels;
     FlutterDesktopPixelBuffer descriptor{};
     std::mutex mutex;
-    bool busy = false;
+    size_t leases = 0;
   };
   bool Connect();
   void Close();
   bool LockMap();
   void UnlockMap();
+  const FlutterDesktopPixelBuffer *CachedFrame();
   std::mutex mutex_;
   std::array<Buffer, 3> buffers_;
+  Buffer *latest_ = nullptr;
+  uint64_t cached_returns_ = 0;
   std::string path_, error_;
   HANDLE file_ = INVALID_HANDLE_VALUE;
   HANDLE mapping_ = nullptr;

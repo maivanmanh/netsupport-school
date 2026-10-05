@@ -73,9 +73,11 @@ macOS fullscreen Space. Display discovery failure falls back to native maximize.
 ### Observe geometry and input coordinates
 
 Fill stretches the image to the whole viewport. Stretch uses aspect-preserving
-cover scaling and crops overflow; input coordinates invert that crop. Chrome
-overlays never reduce media area. Flutter normalizes positions in the full
-displayed image, not merely the visible crop.
+cover scaling with horizontal/vertical scrollbars to reach the complete frame.
+Local scrollbar gutters are outside the video hit area, so dragging them never
+clicks the Student. Control wheel/trackpad events still scroll the remote app.
+Flutter normalizes positions in the full scrolled image. Chrome overlays do not
+change the image coordinates.
 The Student capture backend exposes display bounds using the same display index
 and enumeration order as capture (reverse publishing currently uses index0).
 macOS bounds are SCDisplay.frame in points; Windows bounds are DXGI physical
@@ -134,3 +136,25 @@ process routes through authenticated IPC. The coordinator counts actual console
 clients separately from Observe clients, so tray/Finder can recreate a missing
 console while Observe remains connected. Existing development ad-hoc/manual
 permission policy is unchanged.
+
+
+### Independent Observe window lifecycle (2026-10-05)
+
+The persistent Rust Teacher coordinator serializes `observe_window` requests and
+keeps the child UI process for each Student, including during engine startup.
+Repeated clicks focus that process rather than launching another. Exited children
+are reaped before reopening; Teacher shutdown also closes unconnected startup
+children. The main console grants/focuses the owned PID using native activation
+only after an explicit roster click; background state changes do not steal focus.
+
+Observe X hides immediately, releases input, detaches its texture and sends a
+session/surface-specific close without awaiting a remote acknowledgement. It then
+uses the application's bounded close/process-exit path. A delayed old close cannot
+end a newer surface for the same Student. Windows engine destruction retains
+texture buffers until engine/raster teardown completes. The media coordinator's
+existing single active reverse View remains unchanged by UI instance management.
+
+Windows texture reads never block on the producer. A lock miss/invalid header/full
+buffer pool retains the last complete RGBA frame through counted raster leases.
+Three buffers bound memory; held buffers are immutable. `cached_frame_returns`
+is included with existing copy/lock/sequence counters in the Observe UI log.

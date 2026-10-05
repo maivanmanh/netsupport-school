@@ -65,6 +65,7 @@ bool ObserveTexture::Bind(const std::string &path) {
     source_ = 0;
     width_ = 0;
     height_ = 0;
+    latest_ = nullptr;
   }
   active_ = true;
   // The producer can create its surface after the IPC state arrives. Retry
@@ -105,7 +106,7 @@ const FlutterDesktopPixelBuffer *ObserveTexture::Copy() {
   ++attempts_;
   if (!active_ || !Connect() || !LockMap()) {
     ++failures_;
-    return nullptr;
+    return active_ ? CachedFrame() : nullptr;
   }
   uint32_t width = 0, height = 0;
   uint64_t sequence = 0;
@@ -116,11 +117,11 @@ const FlutterDesktopPixelBuffer *ObserveTexture::Copy() {
       sequence == 0) {
     UnlockMap();
     ++failures_;
-    return nullptr;
+    return CachedFrame();
   }
   for (auto &slot : buffers_) {
     std::lock_guard<std::mutex> buffer_lock(slot.mutex);
-    if (slot.busy)
+    if (slot.leases != 0 || &slot == latest_)
       continue;
     slot.pixels.resize(static_cast<size_t>(width) * height * 4);
     // Flutter's PixelBufferTexture contract is RGBA, Rust's surface is BGRA.
@@ -131,7 +132,7 @@ const FlutterDesktopPixelBuffer *ObserveTexture::Copy() {
       slot.pixels[i + 3] = map_[32 + i + 3];
     }
     UnlockMap();
-    slot.busy = true;
+    slot.leases = 1;
     slot.descriptor.buffer = slot.pixels.data();
     slot.descriptor.width = width;
     slot.descriptor.height = height;
@@ -139,7 +140,7 @@ const FlutterDesktopPixelBuffer *ObserveTexture::Copy() {
     slot.descriptor.release_callback = [](void *context) {
       auto *buffer = static_cast<Buffer *>(context);
       std::lock_guard<std::mutex> release_lock(buffer->mutex);
-      buffer->busy = false;
+      --buffer->leases;
     };
     if (sequence != copied_)
       ++copies_;
@@ -147,11 +148,24 @@ const FlutterDesktopPixelBuffer *ObserveTexture::Copy() {
     source_ = sequence;
     width_ = width;
     height_ = height;
+    latest_ = &slot;
     return &slot.descriptor;
   }
   UnlockMap();
   ++failures_;
-  return nullptr;
+  return CachedFrame();
+}
+
+// A nonblocking producer-lock miss must not clear the Flutter texture. Keep
+// the last complete frame immutable, leasing it independently for every raster
+// callback; never overwrite storage still referenced by Flutter.
+const FlutterDesktopPixelBuffer *ObserveTexture::CachedFrame() {
+  if (!latest_)
+    return nullptr;
+  std::lock_guard<std::mutex> lock(latest_->mutex);
+  ++latest_->leases;
+  ++cached_returns_;
+  return &latest_->descriptor;
 }
 
 flutter::EncodableMap ObserveTexture::Stats() {
@@ -166,6 +180,7 @@ flutter::EncodableMap ObserveTexture::Stats() {
           {V("copy_attempts"), V(static_cast<int64_t>(attempts_))},
           {V("copy_failures"), V(static_cast<int64_t>(failures_))},
           {V("lock_misses"), V(static_cast<int64_t>(lock_misses_))},
+          {V("cached_frame_returns"), V(static_cast<int64_t>(cached_returns_))},
           {V("connected"), V(map_ != nullptr)},
           {V("active"), V(active_)},
           {V("connect_error"), V(error_)}};

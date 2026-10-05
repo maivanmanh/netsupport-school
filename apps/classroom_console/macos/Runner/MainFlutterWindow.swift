@@ -41,6 +41,12 @@ class MainFlutterWindow: NSWindow {
           if next.hasNewFrame() { textureRegistrar.textures.textureFrameAvailable(id) }
         }
         result(id)
+      case "activateWindow":
+        if let pid = call.arguments as? Int,
+           let app = NSRunningApplication(processIdentifier: pid_t(pid)) {
+          app.activate(options: [.activateIgnoringOtherApps])
+        }
+        result(nil)
       case "stats": result(texture?.stats() ?? [:])
       case "detach":
         timer?.invalidate(); timer = nil

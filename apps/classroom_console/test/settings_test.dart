@@ -35,6 +35,7 @@ void main() {
       for (final section in [
         'Broadcast',
         'Observe',
+        'File transfer',
         'Diagnostics',
         'Connection',
       ]) {

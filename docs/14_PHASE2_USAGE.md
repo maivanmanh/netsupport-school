@@ -246,3 +246,26 @@ without a remainder strip. Auto picks a balanced column count from viewport widt
 known row count and available height, retaining16:9 thumbnails and visible titles.
 Large classes scroll vertically. Both mode and manual size are remembered.
 Slider/Auto are hidden in List/Compact, whose row sizing remains unchanged.
+
+
+## Observe/Control: kéo thả file và folder (2026-10-05)
+
+Kéo file hoặc folder từ Explorer/Finder vào cửa sổ Observe/Control của Student.
+Folder được đóng gói ZIP trong isolate riêng; file/ZIP dùng đường truyền Rust
+hiện có, hiển thị progress và nhận trên Desktop của Student. Không cần cập nhật
+Student cho tính năng này. Wheel/trackpad trong Control vẫn gửi đến ứng dụng
+Student; muốn cuộn phần frame bị khuất trong Stretch, kéo scrollbar cục bộ.
+
+Teacher Settings → **File transfer** → **Maximum file size (MB)**: mặc định 300,
+phạm vi 1–4096, áp dụng cho mỗi file/ZIP thành phẩm, gồm retry. Cấu hình TOML:
+
+```toml
+[tools]
+max_file_mb = 300
+```
+
+Đơn vị cấu hình là MiB (1024² byte). ZIP kiểm tra dung lượng sau khi hoàn tất;
+folder có tối đa 100.000 entry và 4 GiB dữ liệu nguồn, không hỗ trợ symlink.
+Một lượt drop tối đa 32 item và chuẩn bị tuần tự. Các giới hạn package dev update
+độc lập, không thay bởi `max_file_mb`. File lỗi chuẩn bị được xóa; staged file bỏ
+dở do tiến trình bị tắt được cơ chế outbox hiện có dọn sau 24 giờ ở lần khởi động.

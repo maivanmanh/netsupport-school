@@ -117,7 +117,11 @@ void SaveScreenshot(
 FlutterWindow::FlutterWindow(const flutter::DartProject &project)
     : project_(project) {}
 
-FlutterWindow::~FlutterWindow() {}
+FlutterWindow::~FlutterWindow() {
+  // Destroy the engine while pixel buffers/channels are still alive. Relying
+  // on member destruction reverses this order and can strand raster leases.
+  Destroy();
+}
 
 bool FlutterWindow::OnCreate() {
   if (!Win32Window::OnCreate()) {
@@ -153,8 +157,41 @@ bool FlutterWindow::OnCreate() {
           flutter_controller_->engine()->messenger(), "classroom/observe",
           &flutter::StandardMethodCodec::GetInstance());
   observe_channel_->SetMethodCallHandler([this](const auto &call, auto result) {
-    if (call.method_name() == "captureSystemKeys") {
-      const auto* enabled = std::get_if<bool>(call.arguments());
+    if (call.method_name() == "activateWindow") {
+      const auto *pid = std::get_if<int32_t>(call.arguments());
+      if (!pid || *pid <= 0) {
+        result->Error("invalid_pid", "Observe process missing");
+        return;
+      }
+      const bool allowed =
+          AllowSetForegroundWindow(static_cast<DWORD>(*pid)) != FALSE;
+      struct Target {
+        DWORD pid;
+        HWND window = nullptr;
+      } target{static_cast<DWORD>(*pid)};
+      EnumWindows(
+          [](HWND window, LPARAM data) -> BOOL {
+            auto *target = reinterpret_cast<Target *>(data);
+            DWORD owner = 0;
+            GetWindowThreadProcessId(window, &owner);
+            if (owner == target->pid && IsWindowVisible(window) &&
+                !GetWindow(window, GW_OWNER)) {
+              target->window = window;
+              return FALSE;
+            }
+            return TRUE;
+          },
+          reinterpret_cast<LPARAM>(&target));
+      if (target.window) {
+        if (IsIconic(target.window))
+          ShowWindow(target.window, SW_RESTORE);
+        SetForegroundWindow(target.window);
+      }
+      result->Success();
+      (void)allowed; // A not-yet-created window uses the granted startup
+                     // permission.
+    } else if (call.method_name() == "captureSystemKeys") {
+      const auto *enabled = std::get_if<bool>(call.arguments());
       if (!enabled || !control_keyboard_->SetEnabled(*enabled)) {
         result->Error("keyboard_hook", "Could not capture Windows shortcuts.");
         return;
@@ -286,12 +323,16 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               LPARAM const lparam) noexcept {
   if (message == ControlKeyboard::kMessage && observe_channel_) {
     flutter::EncodableMap event;
-    event[flutter::EncodableValue("key")] = flutter::EncodableValue(ControlKeyboard::Label(static_cast<DWORD>(wparam)));
-    event[flutter::EncodableValue("down")] = flutter::EncodableValue(lparam != 0);
-    observe_channel_->InvokeMethod("systemKey", std::make_unique<flutter::EncodableValue>(event));
+    event[flutter::EncodableValue("key")] = flutter::EncodableValue(
+        ControlKeyboard::Label(static_cast<DWORD>(wparam)));
+    event[flutter::EncodableValue("down")] =
+        flutter::EncodableValue(lparam != 0);
+    observe_channel_->InvokeMethod(
+        "systemKey", std::make_unique<flutter::EncodableValue>(event));
     return 0;
   }
-  if (message == WM_ACTIVATE && LOWORD(wparam) == WA_INACTIVE && control_keyboard_)
+  if (message == WM_ACTIVATE && LOWORD(wparam) == WA_INACTIVE &&
+      control_keyboard_)
     control_keyboard_->SetEnabled(false);
   if (file_picker_ && file_picker_->Handle(message, lparam))
     return 0;

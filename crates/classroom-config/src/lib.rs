@@ -21,6 +21,19 @@ pub struct Config {
     pub observe: ObserveConfig,
     #[serde(default)]
     pub diagnostics: DiagnosticsConfig,
+    #[serde(default)]
+    pub tools: ToolsConfig,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ToolsConfig {
+    pub max_file_mb: u32,
+}
+impl Default for ToolsConfig {
+    fn default() -> Self {
+        Self { max_file_mb: 300 }
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -278,6 +291,11 @@ impl Config {
 
     #[allow(clippy::too_many_lines)]
     fn validate(&self) -> Result<(), ConfigError> {
+        if !(1..=4096).contains(&self.tools.max_file_mb) {
+            return Err(ConfigError::Validation(
+                "tools.max_file_mb must be 1..4096".into(),
+            ));
+        }
         let m = &self.monitoring;
         if !(1000..=10000).contains(&m.interval_ms)
             || !(2..=480).contains(&m.width)
@@ -436,6 +454,20 @@ fn merge_toml(base: &mut toml::Value, overlay: toml::Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_transfer_limit_defaults_and_bounds() {
+        let mut config: Config = toml::from_str(EMBEDDED_DEFAULTS).unwrap();
+        assert_eq!(config.tools.max_file_mb, 300);
+        for valid in [1, 300, 4096] {
+            config.tools.max_file_mb = valid;
+            config.validate().unwrap();
+        }
+        for invalid in [0, 4097] {
+            config.tools.max_file_mb = invalid;
+            assert!(config.validate().is_err());
+        }
+    }
 
     #[test]
     fn embedded_defaults_are_valid() {

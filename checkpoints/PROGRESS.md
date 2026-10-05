@@ -3112,3 +3112,33 @@ Status: owner-reported Win+R local dispatch fixed and tested Windows-to-Windows.
   target/shortcut-test/Classroom-Console-Windows-shortcuts.zip. No execution-policy,
   firewall or privacy grant changes. Final Control-footer regression suite passes
   all24 tests; tracked Flutter lockfile restored after local SDK resolution.
+
+
+## 2026-10-05 — Observe window lifecycle, transfer and Windows rendering
+
+- Rust coordinator owns one Observe UI child per Student, including startup;
+  repeated requests activate the existing instance. Native Teacher foreground
+  activation is explicit; closing hides immediately and exits its UI process,
+  with old surface notifications unable to close a newer session.
+- Stretch exposes the full cover-size frame through two scrollbars. Final gutters
+  isolate local scrollbar dragging from remote pointer input. Added native drop,
+  streamed folder ZIP/file staging, Desktop delivery, configurable 300 MiB default
+  ordinary-transfer limit (1..4096), preparation and transfer progress.
+- Windows texture keeps bounded last-good leased pixels on transient lock/pool
+  contention; engine teardown precedes pixel-buffer disposal. Student unchanged.
+- Verification: Flutter analyze clean, 27 tests pass; Rust 12 tools and 6 config
+  tests pass; Mac and Windows x64 Rust releases built. Native MSVC texture harness
+  passes. Windows .94 Teacher to .206 Student IPC run: single child across repeated
+  requests, 1875 ms cold UI startup, X hide 30 ms and process exit, ZIP delivered
+  to Student Desktop. Actual OS drag/drop and final native UI-click activation
+  remain manual checks; physical x64 black-flicker acceptance remains unverified.
+- Final Mac bundle: target/observe-tools-build/Classroom Console.app. Earlier
+  Windows Teacher bundle deployed at C:/Users/mvmanh/Classroom-shortcut-validation/Teacher;
+  final Flutter scrollbar-gutter update not built/deployed there because .94 was
+  shut down. Latest Windows Rust helper cross-build exists under target/rustup-windows.
+- Evidence: diagnostics/2026-10-05-observe-window-tools.md; raw evidence ignored
+  under target/observe-tools-test. Preserve published v1 assets and Student builds.
+- Owner requested stop testing once sufficient; no extra .206 self-host run.
+  Exact next step: owner manually checks final Mac UI. When Windows Teacher is
+  available, build/deploy final UI gutter correction and smoke actual click/drop;
+  remove temporary Observe instrumentation tasks then. No new performance claims.

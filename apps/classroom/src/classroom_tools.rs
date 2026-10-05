@@ -292,6 +292,16 @@ impl Hub {
         input: &Value,
         outbox: &Path,
     ) -> Result<String> {
+        self.submit_with_limit(action, recipients, input, outbox, MAX_FILE)
+    }
+    pub fn submit_with_limit(
+        self: &Arc<Self>,
+        action: &str,
+        recipients: &[String],
+        input: &Value,
+        outbox: &Path,
+        max_file: u64,
+    ) -> Result<String> {
         let mut p = packet(action);
         p.id = nonce()?;
         let source = if action == "file" || action == "update" {
@@ -307,6 +317,11 @@ impl Hub {
             let source = Arc::new(Source(path));
             p.size = fs::metadata(&source.0)?.len();
             anyhow::ensure!(p.size <= MAX_FILE, "File exceeds 4 GiB limit");
+            anyhow::ensure!(
+                action != "file" || p.size <= max_file,
+                "File exceeds Teacher transfer limit ({} MB)",
+                max_file / (1024 * 1024)
+            );
             p.name = input["name"]
                 .as_str()
                 .unwrap_or("file")
@@ -463,6 +478,14 @@ impl Hub {
         Ok(())
     }
     pub fn retry(self: &Arc<Self>, id: &str, outbox: &Path) -> Result<()> {
+        self.retry_with_limit(id, outbox, MAX_FILE)
+    }
+    pub fn retry_with_limit(
+        self: &Arc<Self>,
+        id: &str,
+        outbox: &Path,
+        max_file: u64,
+    ) -> Result<()> {
         let (targets, input, action) = {
             let s = self.0.lock().unwrap();
             let j = s
@@ -490,11 +513,12 @@ impl Hub {
         let old = PathBuf::from(input["path"].as_str().unwrap());
         let next = outbox.join(nonce()?);
         fs::copy(old, &next)?;
-        self.submit(
+        self.submit_with_limit(
             &action,
             &targets,
             &json!({"path":next,"name":input["name"]}),
             outbox,
+            max_file,
         )
         .map(|_| ())
     }
@@ -1475,6 +1499,27 @@ fn desktop_folder() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn teacher_file_limit_rejects_before_hashing_and_removes_staging() {
+        let dir = std::env::temp_dir().join(format!("classroom-limit-{}", nonce().unwrap()));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("staged");
+        fs::write(&file, [0; 17]).unwrap();
+        let hub = Arc::new(Hub::default());
+        let error = hub
+            .submit_with_limit(
+                "file",
+                &["student".into()],
+                &json!({"path":file,"name":"file.txt"}),
+                &dir,
+                16,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("Teacher transfer limit"));
+        assert!(!file.exists());
+        assert!(hub.0.lock().unwrap().jobs.is_empty());
+        fs::remove_dir_all(dir).unwrap();
+    }
     fn update_job() -> (Hub, Value) {
         let hub = Hub::default();
         let manifest = json!({"format":1,"os":"windows","arch":"x86_64","version":"dev-test",

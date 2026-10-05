@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:window_manager/window_manager.dart';
 import 'process_liveness.dart';
@@ -33,8 +34,31 @@ class Agent extends ChangeNotifier {
   String? notice;
   final Map<String, Map<String, dynamic>> pendingObserveMoves = {};
   Timer? observeMoveFlush;
+  int observeLaunch = 0;
+  int lastObserveFocus = 0;
+  String? pendingObserveFocus;
 
   void ingestState(Map<String, dynamic> value) {
+    final request = value['observe_focus'] as List?;
+    if (request != null && request.length >= 3 && request[1] is num) {
+      final sequence = (request[1] as num).toInt();
+      if (sequence > lastObserveFocus) {
+        lastObserveFocus = sequence;
+        if (option('--observe-id') == null &&
+            pendingObserveFocus == request[0]) {
+          pendingObserveFocus = null;
+          // The clicked console owns foreground permission on Windows. Grant
+          // it to/focus the independent UI before its own activation attempt.
+          unawaited(
+            const MethodChannel('classroom/observe')
+                .invokeMethod<void>('activateWindow', request[2])
+                .catchError((Object e) {
+                  unawaited(log('Observe activation failed: $e'));
+                }),
+          );
+        }
+      }
+    }
     final key = '${value['teacher_ip']}:${value['control_port']}';
     if (roomKey != key) {
       known.clear();
@@ -315,6 +339,8 @@ class Agent extends ChangeNotifier {
   }
 
   Future<void> attach() async {
+    lastObserveFocus = 0;
+    pendingObserveFocus = null;
     final descriptor =
         jsonDecode(await endpoint.readAsString()) as Map<String, dynamic>;
     final s = await Socket.connect(
@@ -461,19 +487,26 @@ class Agent extends ChangeNotifier {
       notifyListeners();
       return;
     }
+    final launch = ++observeLaunch;
+    pendingObserveFocus = '${row['id']}';
+    notice = 'Opening Observe · ${row['name']}';
+    notifyListeners();
     final bounds = await windowManager.getBounds();
-    await Process.start(Platform.resolvedExecutable, [
-      '--observe-id',
-      '${row['id']}',
-      '--observe-name',
-      '${row['name']}',
-      '--ipc-file',
-      endpoint.path,
-      '--teacher-center-x',
-      '${bounds.center.dx}',
-      '--teacher-center-y',
-      '${bounds.center.dy}',
-    ], mode: ProcessStartMode.detached);
+    await command(
+      'observe_window',
+      ['${row['id']}'],
+      {'center_x': bounds.center.dx, 'center_y': bounds.center.dy},
+    );
+    // Give immediate feedback during native engine startup. Repeated clicks
+    // are coalesced by the persistent Rust coordinator and focus its window.
+    Timer(const Duration(seconds: 3), () {
+      if (!disposed &&
+          launch == observeLaunch &&
+          notice?.startsWith('Opening Observe') == true) {
+        notice = null;
+        notifyListeners();
+      }
+    });
   }
 
   // Small high-rate input bypasses command progress/ack waits. The socket, Rust
@@ -556,6 +589,7 @@ class Agent extends ChangeNotifier {
         'monitoring',
         'diagnostics',
         'observe',
+        'tools',
       ]) {
         final values = settings[section] as Map?;
         if (values == null) continue;

@@ -10,6 +10,8 @@ import 'package:window_manager/window_manager.dart';
 import 'agent.dart';
 import 'observe_stats.dart';
 import 'classroom_tools_ui.dart';
+import 'file_transfer.dart';
+import 'package:desktop_drop/desktop_drop.dart';
 
 /// An independent native desktop window/process; never modal to the console.
 class ObserveWindow extends StatefulWidget {
@@ -43,6 +45,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
   final focus = FocusNode();
   final screenshotBoundary = GlobalKey();
   final viewportScroll = ScrollController();
+  final horizontalScroll = ScrollController();
   Timer? chromeTimer;
   String displayMode = 'fill';
   bool autoHide = true, chromeVisible = true, fullScreen = false;
@@ -52,6 +55,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
   final pressedKeys = <String>{};
   bool windowFocused = true;
   bool? capturingSystemKeys;
+  int lastFocusRequest = 0;
 
   void syncSystemKeys() {
     if (!Platform.isWindows) return;
@@ -85,6 +89,61 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
   String? lastWindowTitle;
   bool showStats = false;
   bool preparingFile = false;
+  bool draggingFiles = false;
+  Future<void> dropFiles(List<DropItem> items) async {
+    if (preparingFile || closing || items.isEmpty) return;
+    releaseHeldInput();
+    setState(() {
+      preparingFile = true;
+      draggingFiles = false;
+    });
+    final limit =
+        ((widget.agent.state['settings'] as Map? ?? {})['tools'] as Map? ??
+                {})['max_file_mb']
+            as num? ??
+        300;
+    try {
+      if (items.length > 32) {
+        throw StateError('Drop at most 32 items at a time.');
+      }
+      for (final item in items) {
+        if (closing) break;
+        final bookmark = item.extraAppleBookmark;
+        var access = false;
+        try {
+          if (Platform.isMacOS && bookmark != null) {
+            access = await DesktopDrop.instance
+                .startAccessingSecurityScopedResource(bookmark: bookmark);
+          }
+          final staged = await stageTransfer(
+            item.path,
+            '${widget.agent.endpoint.parent.path}/outbox',
+            limit.toInt() * 1024 * 1024,
+          );
+          if (closing) {
+            await File(staged['path'] as String).delete();
+            break;
+          }
+          await widget.agent.command('tool_file', [widget.studentId], staged);
+        } finally {
+          if (access && bookmark != null) {
+            await DesktopDrop.instance.stopAccessingSecurityScopedResource(
+              bookmark: bookmark,
+            );
+          }
+        }
+      }
+    } catch (e) {
+      if (mounted && !closing) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Could not send: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => preparingFile = false);
+    }
+  }
+
   double? previewFps;
   int? previousPreviewFrames;
   final previewClock = Stopwatch()..start();
@@ -314,7 +373,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
     try {
       final picked = await files.invokeMapMethod<String, dynamic>(
         'chooseFile',
-        {'directory': directory.path},
+        {'directory': widget.agent.endpoint.parent.path},
       );
       if (picked != null) {
         await widget.agent.command('tool_file', [widget.studentId], picked);
@@ -350,6 +409,20 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
   }
 
   void changed() {
+    if (closing) return;
+    final request = widget.agent.state['observe_focus'] as List?;
+    if (!closing &&
+        request != null &&
+        request.length >= 2 &&
+        request[0] == widget.studentId &&
+        request[1] != lastFocusRequest) {
+      lastFocusRequest = request[1] as int;
+      unawaited(() async {
+        await windowManager.show();
+        await windowManager.restore();
+        await windowManager.focus();
+      }());
+    }
     if (!widget.agent.connected || mode == 'observe') {
       pressedButtons = 0;
       pressedKeys.clear();
@@ -515,7 +588,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
           final elapsed =
               DateTime.now().difference(lastStats).inMilliseconds / 1000;
           await widget.agent.log(
-            'Observe native_texture_fps=${((count - frames) / elapsed).toStringAsFixed(2)} sequence=${stats['sequence']} source_sequence=${stats['source_sequence']} connected=${stats['connected']} notifications=${stats['frame_notifications']} copy_attempts=${stats['copy_attempts']} copy_failures=${stats['copy_failures']} lock_misses=${stats['lock_misses']} connect_error=${stats['connect_error']} width=${stats['width']} height=${stats['height']} mode=$mode layout=$displayMode fullscreen=$fullScreen focused=$windowFocused controls=$controls requested_mode=$requestedMode pool_misses=${stats['pool_misses']} chrome_auto_hide=$autoHide',
+            'Observe native_texture_fps=${((count - frames) / elapsed).toStringAsFixed(2)} sequence=${stats['sequence']} source_sequence=${stats['source_sequence']} connected=${stats['connected']} notifications=${stats['frame_notifications']} copy_attempts=${stats['copy_attempts']} copy_failures=${stats['copy_failures']} lock_misses=${stats['lock_misses']} cached_frame_returns=${stats['cached_frame_returns']} connect_error=${stats['connect_error']} width=${stats['width']} height=${stats['height']} mode=$mode layout=$displayMode fullscreen=$fullScreen focused=$windowFocused controls=$controls requested_mode=$requestedMode pool_misses=${stats['pool_misses']} chrome_auto_hide=$autoHide',
           );
           frames = count;
           lastStats = DateTime.now();
@@ -564,6 +637,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
   @override
   Future<void> onWindowClose() async {
     if (closing) return;
+    final surface = view['surface'];
     releaseHeldInput();
     inputHeartbeat?.cancel();
     tick?.cancel();
@@ -572,11 +646,45 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
       texture = null;
     });
     syncSystemKeys();
+    // Hide before awaiting IPC: a slow/offline Student must never leave a
+    // visible empty window behind after the owner presses Close.
+    await windowManager.hide();
     // Remove the Texture layer before pausing native notifications/teardown.
-    await WidgetsBinding.instance.endOfFrame;
-    await native.invokeMethod<void>('detach');
-    await widget.agent.command('observe_close', [widget.studentId]);
-    await windowManager.destroy();
+    try {
+      await WidgetsBinding.instance.endOfFrame.timeout(
+        const Duration(milliseconds: 250),
+      );
+      await native
+          .invokeMethod<void>('detach')
+          .timeout(const Duration(seconds: 1));
+    } catch (e) {
+      unawaited(widget.agent.log('Observe close detach error=$e'));
+    } finally {
+      // The reliable control socket already owns delivery; do not wait for
+      // the remote acknowledgement before destroying this native window.
+      unawaited(
+        widget.agent.command(
+          'observe_close',
+          [widget.studentId],
+          {'surface': surface},
+        ),
+      );
+      try {
+        await widget.agent.socket?.flush().timeout(
+          const Duration(milliseconds: 100),
+        );
+      } catch (_) {
+        /* The coordinator also expires disconnected input leases. */
+      }
+      if (widget.agent.closeApplication != null) {
+        // This is a separate UI process. Use the same bounded native close and
+        // explicit process exit as the application's lifecycle handler; posting
+        // WM_QUIT alone can leave Dart/plugin threads and the registry alive.
+        await widget.agent.finishApplication();
+      } else {
+        await windowManager.destroy();
+      }
+    }
   }
 
   Future<void> toggleFullScreen() async {
@@ -647,6 +755,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
     reconnectTimer?.cancel();
     modeRequestTimer?.cancel();
     viewportScroll.dispose();
+    horizontalScroll.dispose();
     widget.agent.removeListener(changed);
     windowManager.removeListener(this);
     focus.dispose();
@@ -856,344 +965,435 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
         view['error'] as String? ??
         widget.agent.error;
     return Scaffold(
-      body: Stack(
-        children: [
-          Positioned.fill(
-            child: ColoredBox(
-              color: const Color(0xff111b24),
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  final source = Size(
-                    (stats['width'] as num? ?? 16).toDouble(),
-                    (stats['height'] as num? ?? 9).toDouble(),
-                  );
-                  final viewport = Size(
-                    constraints.maxWidth,
-                    constraints.maxHeight,
-                  );
-                  final fill = displayMode == 'fill';
-                  final cover = displayMode == 'stretch';
-                  final size = observeImageSize(
-                    viewport,
-                    source,
-                    stretch: fill,
-                  );
-                  if (fill) {
-                    return video(size, source: source, fit: BoxFit.fill);
-                  }
-                  if (cover) {
-                    return video(viewport, source: source, fit: BoxFit.cover);
-                  }
-                  return Scrollbar(
-                    key: const ValueKey('observe-scrollbar'),
-                    controller: viewportScroll,
-                    thumbVisibility: size.height > viewport.height,
-                    interactive: true,
-                    child: SingleChildScrollView(
+      body: DropTarget(
+        enable: !closing && !preparingFile,
+        onDragEntered: (_) {
+          releaseHeldInput();
+          setState(() => draggingFiles = true);
+        },
+        onDragExited: (_) => setState(() => draggingFiles = false),
+        onDragDone: (detail) => unawaited(dropFiles(detail.files)),
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: ColoredBox(
+                color: const Color(0xff111b24),
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final source = Size(
+                      (stats['width'] as num? ?? 16).toDouble(),
+                      (stats['height'] as num? ?? 9).toDouble(),
+                    );
+                    final viewport = Size(
+                      constraints.maxWidth,
+                      constraints.maxHeight,
+                    );
+                    final fill = displayMode == 'fill';
+                    final cover = displayMode == 'stretch';
+                    final size = observeImageSize(
+                      viewport,
+                      source,
+                      stretch: fill,
+                    );
+                    if (fill) {
+                      return video(size, source: source, fit: BoxFit.fill);
+                    }
+                    if (cover) {
+                      final safeSource = source.width > 0 && source.height > 0
+                          ? source
+                          : const Size(16, 9);
+                      final scale = math.max(
+                        viewport.width / safeSource.width,
+                        viewport.height / safeSource.height,
+                      );
+                      final drawn = Size(
+                        safeSource.width * scale,
+                        safeSource.height * scale,
+                      );
+                      // Keep the whole image in the scrollable content. Pointer
+                      // coordinates are relative to that image, never the crop.
+                      // Reserve local scrollbar gutters outside the video:
+                      // dragging a thumb must never send clicks to the Student.
+                      const gutter = 12.0;
+                      return Scrollbar(
+                        controller: viewportScroll,
+                        thumbVisibility: true,
+                        notificationPredicate: (n) =>
+                            n.metrics.axis == Axis.vertical,
+                        child: Scrollbar(
+                          controller: horizontalScroll,
+                          thumbVisibility: true,
+                          notificationPredicate: (n) =>
+                              n.metrics.axis == Axis.horizontal,
+                          child: Padding(
+                            padding: const EdgeInsets.only(
+                              right: gutter,
+                              bottom: gutter,
+                            ),
+                            child: SingleChildScrollView(
+                              controller: horizontalScroll,
+                              scrollDirection: Axis.horizontal,
+                              physics: controls
+                                  ? const NeverScrollableScrollPhysics()
+                                  : null,
+                              child: SizedBox(
+                                width: drawn.width,
+                                height: math.max(1, viewport.height - gutter),
+                                child: SingleChildScrollView(
+                                  controller: viewportScroll,
+                                  physics: controls
+                                      ? const NeverScrollableScrollPhysics()
+                                      : null,
+                                  child: video(drawn),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      );
+                    }
+                    return Scrollbar(
+                      key: const ValueKey('observe-scrollbar'),
                       controller: viewportScroll,
-                      physics: controls
-                          ? const NeverScrollableScrollPhysics()
-                          : null,
-                      child: video(size),
-                    ),
-                  );
-                },
-              ),
-            ),
-          ),
-          // Thin edge targets stay available even while all chrome is hidden.
-          for (final top in [true, false])
-            if (top || mode == 'observe')
-              Positioned(
-                top: top ? 0 : null,
-                bottom: top ? null : 0,
-                left: 0,
-                right: 0,
-                height: 5,
-                child: MouseRegion(
-                  key: ValueKey(
-                    top ? 'observe-top-edge' : 'observe-bottom-edge',
-                  ),
-                  cursor: SystemMouseCursors.basic,
-                  onEnter: (_) => revealChrome(),
-                  child: GestureDetector(
-                    onTap: revealChrome,
-                    child: const ColoredBox(color: Color(0x183b82f6)),
-                  ),
+                      thumbVisibility: size.height > viewport.height,
+                      interactive: true,
+                      child: SingleChildScrollView(
+                        controller: viewportScroll,
+                        physics: controls
+                            ? const NeverScrollableScrollPhysics()
+                            : null,
+                        child: video(size),
+                      ),
+                    );
+                  },
                 ),
               ),
-          chrome(
-            alignment: Alignment.topCenter,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Padding(
+            ),
+            // Thin edge targets stay available even while all chrome is hidden.
+            for (final top in [true, false])
+              if (top || mode == 'observe')
+                Positioned(
+                  top: top ? 0 : null,
+                  bottom: top ? null : 0,
+                  left: 0,
+                  right: 0,
+                  height: 5,
+                  child: MouseRegion(
+                    key: ValueKey(
+                      top ? 'observe-top-edge' : 'observe-bottom-edge',
+                    ),
+                    cursor: SystemMouseCursors.basic,
+                    onEnter: (_) => revealChrome(),
+                    child: GestureDetector(
+                      onTap: revealChrome,
+                      child: const ColoredBox(color: Color(0x183b82f6)),
+                    ),
+                  ),
+                ),
+            chrome(
+              alignment: Alignment.topCenter,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 4,
+                      vertical: 5,
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.desktop_windows_outlined, size: 18),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            widget.name,
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        SegmentedButton<String>(
+                          style: const ButtonStyle(
+                            visualDensity: VisualDensity.compact,
+                          ),
+                          segments: const [
+                            ButtonSegment(
+                              value: 'observe',
+                              label: Text('Observe'),
+                              icon: Icon(Icons.visibility_outlined, size: 18),
+                            ),
+                            ButtonSegment(
+                              value: 'control',
+                              label: Text('Control'),
+                              icon: Icon(Icons.mouse_outlined, size: 18),
+                            ),
+                          ],
+                          selected: {mode == 'observe' ? 'observe' : 'control'},
+                          onSelectionChanged:
+                              canSwitchMode && requestedMode == null
+                              ? (v) => switchMode(v.first)
+                              : null,
+                        ),
+                        PopupMenuButton<String>(
+                          tooltip: 'Student and control actions',
+                          enabled: widget.agent.connected,
+                          onSelected: (action) {
+                            if (action == 'screenshot') {
+                              saveStudentScreenshot();
+                            } else if (action == 'message') {
+                              messageStudent();
+                            } else if (action == 'file') {
+                              sendFileToStudent();
+                            } else {
+                              switchMode(action);
+                            }
+                            revealChrome();
+                          },
+                          itemBuilder: (_) => [
+                            PopupMenuItem(
+                              value: 'control',
+                              enabled: canSwitchMode && requestedMode == null,
+                              child: Text(
+                                'Both teacher and student can control',
+                              ),
+                            ),
+                            PopupMenuItem(
+                              value: 'exclusive',
+                              enabled: canSwitchMode && requestedMode == null,
+                              child: Text(
+                                'Teacher only · Lock student input (Windows)',
+                              ),
+                            ),
+                            const PopupMenuDivider(),
+                            PopupMenuItem(
+                              value: 'screenshot',
+                              enabled: live,
+                              child: const ListTile(
+                                dense: true,
+                                leading: Icon(Icons.photo_camera_outlined),
+                                title: Text('Save screenshot to Desktop'),
+                              ),
+                            ),
+                            const PopupMenuItem(
+                              value: 'message',
+                              child: ListTile(
+                                dense: true,
+                                leading: Icon(Icons.chat_outlined),
+                                title: Text('Send a message'),
+                              ),
+                            ),
+                            const PopupMenuItem(
+                              value: 'file',
+                              child: ListTile(
+                                dense: true,
+                                leading: Icon(Icons.attach_file),
+                                title: Text('Send a file'),
+                              ),
+                            ),
+                          ],
+                          icon: const Icon(Icons.tune, size: 20),
+                        ),
+                        const SizedBox(width: 4),
+                        SegmentedButton<String>(
+                          style: const ButtonStyle(
+                            visualDensity: VisualDensity.compact,
+                          ),
+                          segments: const [
+                            ButtonSegment(
+                              value: 'stretch',
+                              label: Text('Stretch'),
+                              tooltip: 'Cover window and remove side bars',
+                              icon: Icon(Icons.width_full, size: 18),
+                            ),
+                            ButtonSegment(
+                              value: 'fill',
+                              label: Text('Fill'),
+                              tooltip: 'Fill window · Stretch image',
+                              icon: Icon(Icons.fit_screen, size: 18),
+                            ),
+                          ],
+                          selected: {displayMode},
+                          onSelectionChanged: (v) {
+                            if (viewportScroll.hasClients) {
+                              viewportScroll.jumpTo(0);
+                            }
+                            setState(() => displayMode = v.first);
+                            revealChrome();
+                          },
+                        ),
+                        IconButton(
+                          style: IconButton.styleFrom(
+                            minimumSize: const Size(32, 32),
+                            padding: const EdgeInsets.all(4),
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
+                          tooltip: fullScreen
+                              ? 'Exit full screen'
+                              : 'Full screen',
+                          icon: Icon(
+                            fullScreen
+                                ? Icons.fullscreen_exit
+                                : Icons.fullscreen,
+                            size: 20,
+                          ),
+                          onPressed: toggleFullScreen,
+                        ),
+                        IconButton(
+                          style: IconButton.styleFrom(
+                            minimumSize: const Size(32, 32),
+                            padding: const EdgeInsets.all(4),
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
+                          key: const ValueKey('observe-stats-toggle'),
+                          tooltip: showStats ? 'Hide stats' : 'Show stats',
+                          isSelected: showStats,
+                          icon: const Icon(Icons.speed_outlined, size: 19),
+                          selectedIcon: const Icon(Icons.speed, size: 19),
+                          onPressed: () {
+                            setState(() => showStats = !showStats);
+                            revealChrome();
+                          },
+                        ),
+                        IconButton(
+                          style: IconButton.styleFrom(
+                            minimumSize: const Size(32, 32),
+                            padding: const EdgeInsets.all(4),
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
+                          tooltip: autoHide
+                              ? 'Keep toolbar visible'
+                              : 'Auto-hide toolbar',
+                          isSelected: !autoHide,
+                          icon: const Icon(Icons.push_pin_outlined, size: 18),
+                          selectedIcon: const Icon(Icons.push_pin, size: 18),
+                          onPressed: () {
+                            setState(() => autoHide = !autoHide);
+                            revealChrome();
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (error != null && error.isNotEmpty)
+                    Container(
+                      width: double.infinity,
+                      color: Colors.orange.shade50,
+                      padding: const EdgeInsets.all(8),
+                      child: Text(error),
+                    ),
+                ],
+              ),
+            ),
+            if (mode == 'observe')
+              chrome(
+                alignment: Alignment.bottomCenter,
+                child: Padding(
                   padding: const EdgeInsets.symmetric(
-                    horizontal: 4,
+                    horizontal: 12,
                     vertical: 5,
                   ),
                   child: Row(
                     children: [
-                      const Icon(Icons.desktop_windows_outlined, size: 18),
-                      const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          widget.name,
-                          style: const TextStyle(fontWeight: FontWeight.w600),
-                          overflow: TextOverflow.ellipsis,
+                          modeError != null
+                              ? modeError!
+                              : reconnecting
+                              ? 'Reconnecting to student…'
+                              : requestedMode != null
+                              ? 'Changing input mode…'
+                              : mode == 'exclusive'
+                              ? 'Teacher control · Student input locked'
+                              : mode == 'control'
+                              ? 'Shared control · Student input stays enabled'
+                              : 'Observe · Read only',
+                          style: const TextStyle(fontSize: 12),
                         ),
                       ),
-                      SegmentedButton<String>(
-                        style: const ButtonStyle(
-                          visualDensity: VisualDensity.compact,
+                      if (live && sessionCodec != null) ...[
+                        Text(
+                          sessionCodec!,
+                          key: const ValueKey('observe-footer-codec'),
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.blueGrey,
+                          ),
                         ),
-                        segments: const [
-                          ButtonSegment(
-                            value: 'observe',
-                            label: Text('Observe'),
-                            icon: Icon(Icons.visibility_outlined, size: 18),
+                        const Text(
+                          '  ·  ',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.blueGrey,
                           ),
-                          ButtonSegment(
-                            value: 'control',
-                            label: Text('Control'),
-                            icon: Icon(Icons.mouse_outlined, size: 18),
-                          ),
-                        ],
-                        selected: {mode == 'observe' ? 'observe' : 'control'},
-                        onSelectionChanged:
-                            canSwitchMode && requestedMode == null
-                            ? (v) => switchMode(v.first)
-                            : null,
-                      ),
-                      PopupMenuButton<String>(
-                        tooltip: 'Student and control actions',
-                        enabled: widget.agent.connected,
-                        onSelected: (action) {
-                          if (action == 'screenshot') {
-                            saveStudentScreenshot();
-                          } else if (action == 'message') {
-                            messageStudent();
-                          } else if (action == 'file') {
-                            sendFileToStudent();
-                          } else {
-                            switchMode(action);
-                          }
-                          revealChrome();
-                        },
-                        itemBuilder: (_) => [
-                          PopupMenuItem(
-                            value: 'control',
-                            enabled: canSwitchMode && requestedMode == null,
-                            child: Text('Both teacher and student can control'),
-                          ),
-                          PopupMenuItem(
-                            value: 'exclusive',
-                            enabled: canSwitchMode && requestedMode == null,
-                            child: Text(
-                              'Teacher only · Lock student input (Windows)',
-                            ),
-                          ),
-                          const PopupMenuDivider(),
-                          PopupMenuItem(
-                            value: 'screenshot',
-                            enabled: live,
-                            child: const ListTile(
-                              dense: true,
-                              leading: Icon(Icons.photo_camera_outlined),
-                              title: Text('Save screenshot to Desktop'),
-                            ),
-                          ),
-                          const PopupMenuItem(
-                            value: 'message',
-                            child: ListTile(
-                              dense: true,
-                              leading: Icon(Icons.chat_outlined),
-                              title: Text('Send a message'),
-                            ),
-                          ),
-                          const PopupMenuItem(
-                            value: 'file',
-                            child: ListTile(
-                              dense: true,
-                              leading: Icon(Icons.attach_file),
-                              title: Text('Send a file'),
-                            ),
-                          ),
-                        ],
-                        icon: const Icon(Icons.tune, size: 20),
-                      ),
-                      const SizedBox(width: 4),
-                      SegmentedButton<String>(
-                        style: const ButtonStyle(
-                          visualDensity: VisualDensity.compact,
                         ),
-                        segments: const [
-                          ButtonSegment(
-                            value: 'stretch',
-                            label: Text('Stretch'),
-                            tooltip: 'Cover window and remove side bars',
-                            icon: Icon(Icons.width_full, size: 18),
-                          ),
-                          ButtonSegment(
-                            value: 'fill',
-                            label: Text('Fill'),
-                            tooltip: 'Fill window · Stretch image',
-                            icon: Icon(Icons.fit_screen, size: 18),
-                          ),
-                        ],
-                        selected: {displayMode},
-                        onSelectionChanged: (v) {
-                          if (viewportScroll.hasClients) {
-                            viewportScroll.jumpTo(0);
-                          }
-                          setState(() => displayMode = v.first);
-                          revealChrome();
-                        },
-                      ),
-                      IconButton(
-                        style: IconButton.styleFrom(
-                          minimumSize: const Size(32, 32),
-                          padding: const EdgeInsets.all(4),
-                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        ),
-                        tooltip: fullScreen
-                            ? 'Exit full screen'
-                            : 'Full screen',
-                        icon: Icon(
-                          fullScreen ? Icons.fullscreen_exit : Icons.fullscreen,
-                          size: 20,
-                        ),
-                        onPressed: toggleFullScreen,
-                      ),
-                      IconButton(
-                        style: IconButton.styleFrom(
-                          minimumSize: const Size(32, 32),
-                          padding: const EdgeInsets.all(4),
-                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        ),
-                        key: const ValueKey('observe-stats-toggle'),
-                        tooltip: showStats ? 'Hide stats' : 'Show stats',
-                        isSelected: showStats,
-                        icon: const Icon(Icons.speed_outlined, size: 19),
-                        selectedIcon: const Icon(Icons.speed, size: 19),
-                        onPressed: () {
-                          setState(() => showStats = !showStats);
-                          revealChrome();
-                        },
-                      ),
-                      IconButton(
-                        style: IconButton.styleFrom(
-                          minimumSize: const Size(32, 32),
-                          padding: const EdgeInsets.all(4),
-                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        ),
-                        tooltip: autoHide
-                            ? 'Keep toolbar visible'
-                            : 'Auto-hide toolbar',
-                        isSelected: !autoHide,
-                        icon: const Icon(Icons.push_pin_outlined, size: 18),
-                        selectedIcon: const Icon(Icons.push_pin, size: 18),
-                        onPressed: () {
-                          setState(() => autoHide = !autoHide);
-                          revealChrome();
-                        },
-                      ),
-                    ],
-                  ),
-                ),
-                if (error != null && error.isNotEmpty)
-                  Container(
-                    width: double.infinity,
-                    color: Colors.orange.shade50,
-                    padding: const EdgeInsets.all(8),
-                    child: Text(error),
-                  ),
-              ],
-            ),
-          ),
-          if (mode == 'observe')
-            chrome(
-              alignment: Alignment.bottomCenter,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 5,
-                ),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        modeError != null
-                            ? modeError!
-                            : reconnecting
-                            ? 'Reconnecting to student…'
-                            : requestedMode != null
-                            ? 'Changing input mode…'
-                            : mode == 'exclusive'
-                            ? 'Teacher control · Student input locked'
-                            : mode == 'control'
-                            ? 'Shared control · Student input stays enabled'
-                            : 'Observe · Read only',
-                        style: const TextStyle(fontSize: 12),
-                      ),
-                    ),
-                    if (live && sessionCodec != null) ...[
+                      ],
                       Text(
-                        sessionCodec!,
-                        key: const ValueKey('observe-footer-codec'),
+                        live
+                            ? '${stats['width']} × ${stats['height']}'
+                            : '${view['phase'] ?? 'Connecting'}',
                         style: const TextStyle(
                           fontSize: 12,
-                          fontWeight: FontWeight.w600,
                           color: Colors.blueGrey,
                         ),
                       ),
-                      const Text(
-                        '  ·  ',
-                        style: TextStyle(fontSize: 12, color: Colors.blueGrey),
-                      ),
                     ],
-                    Text(
-                      live
-                          ? '${stats['width']} × ${stats['height']}'
-                          : '${view['phase'] ?? 'Connecting'}',
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: Colors.blueGrey,
+                  ),
+                ),
+              ),
+            if (showStats)
+              AnimatedPositioned(
+                duration: const Duration(milliseconds: 180),
+                top: chromeVisible ? 64 : 12,
+                right: 12,
+                child: ObserveStatsPanel(
+                  key: const ValueKey('observe-stats-panel'),
+                  data: ObserveStatsData(
+                    mode: mode,
+                    live: live,
+                    native: stats,
+                    metrics: Map<String, dynamic>.from(
+                      view['metrics'] as Map? ?? {},
+                    ),
+                    fps: previewFps,
+                  ),
+                ),
+              ),
+            Positioned(
+              right: 16,
+              bottom: chromeVisible && mode == 'observe' ? 58 : 12,
+              child: ClassroomToolsOverlay(
+                agent: widget.agent,
+                activity: toolActivity,
+                preparingFile: preparingFile,
+                onOpenReplies: () => showRepliesDialog(context, toolActivity),
+              ),
+            ),
+            if (draggingFiles)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: const Color(0x661e6bd6),
+                      border: Border.all(
+                        color: const Color(0xff80baff),
+                        width: 3,
                       ),
                     ),
-                  ],
-                ),
-              ),
-            ),
-          if (showStats)
-            AnimatedPositioned(
-              duration: const Duration(milliseconds: 180),
-              top: chromeVisible ? 64 : 12,
-              right: 12,
-              child: ObserveStatsPanel(
-                key: const ValueKey('observe-stats-panel'),
-                data: ObserveStatsData(
-                  mode: mode,
-                  live: live,
-                  native: stats,
-                  metrics: Map<String, dynamic>.from(
-                    view['metrics'] as Map? ?? {},
+                    alignment: Alignment.center,
+                    child: const Card(
+                      child: Padding(
+                        padding: EdgeInsets.all(20),
+                        child: Text(
+                          'Drop to send to Desktop\nFolders will be zipped',
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    ),
                   ),
-                  fps: previewFps,
                 ),
               ),
-            ),
-          Positioned(
-            right: 16,
-            bottom: chromeVisible && mode == 'observe' ? 58 : 12,
-            child: ClassroomToolsOverlay(
-              agent: widget.agent,
-              activity: toolActivity,
-              preparingFile: preparingFile,
-              onOpenReplies: () => showRepliesDialog(context, toolActivity),
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

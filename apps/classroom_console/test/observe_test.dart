@@ -9,8 +9,10 @@ import 'package:classroom_console/observe_stats.dart';
 import 'package:window_manager/window_manager.dart';
 
 class ObserveAgent extends Agent {
-  ObserveAgent() : super([]);
+  ObserveAgent({Future<void> Function()? closeApplication})
+    : super([], closeApplication: closeApplication);
   final inputs = <Map<String, dynamic>>[];
+  Completer<void>? closeAck;
   @override
   bool get connected => true;
   @override
@@ -18,7 +20,10 @@ class ObserveAgent extends Agent {
     String action, [
     Iterable<String> selected = const [],
     Map<String, dynamic>? input,
-  ]) async {}
+  ]) async {
+    if (action == 'observe_close') await closeAck?.future;
+  }
+
   @override
   void observeInput(String id, Map<String, dynamic> input) {
     inputs.add(input);
@@ -27,6 +32,78 @@ class ObserveAgent extends Agent {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  test(
+    'Only an explicit console click activates the matching owned window',
+    () async {
+      final pids = <dynamic>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(const MethodChannel('classroom/observe'), (
+            call,
+          ) async {
+            if (call.method == 'activateWindow') pids.add(call.arguments);
+            return null;
+          });
+      final agent = Agent([]);
+      final state = {
+        'teacher_ip': '127.0.0.1',
+        'control_port': 47800,
+        'observe_focus': ['pc', 1, 1234],
+      };
+      agent.ingestState(state); // Reopening the console must not steal focus.
+      agent.pendingObserveFocus = 'pc';
+      agent.ingestState({
+        ...state,
+        'observe_focus': ['pc', 2, 1234],
+      });
+      agent.ingestState({
+        ...state,
+        'observe_focus': ['pc', 2, 1234],
+      });
+      await Future<void>.delayed(Duration.zero);
+      expect(pids, [1234]);
+      agent.dispose();
+    },
+  );
+  testWidgets(
+    'Close hides immediately and never waits for remote acknowledgement',
+    (t) async {
+      final calls = <String>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(const MethodChannel('window_manager'), (
+            call,
+          ) async {
+            calls.add(call.method);
+            return null;
+          });
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+            const MethodChannel('classroom/observe'),
+            (_) async => null,
+          );
+      final agent = ObserveAgent(
+        closeApplication: () async {
+          await windowManager.destroy();
+          calls.add('processExit');
+        },
+      )..closeAck = Completer<void>();
+      await t.pumpWidget(
+        MaterialApp(
+          home: ObserveWindow(agent: agent, studentId: 'pc', name: 'PC'),
+        ),
+      );
+      final listener = t.state(find.byType(ObserveWindow)) as WindowListener;
+      listener.onWindowClose();
+      await t.pump();
+      expect(calls, contains('hide'));
+      await t.pump(const Duration(milliseconds: 300));
+      expect(calls, contains('destroy'));
+      expect(calls, contains('processExit'));
+      expect(agent.closeAck!.isCompleted, isFalse);
+      agent.closeAck!.complete();
+      await t.pumpWidget(const SizedBox());
+      agent.dispose();
+    },
+  );
   test('Session stats reject stale, missing and invalid measurements', () {
     final now = DateTime.utc(2026, 10, 3);
     ObserveStatsData data({
@@ -378,7 +455,7 @@ void main() {
       a.dispose();
     },
   );
-  testWidgets('Stretch portrait image maps pointer through its crop', (
+  testWidgets('Stretch scrolls the whole frame and maps input after scrolling', (
     t,
   ) async {
     var source = const Size(1080, 1920);
@@ -431,7 +508,35 @@ void main() {
     await t.pump();
     final movement = a.inputs.lastWhere((v) => v['action'] == 'move');
     expect(movement['x'], closeTo(0.5, 0.0001));
-    expect(movement['y'], closeTo(0.5, 0.0001));
+    expect(movement['y'], closeTo(300 / (800 * 1920 / 1080), 0.0001));
+    final vertical = t.widget<SingleChildScrollView>(
+      find.byWidgetPredicate(
+        (w) => w is SingleChildScrollView && w.scrollDirection == Axis.vertical,
+      ),
+    );
+    vertical.controller!.jumpTo(vertical.controller!.position.maxScrollExtent);
+    await t.pump();
+    await mouse.moveTo(const Offset(400, 585));
+    expect(
+      a.inputs.lastWhere((v) => v['action'] == 'move')['y'],
+      greaterThan(0.99),
+    );
+    vertical.controller!.jumpTo(0);
+    await t.pump();
+    await mouse.moveTo(const Offset(796, 100));
+    a.inputs.clear();
+    await mouse.down(const Offset(796, 100));
+    await mouse.moveTo(const Offset(796, 300));
+    await mouse.up();
+    await t.pump();
+    expect(
+      a.inputs.where((v) => v['action'] == 'button_at'),
+      isEmpty,
+      reason: 'Dragging the local scrollbar must not click on the Student',
+    );
+    vertical.controller!.jumpTo(0);
+    await mouse.moveTo(const Offset(400, 300));
+    await t.pump();
     // The wheel belongs to the remote machine in Control, not to the viewport.
     await t.sendEventToBinding(
       const PointerScrollEvent(
@@ -484,7 +589,7 @@ void main() {
     await mouse.moveTo(const Offset(100, 300));
     await t.pump();
     final resized = a.inputs.lastWhere((v) => v['action'] == 'move');
-    expect(resized['x'], closeTo(0.21875, 0.0001));
+    expect(resized['x'], closeTo(100 / (600 * 1920 / 1080), 0.0001));
     expect(resized['y'], closeTo(0.5, 0.0001));
     a.state['observe']['mode'] = 'observe';
     a.notifyListeners();

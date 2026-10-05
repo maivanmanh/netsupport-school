@@ -27,13 +27,14 @@ class _TeacherSettingsDialogState extends State<TeacherSettingsDialog> {
     'Connection',
     'Broadcast',
     'Observe',
+    'File transfer',
     'Diagnostics',
     'Student updates',
   ];
   int page = 0;
   String? error;
   bool preparingUpdate = false;
-  late final TextEditingController ip, port, adapter;
+  late final TextEditingController ip, port, adapter, maxFile;
   int resolution = 1920, fps = 30, observeFps = 60, interval = 2000;
   double bitrate = 6;
   bool adaptive = true, enhanced = true;
@@ -45,6 +46,9 @@ class _TeacherSettingsDialogState extends State<TeacherSettingsDialog> {
   @override
   void initState() {
     super.initState();
+    maxFile = TextEditingController(
+      text: '${section('tools')['max_file_mb'] ?? 300}',
+    );
     final network = section('network');
     final address =
         widget.agent.option('--bind-ip') ??
@@ -93,6 +97,7 @@ class _TeacherSettingsDialogState extends State<TeacherSettingsDialog> {
     ip.dispose();
     port.dispose();
     adapter.dispose();
+    maxFile.dispose();
     super.dispose();
   }
 
@@ -190,6 +195,14 @@ class _TeacherSettingsDialogState extends State<TeacherSettingsDialog> {
       });
       return;
     }
+    final limit = int.tryParse(maxFile.text.trim());
+    if (limit == null || limit < 1 || limit > 4096) {
+      setState(() {
+        page = 3;
+        error = 'File limit must be between 1 and 4096 MB.';
+      });
+      return;
+    }
     Navigator.pop(
       context,
       TeacherSettings(address.isEmpty ? 'auto' : address, n, {
@@ -224,6 +237,7 @@ class _TeacherSettingsDialogState extends State<TeacherSettingsDialog> {
           'max_fps': observeFps,
         },
         'diagnostics': {'auto_collect': autoCollect},
+        'tools': {'max_file_mb': limit},
       }),
     );
   }
@@ -323,6 +337,14 @@ class _TeacherSettingsDialogState extends State<TeacherSettingsDialog> {
         const Text(
           'Unsupported profiles fall back to H.264. Each Observe window opens in view-only mode; Control is an explicit action.',
         ),
+      ],
+      [
+        const Text(
+          'Drop files or folders into an Observe/Control window. Folders are sent as ZIP files; Students receive them on Desktop.',
+        ),
+        const SizedBox(height: 20),
+        field(maxFile, 'Maximum file size (MB)', hint: '300'),
+        const Text('Applies to each file or completed ZIP. Range: 1–4096 MB.'),
       ],
       [
         SwitchListTile(
@@ -509,6 +531,7 @@ class _TeacherSettingsDialogState extends State<TeacherSettingsDialog> {
                       children: [
                         for (var i = 0; i < sections.length; i++)
                           ListTile(
+                            dense: true,
                             title: Text(sections[i]),
                             selected: page == i,
                             onTap: () => setState(() => page = i),
