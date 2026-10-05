@@ -181,13 +181,26 @@ impl Publisher {
                 thread::sleep(Duration::from_millis(5));
             }
             drop(input); // release injected keys/buttons and exclusive input before join
+            let cancelled_by_caller = cancel.load(Ordering::Acquire);
+            let presentation_started = presenting.load(Ordering::Acquire);
+            let viewer_connected = roster.lock().unwrap().snapshot().iter().any(|r| r.online);
             cancel.store(true, Ordering::Release);
             state.send_replace(None);
             server.abort();
             let result = source
                 .join()
                 .map_err(|_| anyhow::anyhow!("Observe publisher panicked"))?;
-            info!(stream_id, "Observe publisher ended");
+            if let Err(error) = &result {
+                tracing::error!(stream_id, %error, cancelled_by_caller, presentation_started, viewer_connected, "Observe media source failed");
+            } else {
+                info!(
+                    stream_id,
+                    cancelled_by_caller,
+                    presentation_started,
+                    viewer_connected,
+                    "Observe publisher ended"
+                );
+            }
             result
         });
         Ok(Self {

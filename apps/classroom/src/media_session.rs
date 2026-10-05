@@ -83,6 +83,9 @@ pub(super) fn publish_with_cursor_policy(
     let result = run_teacher_media_session(
         config, capture, &socket, dimensions, None, receiver, 0, stream_id, cancel,
     );
+    if let Err(error) = &result {
+        tracing::error!(stream_id, %error, "teacher media publisher failed");
+    }
     state.send_replace(None);
     result.map(|_| ())
 }

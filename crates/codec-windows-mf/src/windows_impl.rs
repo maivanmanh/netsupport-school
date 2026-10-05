@@ -508,8 +508,13 @@ fn activate_encoder(
             .SetInputType(0, &input_type, 0)
             .map_err(|error| mf_error("set H.264 encoder input type", error))?;
     }
-    let runner =
-        TransformRunner::start(transform, asynchronous, encoded_buffer_size(config)?, None)?;
+    let runner = TransformRunner::start(
+        transform,
+        asynchronous,
+        encoded_buffer_size(config)?,
+        None,
+        Some(config),
+    )?;
     Ok(MfH264Encoder {
         runner,
         codec_api,
@@ -586,7 +591,13 @@ fn activate_decoder(
             "Media Foundation decoder runtime configuration"
         );
     }
-    let runner = TransformRunner::start(transform, asynchronous, nv12_size(config)?, Some(config))?;
+    let runner = TransformRunner::start(
+        transform,
+        asynchronous,
+        nv12_size(config)?,
+        Some(config),
+        None,
+    )?;
     configure_decoder_codec_latency(&runner.transform);
     Ok(MfH264Decoder {
         runner,
@@ -610,6 +621,7 @@ struct TransformRunner {
     pending_outputs: u32,
     fallback_output_size: u32,
     decoder_config: Option<H264Config>,
+    encoder_config: Option<H264Config>,
 }
 
 impl TransformRunner {
@@ -618,6 +630,7 @@ impl TransformRunner {
         asynchronous: bool,
         fallback_output_size: u32,
         decoder_config: Option<H264Config>,
+        encoder_config: Option<H264Config>,
     ) -> Result<Self, MediaError> {
         let events = if asynchronous {
             Some(
@@ -644,6 +657,7 @@ impl TransformRunner {
             pending_outputs: 0,
             fallback_output_size,
             decoder_config,
+            encoder_config,
         })
     }
 
@@ -662,17 +676,33 @@ impl TransformRunner {
             self.wait_for_output(timeout)?;
             self.pending_outputs = self.pending_outputs.saturating_sub(1);
         }
-        for _ in 0..3 {
+        for attempt in 0..3 {
+            // An asynchronous MFT must signal METransformHaveOutput again after
+            // a stream change has been renegotiated. Calling ProcessOutput
+            // immediately can make hardware transforms fail (e.g. Intel QSV
+            // returns E_UNEXPECTED) and tears down the whole Observe session.
+            if attempt > 0 && self.events.is_some() {
+                self.wait_for_output(timeout)?;
+                self.pending_outputs = self.pending_outputs.saturating_sub(1);
+            }
             match self.process_output_once() {
                 Ok(OutputAttempt::StreamChange) => {
-                    self.renegotiate_decoder_output()?;
+                    if let Some(config) = self.decoder_config {
+                        self.renegotiate_decoder_output(config)?;
+                    } else if let Some(config) = self.encoder_config {
+                        self.renegotiate_encoder_output(config)?;
+                    } else {
+                        return Err(MediaError::Operation(
+                            "MFT output stream changed without a configured media type".to_owned(),
+                        ));
+                    }
                 }
                 Ok(OutputAttempt::Sample(sample)) => return Ok(sample),
                 Err(error) => return Err(error),
             }
         }
         Err(MediaError::Operation(
-            "decoder output format changed repeatedly".to_owned(),
+            "MFT output format changed repeatedly".to_owned(),
         ))
     }
 
@@ -724,12 +754,7 @@ impl TransformRunner {
         }
     }
 
-    fn renegotiate_decoder_output(&self) -> Result<(), MediaError> {
-        let config = self.decoder_config.ok_or_else(|| {
-            MediaError::Operation(
-                "encoder unexpectedly requested an output format change".to_owned(),
-            )
-        })?;
+    fn renegotiate_decoder_output(&self, config: H264Config) -> Result<(), MediaError> {
         for index in 0..32 {
             let media_type = match unsafe { self.transform.GetOutputAvailableType(0, index) } {
                 Ok(value) => value,
@@ -757,6 +782,39 @@ impl TransformRunner {
         }
         Err(MediaError::Operation(
             "decoder offered no NV12 output format".to_owned(),
+        ))
+    }
+
+    fn renegotiate_encoder_output(&self, config: H264Config) -> Result<(), MediaError> {
+        for index in 0..32 {
+            let media_type = match unsafe { self.transform.GetOutputAvailableType(0, index) } {
+                Ok(value) => value,
+                Err(error) if error.code() == MF_E_NO_MORE_TYPES => break,
+                Err(error) => return Err(mf_error("enumerate encoder output formats", error)),
+            };
+            let subtype = unsafe { media_type.GetGUID(ptr::from_ref(&MF_MT_SUBTYPE)) }
+                .map_err(|error| mf_error("read encoder output subtype", error))?;
+            if subtype != MFVideoFormat_H264 {
+                continue;
+            }
+            let frame_size = unsafe { media_type.GetUINT64(ptr::from_ref(&MF_MT_FRAME_SIZE)) }
+                .map_err(|error| mf_error("read H.264 encoder output dimensions", error))?;
+            let width = u32::try_from(frame_size >> 32).unwrap_or_default();
+            let height = u32::try_from(frame_size & u64::from(u32::MAX)).unwrap_or_default();
+            if (width, height) != (config.width, config.height) {
+                continue;
+            }
+            unsafe { self.transform.SetOutputType(0, &media_type, 0) }
+                .map_err(|error| mf_error("renegotiate H.264 encoder output", error))?;
+            info!(
+                width = config.width,
+                height = config.height,
+                "renegotiated H.264 encoder output"
+            );
+            return Ok(());
+        }
+        Err(MediaError::Operation(
+            "encoder offered no matching H.264 output format".to_owned(),
         ))
     }
 
