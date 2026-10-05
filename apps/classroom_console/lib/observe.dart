@@ -51,6 +51,36 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
   int pressedButtons = 0;
   final pressedKeys = <String>{};
   bool windowFocused = true;
+  bool? capturingSystemKeys;
+
+  void syncSystemKeys() {
+    if (!Platform.isWindows) return;
+    final enabled = !closing && controls;
+    if (capturingSystemKeys == enabled) return;
+    capturingSystemKeys = enabled;
+    unawaited(
+      native.invokeMethod<void>('captureSystemKeys', enabled).catchError((
+        Object error,
+      ) {
+        capturingSystemKeys = null;
+        unawaited(widget.agent.log('Windows shortcut capture failed: $error'));
+      }),
+    );
+  }
+
+  Future<void> nativeKey(MethodCall call) async {
+    if (call.method != 'systemKey' || !controls) return;
+    final value = Map<String, dynamic>.from(call.arguments as Map);
+    final label = value['key'] as String;
+    final down = value['down'] == true;
+    if (down) {
+      pressedKeys.add(label);
+    } else {
+      pressedKeys.remove(label);
+    }
+    input({'action': 'key', 'key': label, 'down': down});
+  }
+
   double scrollRemainder = 0;
   String? lastWindowTitle;
   bool showStats = false;
@@ -304,6 +334,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
   void initState() {
     super.initState();
     toolActivity;
+    if (Platform.isWindows) native.setMethodCallHandler(nativeKey);
     windowManager.addListener(this);
     windowManager.setPreventClose(true);
     widget.agent.addListener(changed);
@@ -325,6 +356,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
       scrollRemainder = 0;
     }
     syncWindowTitle();
+    syncSystemKeys();
     if (!started && widget.agent.connected) {
       started = true;
       unawaited(openObserve());
@@ -500,6 +532,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
         startPolling(fast: false);
       }
       polling = false;
+      syncSystemKeys();
     }
   }
 
@@ -515,6 +548,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
     pressedButtons = 0;
     scrollRemainder = 0;
     setState(() => requestedMode = value);
+    syncSystemKeys();
     modeRequestTimer = Timer(const Duration(seconds: 4), () {
       modeRequestTimer = null;
       if (!mounted || requestedMode == null) return;
@@ -537,6 +571,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
       closing = true;
       texture = null;
     });
+    syncSystemKeys();
     // Remove the Texture layer before pausing native notifications/teardown.
     await WidgetsBinding.instance.endOfFrame;
     await native.invokeMethod<void>('detach');
@@ -587,18 +622,24 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
     releaseHeldInput();
     windowFocused = false;
     focus.unfocus();
+    syncSystemKeys();
     if (mounted) setState(() {});
   }
 
   @override
   void onWindowFocus() {
     windowFocused = true;
+    syncSystemKeys();
     if (mode != 'observe') focus.requestFocus();
     if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
+    if (Platform.isWindows) {
+      unawaited(native.invokeMethod<void>('captureSystemKeys', false));
+      native.setMethodCallHandler(null);
+    }
     toolActivity.dispose();
     tick?.cancel();
     inputHeartbeat?.cancel();
@@ -614,6 +655,12 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
 
   KeyEventResult key(FocusNode _, KeyEvent event) {
     if (!controls) return KeyEventResult.ignored;
+    // Native hook owns Windows keys; ignore Flutter synthetic modifier repairs.
+    if (Platform.isWindows &&
+        (event.logicalKey == LogicalKeyboardKey.metaLeft ||
+            event.logicalKey == LogicalKeyboardKey.metaRight)) {
+      return KeyEventResult.handled;
+    }
     final named = <LogicalKeyboardKey, String>{
       LogicalKeyboardKey.enter: 'Enter',
       LogicalKeyboardKey.backspace: 'Backspace',
@@ -803,7 +850,11 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
 
   @override
   Widget build(BuildContext context) {
-    final error = nativeError ?? view['error'] as String? ?? widget.agent.error;
+    final error =
+        modeError ??
+        nativeError ??
+        view['error'] as String? ??
+        widget.agent.error;
     return Scaffold(
       body: Stack(
         children: [
@@ -852,22 +903,25 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
           ),
           // Thin edge targets stay available even while all chrome is hidden.
           for (final top in [true, false])
-            Positioned(
-              top: top ? 0 : null,
-              bottom: top ? null : 0,
-              left: 0,
-              right: 0,
-              height: 5,
-              child: MouseRegion(
-                key: ValueKey(top ? 'observe-top-edge' : 'observe-bottom-edge'),
-                cursor: SystemMouseCursors.basic,
-                onEnter: (_) => revealChrome(),
-                child: GestureDetector(
-                  onTap: revealChrome,
-                  child: const ColoredBox(color: Color(0x183b82f6)),
+            if (top || mode == 'observe')
+              Positioned(
+                top: top ? 0 : null,
+                bottom: top ? null : 0,
+                left: 0,
+                right: 0,
+                height: 5,
+                child: MouseRegion(
+                  key: ValueKey(
+                    top ? 'observe-top-edge' : 'observe-bottom-edge',
+                  ),
+                  cursor: SystemMouseCursors.basic,
+                  onEnter: (_) => revealChrome(),
+                  child: GestureDetector(
+                    onTap: revealChrome,
+                    child: const ColoredBox(color: Color(0x183b82f6)),
+                  ),
                 ),
               ),
-            ),
           chrome(
             alignment: Alignment.topCenter,
             child: Column(
@@ -1057,56 +1111,60 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
               ],
             ),
           ),
-          chrome(
-            alignment: Alignment.bottomCenter,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      modeError != null
-                          ? modeError!
-                          : reconnecting
-                          ? 'Reconnecting to student…'
-                          : requestedMode != null
-                          ? 'Changing input mode…'
-                          : mode == 'exclusive'
-                          ? 'Teacher control · Student input locked'
-                          : mode == 'control'
-                          ? 'Shared control · Student input stays enabled'
-                          : 'Observe · Read only',
-                      style: const TextStyle(fontSize: 12),
+          if (mode == 'observe')
+            chrome(
+              alignment: Alignment.bottomCenter,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 5,
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        modeError != null
+                            ? modeError!
+                            : reconnecting
+                            ? 'Reconnecting to student…'
+                            : requestedMode != null
+                            ? 'Changing input mode…'
+                            : mode == 'exclusive'
+                            ? 'Teacher control · Student input locked'
+                            : mode == 'control'
+                            ? 'Shared control · Student input stays enabled'
+                            : 'Observe · Read only',
+                        style: const TextStyle(fontSize: 12),
+                      ),
                     ),
-                  ),
-                  if (live && sessionCodec != null) ...[
+                    if (live && sessionCodec != null) ...[
+                      Text(
+                        sessionCodec!,
+                        key: const ValueKey('observe-footer-codec'),
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.blueGrey,
+                        ),
+                      ),
+                      const Text(
+                        '  ·  ',
+                        style: TextStyle(fontSize: 12, color: Colors.blueGrey),
+                      ),
+                    ],
                     Text(
-                      sessionCodec!,
-                      key: const ValueKey('observe-footer-codec'),
+                      live
+                          ? '${stats['width']} × ${stats['height']}'
+                          : '${view['phase'] ?? 'Connecting'}',
                       style: const TextStyle(
                         fontSize: 12,
-                        fontWeight: FontWeight.w600,
                         color: Colors.blueGrey,
                       ),
                     ),
-                    const Text(
-                      '  ·  ',
-                      style: TextStyle(fontSize: 12, color: Colors.blueGrey),
-                    ),
                   ],
-                  Text(
-                    live
-                        ? '${stats['width']} × ${stats['height']}'
-                        : '${view['phase'] ?? 'Connecting'}',
-                    style: const TextStyle(
-                      fontSize: 12,
-                      color: Colors.blueGrey,
-                    ),
-                  ),
-                ],
+                ),
               ),
             ),
-          ),
           if (showStats)
             AnimatedPositioned(
               duration: const Duration(milliseconds: 180),
@@ -1127,7 +1185,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
             ),
           Positioned(
             right: 16,
-            bottom: chromeVisible ? 58 : 12,
+            bottom: chromeVisible && mode == 'observe' ? 58 : 12,
             child: ClassroomToolsOverlay(
               agent: widget.agent,
               activity: toolActivity,

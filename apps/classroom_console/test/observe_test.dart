@@ -196,7 +196,7 @@ void main() {
       expect(titles.last, 'Control · PC 01');
       expect(
         find.text('Shared control · Student input stays enabled'),
-        findsOneWidget,
+        findsNothing,
       );
       final image = find.byKey(const ValueKey('observe-image'));
       expect(
@@ -342,9 +342,13 @@ void main() {
         t.getSize(find.byKey(const ValueKey('observe-top-edge'))).height,
         5,
       );
+      expect(find.byKey(const ValueKey('observe-bottom-edge')), findsNothing);
+      await mouse.moveTo(const Offset(400, 598));
+      await t.pump(const Duration(milliseconds: 200));
       expect(
-        t.getSize(find.byKey(const ValueKey('observe-bottom-edge'))).height,
-        5,
+        find.text('Shared control · Student input stays enabled'),
+        findsNothing,
+        reason: 'Control never reveals a footer, even at the bottommost edge',
       );
       await mouse.moveTo(const Offset(400, 2));
       await t.pump();
@@ -357,6 +361,11 @@ void main() {
       a.notifyListeners();
       await t.pump();
       expect(titles.last, 'Observe · PC 01');
+      expect(
+        t.getSize(find.byKey(const ValueKey('observe-bottom-edge'))).height,
+        5,
+      );
+      expect(find.text('Observe · Read only'), findsOneWidget);
       a.state['observe']['mode'] = 'exclusive';
       a.notifyListeners();
       await t.pump();
@@ -441,9 +450,11 @@ void main() {
         ),
       );
     }
-    expect(a.inputs.where((v) => v['action'] == 'scroll').map((v) => v['y']), [
-      1,
-    ], reason: 'Small wheel deltas must accumulate rather than disappear');
+    expect(
+      a.inputs.where((v) => v['action'] == 'scroll').map((v) => v['y']),
+      [1],
+      reason: 'Small wheel deltas must accumulate rather than disappear',
+    );
     a.inputs.clear();
     await t.sendEventToBinding(
       const PointerPanZoomStartEvent(pointer: 8, position: Offset(400, 300)),
@@ -461,9 +472,11 @@ void main() {
     await t.sendEventToBinding(
       const PointerPanZoomEndEvent(pointer: 8, position: Offset(400, 300)),
     );
-    expect(a.inputs.where((v) => v['action'] == 'scroll').map((v) => v['y']), [
-      1,
-    ], reason: 'Trackpad content pan must become remote wheel input');
+    expect(
+      a.inputs.where((v) => v['action'] == 'scroll').map((v) => v['y']),
+      [1],
+      reason: 'Trackpad content pan must become remote wheel input',
+    );
     // A new frame shape changes the crop immediately after native stats update.
     source = const Size(1920, 1080);
     await t.pump(const Duration(seconds: 1));

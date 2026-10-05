@@ -136,6 +136,7 @@ bool FlutterWindow::OnCreate() {
   }
   RegisterPlugins(flutter_controller_->engine());
   file_picker_ = std::make_unique<FilePicker>(GetHandle());
+  control_keyboard_ = std::make_unique<ControlKeyboard>(GetHandle());
   auto *registrar =
       flutter::PluginRegistrarManager::GetInstance()
           ->GetRegistrar<flutter::PluginRegistrarWindows>(
@@ -152,7 +153,14 @@ bool FlutterWindow::OnCreate() {
           flutter_controller_->engine()->messenger(), "classroom/observe",
           &flutter::StandardMethodCodec::GetInstance());
   observe_channel_->SetMethodCallHandler([this](const auto &call, auto result) {
-    if (call.method_name() == "attach") {
+    if (call.method_name() == "captureSystemKeys") {
+      const auto* enabled = std::get_if<bool>(call.arguments());
+      if (!enabled || !control_keyboard_->SetEnabled(*enabled)) {
+        result->Error("keyboard_hook", "Could not capture Windows shortcuts.");
+        return;
+      }
+      result->Success();
+    } else if (call.method_name() == "attach") {
       const auto *args = std::get_if<flutter::EncodableMap>(call.arguments());
       if (!args) {
         result->Error("invalid_path", "Observe surface missing");
@@ -256,6 +264,7 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  control_keyboard_.reset();
   file_picker_.reset();
   if (texture_timer_)
     KillTimer(GetHandle(), texture_timer_);
@@ -275,6 +284,15 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  if (message == ControlKeyboard::kMessage && observe_channel_) {
+    flutter::EncodableMap event;
+    event[flutter::EncodableValue("key")] = flutter::EncodableValue(ControlKeyboard::Label(static_cast<DWORD>(wparam)));
+    event[flutter::EncodableValue("down")] = flutter::EncodableValue(lparam != 0);
+    observe_channel_->InvokeMethod("systemKey", std::make_unique<flutter::EncodableValue>(event));
+    return 0;
+  }
+  if (message == WM_ACTIVATE && LOWORD(wparam) == WA_INACTIVE && control_keyboard_)
+    control_keyboard_->SetEnabled(false);
   if (file_picker_ && file_picker_->Handle(message, lparam))
     return 0;
   // window_manager can consume WM_TIMER. Handle our refresh before plugins

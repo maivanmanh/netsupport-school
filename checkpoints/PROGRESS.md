@@ -3063,3 +3063,52 @@ Status: implemented; isolated Mac lifecycle tests and two successive Windows LAN
 - Artifacts: target/dev-update-build/Classroom Console.app, Classroom Student.app; target/rustup-windows/x86_64-pc-windows-gnu/release/ClassroomStudent.exe. No published v1 assets replaced. Details and CLI examples: docs/19_DEV_STUDENT_UPDATES.md.
 - Remaining limits: trusted-LAN dev packages are not publisher-authenticated; OS grants/Gatekeeper can still require human action; Teacher crash loses active job state and may trigger rollback. Windows ARM native updater build and actual remote Mac permissions across updates were not tested. Physical Windows x64 wired 1080p/40-PC acceptance is unchanged.
 - Exact next step: use this CLI to deploy subsequent compatible Student dev builds through existing agents, without SSH. Resume the documented Phase 1 receiver/network isolation and physical acceptance plan when appropriate hardware is available.
+
+
+## 2026-10-05 — Manual Windows Student Observe setup correction
+
+- Launching the updated Student from the isolated updater test directory auto-loaded its adjacent config.toml with monitoring.enabled=false. Room/tools worked, but Observe timed out because its monitoring control channel was disabled. Corrected that exact flag to true and restarted the existing exe via an interactive task; no binary deployment occurred.
+- A stale Observe view initially had a receiver No route to host error. Closing the old session and opening a fresh one after restart restored real decoding/rendering: sampled ~16.93 FPS, zero decode/depacketizer errors and missing packets, pending render frames0. Leave Teacher/Student running for owner manual testing.
+- Future manual tests must enable monitoring or explicitly supply a normal config; do not reuse updater-only disabled-monitoring fixtures without checking them. No firewall/privacy policy changes or new build were needed.
+
+
+## 2026-10-05 — Windows Teacher Win shortcuts and Control footer
+
+Status: owner-reported Win+R local dispatch fixed and tested Windows-to-Windows.
+
+- Added foreground ControlKeyboard WH_KEYBOARD_LL hook in Windows Flutter runner,
+  with message-only callback and MethodChannel delivery to existing Rust input.
+  Flutter synthetic Meta events are ignored to avoid duplicate release. Unhook
+  immediately on native deactivation, Observe/mode transitions, disconnect and
+  teardown; other apps and Observe retain their normal Win+R behavior. No Rust
+  Student/protocol change and no OS policy changes.
+- Hook/shell harness on .94: all 9 checks pass, including exactly ordered Win/R
+  events, no Teacher Run in Control, normal local Run when disabled/unfocused.
+  Actual Flutter Windows Teacher .94 → Windows Student .206: Control active,
+  injection exit0, Teacher Run absent and Student interactive Run count1. Student
+  bootstrap only once by SSH; no subsequent Student binary copy/update. Native
+  input test helper/launch scripts are separate instrumentation.
+- Corrected mistaken new-host IP per owner to 192.168.50.206. First SSH key is
+  accepted only for that specified new host; reused outside-sandbox password PTY
+  helper. Corrected Teacher test's remembered 48700 port via CLI47800; settings
+  preserved. Student .206 path C:/Users/mvmanh/Classroom-Student-dev/ClassroomStudent.exe.
+- Owner additionally requested no footer during Control: removed bottom status
+  bar and 5px reveal hit target in both Control/exclusive; Observe unchanged.
+  Updated existing regression test covers hover at bottom and restore in Observe.
+- Verification: Flutter analyze no issues; 24 tests passed; native C++ strict
+  warning build and actual Windows/MSVC Flutter release; Mac release .app built
+  and opened at target/control-shortcuts-build/Classroom Console.app. Windows
+  Teacher test bundle is C:/Users/mvmanh/Classroom-shortcut-validation/Teacher.
+  Mac old owned GUI/helper stopped; no Student rebuild/restart required by code.
+- Evidence/limits: diagnostics/2026-10-05-windows-control-shortcuts.md. Windows
+  binaries are x64 under ARM64 Parallels; native physical Windows performance and
+  secure-desktop/Ctrl+Alt+Delete remain unverified/out of scope. Preserve v1 assets.
+- Exact next step: owner manually exercises Win+R/Win+E on the updated Windows
+  Teacher with .206 Student; deploy future Student versions through Classroom.
+
+- Final deployment complete: old isolated Windows Teacher folder removed only
+  after its owned processes stopped and executable lock cleared; final bundle
+  restarted on .94, including app-local x64 MSVC CRT. Collected portable ZIP at
+  target/shortcut-test/Classroom-Console-Windows-shortcuts.zip. No execution-policy,
+  firewall or privacy grant changes. Final Control-footer regression suite passes
+  all24 tests; tracked Flutter lockfile restored after local SDK resolution.

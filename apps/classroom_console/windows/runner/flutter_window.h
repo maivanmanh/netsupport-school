@@ -9,6 +9,7 @@
 #include <memory>
 
 #include "file_picker.h"
+#include "control_keyboard.h"
 #include "observe_texture.h"
 #include "win32_window.h"
 
@@ -28,6 +29,7 @@ protected:
 
 private:
   std::unique_ptr<FilePicker> file_picker_;
+  std::unique_ptr<ControlKeyboard> control_keyboard_;
   // The project to run.
   flutter::DartProject project_;
 

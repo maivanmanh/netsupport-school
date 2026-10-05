@@ -143,3 +143,15 @@ Rejected submissions or invalid tickets stop publication. A change from Apple
 Development to Developer ID may change designated requirements: existing
 manifests deliberately stop that migration for review before notarization;
 retain the old manifest when reviewing and document any initial privacy grant.
+
+
+## Windows Teacher control shortcuts (2026-10-05)
+
+Windows Observe/Control enables a foreground-scoped low-level Win-key hook only
+while acknowledged Control is live and focused. Win shortcuts route through the
+existing Rust input channel; Observe and other local applications retain normal
+Windows shortcuts. Hook callbacks post window messages instead of blocking on
+network or Flutter. Ctrl+Alt+Delete/secure-desktop input is not supported by this
+change. Footer and its bottom hover trigger are absent in Control/exclusive;
+Observe retains auto hide/show. See diagnostics/2026-10-05-windows-control-shortcuts.md
+under checkpoints for the actual Windows-to-Windows Win+R result and test commands.
