@@ -26,6 +26,12 @@ const MAX_PACKET: usize = 8192;
 const CHUNK: usize = 64 * 1024;
 pub const MAX_FILE: u64 = 4 * 1024 * 1024 * 1024;
 const PACE: Duration = Duration::from_millis(64); // ~1 MiB/s per transfer, at most two
+mod activity_jobs;
+mod file_tree;
+mod fs_jobs;
+mod launch;
+mod power;
+mod vscode_jobs;
 fn packet(action: &str) -> ToolPacket {
     ToolPacket {
         version: VERSION,
@@ -215,15 +221,65 @@ struct State {
     peers: HashMap<String, u64>,
     generation: u64,
     capabilities: HashMap<String, Value>,
+    /// Students whose classroom lock screen is currently shown.
+    locked: std::collections::HashSet<String>,
+    /// Students whose clipboard the Teacher is currently clearing on copy.
+    clipboard_blocked: std::collections::HashSet<String>,
+    /// Internet mode enforced on each Student (absent = open).
+    internet: HashMap<String, String>,
+    /// Students whose VS Code extension allowlist is currently enforced.
+    vscode_blocked: std::collections::HashSet<String>,
+    /// Bounded log of "a monitored Student disconnected" events, newest last;
+    /// the Teacher UI tracks which it has already shown.
+    activity_alerts: VecDeque<Value>,
+    /// Suppresses a burst of alerts for the same Student reconnecting
+    /// repeatedly in a short window (a flapping connection is one event to
+    /// the Teacher, not one per retry).
+    last_alert: HashMap<String, Instant>,
 }
 #[derive(Default)]
-pub struct Hub(Mutex<State>, AtomicBool, OnceLock<String>);
+pub struct Hub(
+    Mutex<State>,
+    AtomicBool,
+    OnceLock<String>,
+    Mutex<fs_jobs::FsState>,
+    AtomicBool,
+    Mutex<HashMap<String, Value>>,
+);
 impl Hub {
     pub fn set_connection_popup(&self, enabled: bool) {
         self.1.store(enabled, Ordering::Release);
     }
     pub fn connection_popup(&self) -> bool {
         self.1.load(Ordering::Acquire)
+    }
+    /// Class-wide switch: while on, every capable Student collects activity
+    /// data in the background (see `activity::collector`) regardless of
+    /// whether the Teacher is currently looking; while off, none of them do.
+    pub fn set_activity_monitoring(&self, enabled: bool) {
+        self.4.store(enabled, Ordering::Release);
+    }
+    pub fn activity_monitoring(&self) -> bool {
+        self.4.load(Ordering::Acquire)
+    }
+    /// The most recently received report for `student`, if any — shown
+    /// instantly (no round trip to the Student) while a background refresh
+    /// (triggered by the caller) brings it up to date for next time.
+    pub fn activity_cached(&self, student: &str) -> Option<Value> {
+        self.5.lock().unwrap().get(student).cloned()
+    }
+    pub(super) fn activity_ingest(&self, student: &str, report: Value) {
+        self.5.lock().unwrap().insert(student.to_owned(), report);
+    }
+    pub fn activity_forget(&self, student: &str) {
+        self.5.lock().unwrap().remove(student);
+    }
+    /// Alerts not yet returned to the caller, oldest first; each is handed
+    /// out exactly once — call this from the one place that publishes the
+    /// Teacher snapshot, never from an incidental `snapshot()`/lookup call.
+    pub fn activity_alerts(&self) -> Vec<Value> {
+        let mut state = self.0.lock().unwrap();
+        state.activity_alerts.drain(..).collect()
     }
 }
 impl Hub {
@@ -254,7 +310,14 @@ impl Hub {
                 }
             }
         }
-        json!({"connection_popup":self.connection_popup(),"capabilities":s.capabilities,"ready":s.peers.keys().collect::<Vec<_>>(),"jobs":s.jobs.iter().map(|j|json!({"id":j.packet.id,"kind":j.packet.action,"name":j.packet.name,"size":j.packet.size,"text":j.packet.text.chars().take(240).collect::<String>(),"targets":j.targets.iter().map(|(id,t)|json!({"id":id,"status":t.status,"done":t.done,"reply":t.reply,"error":t.error})).collect::<Vec<_>>()})).collect::<Vec<_>>()})
+        let fs_jobs = self.fs_snapshot();
+        let mut locked: Vec<&String> = s.locked.iter().collect();
+        locked.sort();
+        let mut clipboard_blocked: Vec<&String> = s.clipboard_blocked.iter().collect();
+        clipboard_blocked.sort();
+        let mut vscode_blocked: Vec<&String> = s.vscode_blocked.iter().collect();
+        vscode_blocked.sort();
+        json!({"connection_popup":self.connection_popup(),"fs_jobs":fs_jobs,"locked":locked,"clipboard_blocked":clipboard_blocked,"vscode_blocked":vscode_blocked,"internet":s.internet,"capabilities":s.capabilities,"ready":s.peers.keys().collect::<Vec<_>>(),"jobs":s.jobs.iter().map(|j|json!({"id":j.packet.id,"kind":j.packet.action,"name":j.packet.name,"size":j.packet.size,"text":j.packet.text.chars().take(240).collect::<String>(),"targets":j.targets.iter().map(|(id,t)|json!({"id":id,"status":t.status,"done":t.done,"reply":t.reply,"error":t.error})).collect::<Vec<_>>()})).collect::<Vec<_>>()})
     }
     /// Hashes a staged file off the caller's thread, then offers it to every
     /// recipient that has not been cancelled meanwhile. The hash lets Students
@@ -346,6 +409,56 @@ impl Hub {
                 );
             }
             Some(source)
+        } else if action == "policy" {
+            let policy: crate::guard::Policy = serde_json::from_value(input["policy"].clone())
+                .context("Invalid access policy")?;
+            policy.validate()?;
+            p.text = serde_json::to_string(&policy)?;
+            anyhow::ensure!(
+                p.text.len() <= 6500,
+                "The site list is too long to send (keep it under about 150 entries)"
+            );
+            p.name = policy.internet.mode.name().into();
+            None
+        } else if action == "vscode_policy" {
+            let policy: crate::vscode_control::VsCodePolicy =
+                serde_json::from_value(input["policy"].clone())
+                    .context("Invalid VS Code policy")?;
+            policy.validate()?;
+            p.text = serde_json::to_string(&policy)?;
+            anyhow::ensure!(
+                p.text.len() <= 8000,
+                "The allowed extension list is too long to send (keep it under about 300 entries)"
+            );
+            p.name = if policy.enabled { "vscode_block" } else { "vscode_open" }.into();
+            None
+        } else if action == "power" {
+            let op = input["op"].as_str().unwrap_or("");
+            anyhow::ensure!(
+                ["lock", "unlock", "reboot", "shutdown", "logout", "clipboard_block", "clipboard_allow"].contains(&op),
+                "Unknown power action"
+            );
+            let message: String = input["message"]
+                .as_str()
+                .unwrap_or("")
+                .trim()
+                .chars()
+                .take(200)
+                .collect();
+            p.text = json!({"op":op,"message":message}).to_string();
+            p.name = op.into();
+            None
+        } else if action == "launch" {
+            let path = input["path"].as_str().unwrap_or("").trim();
+            let args = input["args"].as_str().unwrap_or("").trim();
+            anyhow::ensure!(
+                !path.is_empty() && path.chars().count() <= 500,
+                "Enter the path of the program to launch (up to 500 characters)"
+            );
+            anyhow::ensure!(args.chars().count() <= 1500, "Arguments are too long");
+            p.text = json!({"path":path,"args":args}).to_string();
+            p.name = launch::display_name(path);
+            None
         } else {
             input["text"]
                 .as_str()
@@ -374,6 +487,23 @@ impl Hub {
                 .all(|id| s.queues.get(id).is_none_or(|q| q.len() < 16)),
             "Student has too many pending tools"
         );
+
+        if action == "power" {
+            for id in recipients {
+                anyhow::ensure!(
+                    s.capabilities.get(id).is_some_and(|c| c["power"] == 1),
+                    "A selected Student runs an older build without power controls; update it via Classroom first"
+                );
+            }
+        }
+        if action == "launch" {
+            for id in recipients {
+                anyhow::ensure!(
+                    s.capabilities.get(id).is_some_and(|c| c["launch"] == 1),
+                    "A selected Student runs an older build without remote launch; update it via Classroom first"
+                );
+            }
+        }
         if action == "update" {
             let m: super::dev_update::Manifest = serde_json::from_str(&p.text)?;
             for id in recipients {
@@ -532,7 +662,8 @@ impl Hub {
     }
     fn event(&self, student: &str, p: &ToolPacket) -> Result<()> {
         let mut s = self.0.lock().unwrap();
-        let Some(j) = s.jobs.iter_mut().find(|j| j.packet.id == p.id) else {
+        let State { jobs, locked, clipboard_blocked, internet, vscode_blocked, .. } = &mut *s;
+        let Some(j) = jobs.iter_mut().find(|j| j.packet.id == p.id) else {
             // A Student can finish an old popup after Teacher restart/history
             // eviction. Acknowledge/discard that event, never poison current jobs.
             info!(job_id=%p.id, student_id=student, status=%p.status, "Stale classroom tools event discarded");
@@ -581,6 +712,41 @@ impl Hub {
         }
         t.status.clone_from(&p.status);
         t.changed = Instant::now();
+        if j.packet.action == "policy" && p.status == "complete" {
+            if j.packet.name == "open" {
+                internet.remove(student);
+            } else {
+                internet.insert(student.to_owned(), j.packet.name.clone());
+            }
+        }
+        if j.packet.action == "vscode_policy" && p.status == "complete" {
+            if j.packet.name == "vscode_open" {
+                vscode_blocked.remove(student);
+            } else {
+                vscode_blocked.insert(student.to_owned());
+            }
+        }
+        if j.packet.action == "power" && p.status == "complete" {
+            match serde_json::from_str::<Value>(&j.packet.text)
+                .ok()
+                .and_then(|v| v["op"].as_str().map(str::to_owned))
+                .as_deref()
+            {
+                Some("lock") => {
+                    locked.insert(student.to_owned());
+                }
+                Some("unlock") => {
+                    locked.remove(student);
+                }
+                Some("clipboard_block") => {
+                    clipboard_blocked.insert(student.to_owned());
+                }
+                Some("clipboard_allow") => {
+                    clipboard_blocked.remove(student);
+                }
+                _ => {}
+            }
+        }
         t.done = t.done.max(p.done);
         if terminal(&t.status) {
             info!(job_id=%p.id,student_id=student,status=%t.status,bytes=t.done,"Classroom tools recipient finished");
@@ -661,8 +827,29 @@ impl Hub {
         if state.peers.get(student) != Some(&generation) {
             return;
         }
+        const ALERT_COOLDOWN: Duration = Duration::from_secs(30);
+        if self.activity_monitoring()
+            && state
+                .last_alert
+                .get(student)
+                .is_none_or(|at| at.elapsed() >= ALERT_COOLDOWN)
+        {
+            state.last_alert.insert(student.to_owned(), Instant::now());
+            if state.activity_alerts.len() >= 50 {
+                state.activity_alerts.pop_front();
+            }
+            state.activity_alerts.push_back(json!({
+                "id": format!("{student}-{generation}"),
+                "student": student,
+                "unix_ms": media_core::unix_us() / 1000,
+            }));
+        }
         state.peers.remove(student);
         state.capabilities.remove(student);
+        state.locked.remove(student);
+        state.clipboard_blocked.remove(student);
+        state.internet.remove(student);
+        state.vscode_blocked.remove(student);
         for job in &mut state.jobs {
             if let Some(target) = job.targets.get_mut(student) {
                 if !(terminal(&target.status)
@@ -674,6 +861,8 @@ impl Hub {
                 }
             }
         }
+        drop(state);
+        self.fs_disconnected(student);
     }
 }
 pub struct Server {
@@ -786,6 +975,9 @@ fn serve(
     if hello.action == "download" {
         return serve_file(s, &hello, hub, stop, slots);
     }
+    if let Some(result) = fs_jobs::serve(s, &hello, hub) {
+        return result;
+    }
     if hello.action == "diagnostics_upload" {
         diagnostics.receive(s, &hello, stop)?;
         return send(s, &packet("ok"));
@@ -797,8 +989,31 @@ fn serve(
         st.generation += 1;
         let g = st.generation;
         st.peers.insert(hello.student.clone(), g);
+        if capability.as_ref().is_some_and(|c| c["clipboard_blocked"] == 1) {
+            st.clipboard_blocked.insert(hello.student.clone());
+        } else {
+            st.clipboard_blocked.remove(&hello.student);
+        }
+        match capability.as_ref().and_then(|c| c["internet"].as_str()) {
+            Some(mode) if mode != "open" => {
+                st.internet.insert(hello.student.clone(), mode.to_owned());
+            }
+            _ => {
+                st.internet.remove(&hello.student);
+            }
+        }
+        if capability.as_ref().is_some_and(|c| c["locked"] == 1) {
+            st.locked.insert(hello.student.clone());
+        } else {
+            st.locked.remove(&hello.student);
+        }
+        if capability.as_ref().is_some_and(|c| c["vscode_blocked"] == 1) {
+            st.vscode_blocked.insert(hello.student.clone());
+        } else {
+            st.vscode_blocked.remove(&hello.student);
+        }
         if let Some(c) = &capability {
-            st.capabilities.insert(hello.student.clone(), json!({"dev_update":c["dev_update"],"connection_popup":c["connection_popup"],"os":c["os"],"arch":c["arch"],"build":c["build"],"pid":c["pid"]}));
+            st.capabilities.insert(hello.student.clone(), json!({"dev_update":c["dev_update"],"connection_popup":c["connection_popup"],"fs":c["fs"],"launch":c["launch"],"power":c["power"],"guard":c["guard"],"activity":c["activity"],"vscode":c["vscode"],"os":c["os"],"arch":c["arch"],"build":c["build"],"pid":c["pid"]}));
         }
         g
     };
@@ -806,6 +1021,8 @@ fn serve(
         .as_ref()
         .is_some_and(|c| c["connection_popup"] == 1);
     let mut last_popup = None;
+    let activity_supported = capability.as_ref().is_some_and(|c| c["activity"] == 1);
+    let mut last_activity_monitoring = None;
     let confirmed = capability
         .as_ref()
         .is_some_and(|c| hub.confirm_update(&hello.student, c));
@@ -833,6 +1050,14 @@ fn serve(
                     preference.status = if popup { "on" } else { "off" }.into();
                     send(s, &preference)?;
                     last_popup = Some(popup);
+                    continue;
+                }
+                let monitoring = hub.activity_monitoring();
+                if activity_supported && last_activity_monitoring != Some(monitoring) {
+                    let mut preference = packet("activity_status");
+                    preference.status = if monitoring { "on" } else { "off" }.into();
+                    send(s, &preference)?;
+                    last_activity_monitoring = Some(monitoring);
                     continue;
                 }
                 let next = hub
@@ -951,6 +1176,10 @@ pub struct Inbox {
     pub update_exit: AtomicBool,
     pub connection_popup: AtomicBool,
     connection_popup_path: Mutex<Option<PathBuf>>,
+    lock: Mutex<Option<String>>,
+    lock_epoch: AtomicU64,
+    last_poll_ms: AtomicU64,
+    clipboard_guard: Mutex<Option<super::clipboard_guard::ClipboardGuard>>,
 }
 /// Student-side view of one incoming file, for the local progress window.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1001,6 +1230,44 @@ impl Inbox {
     pub fn message_epoch(&self) -> u64 {
         self.message_epoch.load(Ordering::Acquire)
     }
+    /// Shows (`Some(message)`) or removes the classroom lock screen.
+    pub(crate) fn set_lock(&self, message: Option<String>) {
+        *self.lock.lock().unwrap() = message;
+        self.lock_epoch.fetch_add(1, Ordering::AcqRel);
+    }
+    /// `(change counter, lock message)`; `None` message means unlocked.
+    pub(crate) fn lock_state(&self) -> (u64, Option<String>) {
+        (
+            self.lock_epoch.load(Ordering::Acquire),
+            self.lock.lock().unwrap().clone(),
+        )
+    }
+    fn touch(&self) {
+        self.last_poll_ms
+            .store(media_core::unix_us() / 1000, Ordering::Release);
+    }
+    /// Milliseconds since the Teacher last answered a poll (0 before the first).
+    pub(crate) fn silent_ms(&self) -> u64 {
+        match self.last_poll_ms.load(Ordering::Acquire) {
+            0 => 0,
+            last => (media_core::unix_us() / 1000).saturating_sub(last),
+        }
+    }
+    /// Starts (or stops) clearing the clipboard on every copy. Idempotent.
+    pub(crate) fn set_clipboard_block(&self, blocked: bool) -> Result<()> {
+        let mut guard = self.clipboard_guard.lock().unwrap();
+        if blocked {
+            if guard.is_none() {
+                *guard = Some(super::clipboard_guard::ClipboardGuard::start()?);
+            }
+        } else {
+            *guard = None;
+        }
+        Ok(())
+    }
+    pub(crate) fn clipboard_blocked(&self) -> bool {
+        self.clipboard_guard.lock().unwrap().is_some()
+    }
     fn bind_message_session(&self, session: &str) {
         if session.is_empty() {
             return;
@@ -1014,6 +1281,9 @@ impl Inbox {
                 .retain(|p| !matches!(p.status.as_str(), "delivered" | "dismissed" | "replied"));
             session.clone_into(&mut current);
             self.message_epoch.fetch_add(1, Ordering::AcqRel);
+            // A different Teacher session cannot unlock this Student later.
+            self.set_lock(None);
+            let _ = self.set_clipboard_block(false);
             info!("Student message session changed; obsolete popups cleared");
         }
     }
@@ -1156,14 +1426,40 @@ pub fn student(
         let mut pending_downloads = VecDeque::<ToolPacket>::new();
         let mut upload: Option<thread::JoinHandle<()>> = None;
         let mut diagnostic_request: Option<ToolPacket> = None;
+        let guard = Arc::new(crate::guard::for_student(
+            &super::startup::profile_path(None)
+                .ok()
+                .and_then(|p| p.parent().map(Path::to_path_buf))
+                .unwrap_or_else(std::env::temp_dir),
+            *address.ip(),
+        ));
+        guard.restore();
+        let mut fs_run: Option<fs_jobs::Run> = None;
+        let mut fs_pending = VecDeque::<ToolPacket>::new();
+        let list_active = Arc::new(AtomicUsize::new(0));
+        let activity_active = Arc::new(AtomicUsize::new(0));
+        let vscode_active = Arc::new(AtomicUsize::new(0));
+        let mut activity_lifecycle = activity_jobs::Lifecycle::new();
+        let mut activity_monitoring = false;
+        fs_jobs::request_folder_access();
         while !cancel.load(Ordering::Acquire) {
+            guard.tick();
             if let Ok(mut s) = TcpStream::connect_timeout(&address.into(), Duration::from_secs(2)) {
                 *active.lock().unwrap() = s.try_clone().ok();
                 let result = (|| -> Result<()> {
                     configure(&s)?;
                     let mut hello = packet("hello");
                     hello.student.clone_from(&identity);
-                    hello.text = super::dev_update::capabilities().to_string();
+                    let mut capabilities = super::dev_update::capabilities();
+                    capabilities["locked"] = json!(u8::from(inbox.lock_state().1.is_some()));
+                    capabilities["clipboard_blocked"] = json!(u8::from(inbox.clipboard_blocked()));
+                    capabilities["guard"] = json!(u8::from(guard.supported()));
+                    capabilities["internet"] = json!(guard.mode());
+                    capabilities["activity"] = json!(u8::from(cfg!(windows)));
+                    capabilities["vscode"] = json!(u8::from(super::vscode_control::supported()));
+                    capabilities["vscode_blocked"] =
+                        json!(u8::from(super::vscode_control::is_applied()));
+                    hello.text = capabilities.to_string();
                     send(&mut s, &hello)?;
                     let ack = read(&mut s)?;
                     anyhow::ensure!(ack.action == "ok", "Tools handshake rejected");
@@ -1181,6 +1477,8 @@ pub fn student(
                         }
                         send(&mut s, &packet("poll"))?;
                         let p = read(&mut s)?;
+                        inbox.touch();
+                        guard.keepalive();
                         if upload.as_ref().is_some_and(thread::JoinHandle::is_finished) {
                             let _ = upload.take().unwrap().join();
                         }
@@ -1221,8 +1519,87 @@ pub fn student(
                                 ));
                             }
                         }
+                        if fs_run.as_ref().is_some_and(|r| r.worker.is_finished()) {
+                            let _ = fs_run.take().unwrap().worker.join();
+                        }
+                        if fs_run.is_none() {
+                            if let Some(next) = fs_pending.pop_front() {
+                                fs_run = Some(fs_jobs::start(
+                                    address,
+                                    identity.clone(),
+                                    next,
+                                    Arc::clone(&cancel),
+                                ));
+                            }
+                        }
                         match p.action.as_str() {
                             "collect_diagnostics" => diagnostic_request = Some(p),
+                            "fs_list" => {
+                                fs_jobs::list(address, identity.clone(), p, &list_active);
+                            }
+                            "activity" => {
+                                activity_jobs::run(
+                                    address,
+                                    identity.clone(),
+                                    p,
+                                    &activity_active,
+                                    activity_lifecycle.live(),
+                                    activity_monitoring,
+                                );
+                            }
+                            "activity_status" => {
+                                anyhow::ensure!(
+                                    matches!(p.status.as_str(), "on" | "off"),
+                                    "Invalid activity monitoring preference"
+                                );
+                                activity_monitoring = p.status == "on";
+                                activity_lifecycle.set_enabled(activity_monitoring);
+                            }
+                            "launch" => launch::run(p, Arc::clone(&inbox)),
+                            "power" => power::run(p, Arc::clone(&inbox)),
+                            "policy" => {
+                                let (guard, inbox) = (Arc::clone(&guard), Arc::clone(&inbox));
+                                thread::spawn(move || {
+                                    let outcome = serde_json::from_str::<crate::guard::Policy>(&p.text)
+                                        .context("Invalid access policy")
+                                        .and_then(|policy| guard.apply(policy));
+                                    match outcome {
+                                        Ok(()) => inbox.event(&p.id, "complete", "", 0),
+                                        Err(error) => inbox.event(&p.id, "error", &format!("{error:#}"), 0),
+                                    }
+                                });
+                            }
+                            "vscode_list" => {
+                                vscode_jobs::run(address, identity.clone(), p, &vscode_active);
+                            }
+                            "vscode_policy" => {
+                                let inbox = Arc::clone(&inbox);
+                                thread::spawn(move || {
+                                    let outcome =
+                                        serde_json::from_str::<crate::vscode_control::VsCodePolicy>(&p.text)
+                                            .context("Invalid VS Code policy")
+                                            .and_then(|policy| {
+                                                policy.validate()?;
+                                                crate::vscode_control::apply(&policy)
+                                            });
+                                    match outcome {
+                                        Ok(()) => inbox.event(&p.id, "complete", "", 0),
+                                        Err(error) => inbox.event(&p.id, "error", &format!("{error:#}"), 0),
+                                    }
+                                });
+                            }
+                            "fs_send" | "fs_receive" => {
+                                if fs_run.is_none() {
+                                    fs_run = Some(fs_jobs::start(
+                                        address,
+                                        identity.clone(),
+                                        p,
+                                        Arc::clone(&cancel),
+                                    ));
+                                } else if fs_pending.len() < 4 {
+                                    fs_pending.push_back(p);
+                                }
+                            }
                             "connection_status" => {
                                 anyhow::ensure!(
                                     matches!(p.status.as_str(), "on" | "off"),
@@ -1273,10 +1650,20 @@ pub fn student(
                                     inbox.set_transfer(&p.id, TransferState::Cancelled, None);
                                 }
                                 pending_downloads.retain(|queued| queued.id != p.id);
+                                if let Some(r) = fs_run.as_ref().filter(|r| r.id == p.id) {
+                                    r.cancel.store(true, Ordering::Release);
+                                }
+                                fs_pending.retain(|queued| queued.id != p.id);
                                 inbox.messages.lock().unwrap().retain(|m| m.id != p.id);
                             }
                             "idle" => {}
-                            _ => anyhow::bail!("Invalid classroom tool"),
+                            // Forward compatible: a Teacher newer than this Student may
+                            // push a message type this build does not know yet (e.g. a
+                            // feature-status toggle). Ignoring it keeps the whole tools
+                            // connection alive instead of tearing it down and looping.
+                            other => {
+                                info!(action = other, "Student ignored an unrecognized classroom tool message");
+                            }
                         }
                         for _ in 0..10 {
                             if cancel.load(Ordering::Acquire) {
@@ -1305,6 +1692,10 @@ pub fn student(
         }
         if let Some(upload) = upload {
             let _ = upload.join();
+        }
+        if let Some(run) = fs_run {
+            run.cancel.store(true, Ordering::Release);
+            let _ = run.worker.join();
         }
     });
     Client {
@@ -1551,25 +1942,82 @@ fn receive_file_to_folder(
     Ok(())
 }
 
+/// A well-known per-user folder (`Desktop`, `Documents`, `Downloads`, or `""`
+/// for the home folder), following Windows shell redirection such as OneDrive.
 #[cfg(windows)]
 #[allow(unsafe_code)]
-fn desktop_folder() -> Result<PathBuf> {
+fn user_folder(name: &str) -> Result<PathBuf> {
     use windows::Win32::{
         System::Com::CoTaskMemFree,
-        UI::Shell::{FOLDERID_Desktop, SHGetKnownFolderPath, KF_FLAG_DEFAULT},
+        UI::Shell::{
+            FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Profile,
+            SHGetKnownFolderPath, KF_FLAG_DEFAULT,
+        },
+    };
+    let id = match name {
+        "Desktop" => &FOLDERID_Desktop,
+        "Documents" => &FOLDERID_Documents,
+        "Downloads" => &FOLDERID_Downloads,
+        _ => &FOLDERID_Profile,
     };
     // SAFETY: Shell returns a CoTaskMem-allocated UTF-16 path for this user's
-    // Desktop (including OneDrive redirection). Copy it and free exactly once.
+    // folder. Copy it and free exactly once.
     unsafe {
-        let path = SHGetKnownFolderPath(&FOLDERID_Desktop, KF_FLAG_DEFAULT, None)?;
+        let path = SHGetKnownFolderPath(id, KF_FLAG_DEFAULT, None)?;
         let text = path.to_string();
         CoTaskMemFree(Some(path.0.cast()));
         Ok(PathBuf::from(text?))
     }
 }
+/// The account's real home. A sandboxed macOS Teacher helper has `$HOME` set to
+/// its container, so the account database is asked first.
 #[cfg(not(windows))]
+#[allow(unsafe_code)]
+fn real_home() -> Result<PathBuf> {
+    use std::{ffi::CStr, os::unix::ffi::OsStrExt};
+    let mut buffer = vec![0 as libc::c_char; 8192];
+    // SAFETY: an all-zero `passwd` is a valid out-parameter; getpwuid_r fills it
+    // and `result` only with pointers into `buffer`, which outlives their use.
+    let home = unsafe {
+        let mut entry: libc::passwd = std::mem::zeroed();
+        let mut result: *mut libc::passwd = std::ptr::null_mut();
+        let status = libc::getpwuid_r(
+            libc::getuid(),
+            &mut entry,
+            buffer.as_mut_ptr(),
+            buffer.len(),
+            &mut result,
+        );
+        (status == 0 && !result.is_null() && !entry.pw_dir.is_null())
+            .then(|| PathBuf::from(std::ffi::OsStr::from_bytes(CStr::from_ptr(entry.pw_dir).to_bytes())))
+    };
+    home.filter(|h| h.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+        .context("User home missing")
+}
+#[cfg(not(windows))]
+fn user_folder(name: &str) -> Result<PathBuf> {
+    let home = real_home()?;
+    Ok(if name.is_empty() { home } else { home.join(name) })
+}
 fn desktop_folder() -> Result<PathBuf> {
-    Ok(PathBuf::from(std::env::var_os("HOME").context("User home missing")?).join("Desktop"))
+    user_folder("Desktop")
+}
+/// A not-yet-existing folder on the Teacher Desktop for one collection run.
+pub fn collection_root(label: &str) -> Result<PathBuf> {
+    let desktop = desktop_folder()?;
+    let name = safe_name(if label.trim().is_empty() {
+        "Collected files"
+    } else {
+        label.trim()
+    });
+    for index in 0..1000 {
+        let candidate = desktop.join(numbered_name(&name, index));
+        if fs::symlink_metadata(&candidate).is_err() {
+            return Ok(candidate);
+        }
+    }
+    anyhow::bail!("No free collection folder name on the Desktop")
 }
 #[cfg(test)]
 mod tests {

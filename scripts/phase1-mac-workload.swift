@@ -2,7 +2,11 @@ import Cocoa
 let seconds = Double(CommandLine.arguments.dropFirst().first ?? "60") ?? 60
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
-let window = NSWindow(contentRect: NSScreen.main!.visibleFrame,
+// NSScreen.main is nil until a key window exists. Use the first attached
+// display to size the test window, with a bounded fallback for headless runs.
+let screenFrame = NSScreen.screens.first?.visibleFrame
+    ?? NSRect(x: 100, y: 100, width: 1280, height: 800)
+let window = NSWindow(contentRect: screenFrame,
                       styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
 window.title = "Classroom Phase 1 repeatable workload"
 let text = NSTextView(frame: window.contentView!.bounds)

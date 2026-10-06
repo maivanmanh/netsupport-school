@@ -56,6 +56,11 @@ class ToolActivity extends ChangeNotifier {
 
   /// Finished file/message jobs to announce once, until dismissed.
   final finished = <String>[];
+
+  /// Students that disconnected while activity monitoring was on, newest
+  /// first, kept for the session (mirrors `replies`/`unread` below).
+  final disconnects = <Map<String, dynamic>>[];
+  int unreadDisconnects = 0;
   final _hidden = <String>{};
   final _timers = <String, Timer>{};
 
@@ -121,6 +126,10 @@ class ToolActivity extends ChangeNotifier {
           !isActive(job) &&
           !finished.contains(id) &&
           !_hidden.contains(id) &&
+          // Launch and power results are shown inside their own dialogs/menus.
+          job['kind'] != 'launch' &&
+          job['kind'] != 'power' &&
+          job['kind'] != 'policy' &&
           ((job['kind'] == 'file' || job['kind'] == 'update') ||
               targets.any((t) => t['status'] == 'error'));
       if (announce) {
@@ -142,7 +151,27 @@ class ToolActivity extends ChangeNotifier {
     }
     final live = current.map((j) => '${j['id']}').toSet();
     finished.removeWhere((id) => !live.contains(id));
+    final alerts =
+        ((agent.state['tools'] as Map? ?? const {})['new_alerts'] as List?) ??
+        const [];
+    for (final a in alerts) {
+      disconnects.insert(0, Map<String, dynamic>.from(a as Map));
+      unreadDisconnects++;
+      changed = true;
+    }
     if (changed) notifyListeners();
+  }
+
+  void markDisconnectsRead() {
+    if (unreadDisconnects == 0) return;
+    unreadDisconnects = 0;
+    notifyListeners();
+  }
+
+  void clearDisconnects() {
+    disconnects.clear();
+    unreadDisconnects = 0;
+    notifyListeners();
   }
 
   void hide(String jobId) {
@@ -424,6 +453,8 @@ class _FinishedCard extends StatelessWidget {
         ? (failed.isEmpty
               ? 'Sent ${job['name'] ?? 'file'}'
               : 'Could not send ${job['name'] ?? 'file'}')
+        : job['kind'] == 'launch'
+        ? 'Could not launch ${job['name'] ?? 'program'}'
         : 'Message not delivered';
     return _Card(
       children: [
@@ -607,6 +638,83 @@ Future<void> showRepliesDialog(BuildContext context, ToolActivity activity) {
               onPressed: activity.replies.isEmpty
                   ? null
                   : activity.clearReplies,
+              child: const Text('Clear'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
+    ),
+  );
+}
+
+/// Session log of Students that disconnected while activity monitoring was on.
+Future<void> showDisconnectsDialog(
+  BuildContext context,
+  ToolActivity activity,
+) {
+  activity.markDisconnectsRead();
+  return showDialog<void>(
+    context: context,
+    builder: (context) => AnimatedBuilder(
+      animation: activity,
+      builder: (context, _) {
+        if (activity.unreadDisconnects > 0) {
+          scheduleMicrotask(activity.markDisconnectsRead);
+        }
+        return AlertDialog(
+          title: Text('Disconnect alerts (${activity.disconnects.length})'),
+          contentPadding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+          content: SizedBox(
+            width: 460,
+            height: 360,
+            child: activity.disconnects.isEmpty
+                ? const Center(
+                    child: Text(
+                      'No disconnects recorded while monitoring was on.',
+                      style: TextStyle(color: Colors.blueGrey),
+                    ),
+                  )
+                : ListView.separated(
+                    itemCount: activity.disconnects.length,
+                    separatorBuilder: (_, _) => const Divider(height: 1),
+                    itemBuilder: (_, i) {
+                      final a = activity.disconnects[i];
+                      final id = '${a['student']}';
+                      final ms = (a['unix_ms'] as num?)?.toInt() ?? 0;
+                      return ListTile(
+                        dense: true,
+                        leading: const Icon(
+                          Icons.link_off,
+                          size: 20,
+                          color: Color(0xffb83b40),
+                        ),
+                        title: Text(
+                          activity.nameOf(id),
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                        subtitle: Text(activity.ipOf(id)),
+                        trailing: Text(
+                          ms == 0
+                              ? ''
+                              : _time(DateTime.fromMillisecondsSinceEpoch(ms)),
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: Colors.blueGrey,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: activity.disconnects.isEmpty
+                  ? null
+                  : activity.clearDisconnects,
               child: const Text('Clear'),
             ),
             FilledButton(

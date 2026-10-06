@@ -39,6 +39,13 @@ class Agent extends ChangeNotifier {
   Timer? observeMoveFlush;
   int observeLaunch = 0;
   int lastObserveFocus = 0;
+
+  /// Observe, file and activity windows are dependent UIs of the main console.
+  bool get dependent =>
+      option('--observe-id') != null ||
+      option('--files-id') != null ||
+      option('--activity-id') != null ||
+      option('--internet-ids') != null;
   String? pendingObserveFocus;
 
   void ingestState(Map<String, dynamic> value) {
@@ -47,8 +54,7 @@ class Agent extends ChangeNotifier {
       final sequence = (request[1] as num).toInt();
       if (sequence > lastObserveFocus) {
         lastObserveFocus = sequence;
-        if (option('--observe-id') == null &&
-            pendingObserveFocus == request[0]) {
+        if (!dependent && pendingObserveFocus == request[0]) {
           pendingObserveFocus = null;
           // The clicked console owns foreground permission on Windows. Grant
           // it to/focus the independent UI before its own activation attempt.
@@ -184,7 +190,7 @@ class Agent extends ChangeNotifier {
     logBusy = true;
     try {
       await File(
-        '${dataDirectory!.path}/${option('--observe-id') == null ? 'ui' : 'observe-ui'}.log.txt',
+        '${dataDirectory!.path}/${!dependent ? 'ui' : 'observe-ui'}.log.txt',
       ).writeAsString(
         '${DateTime.now().toUtc().toIso8601String()} $event\n',
         mode: FileMode.append,
@@ -272,7 +278,7 @@ class Agent extends ChangeNotifier {
       final dir = await getApplicationSupportDirectory();
       await dir.create(recursive: true);
       if (dataDirectory == null) {
-        if (option('--observe-id') == null) {
+        if (!dependent) {
           await File('${dir.path}/ui.log.txt').writeAsString('');
         }
       }
@@ -322,7 +328,7 @@ class Agent extends ChangeNotifier {
         }
         // Observe is a dependent window. It must never resurrect a Teacher
         // after Exit or start a new room when its endpoint has disappeared.
-        if (option('--observe-id') != null) {
+        if (dependent) {
           await finishApplication();
           return;
         }
@@ -439,13 +445,12 @@ class Agent extends ChangeNotifier {
               }
               final lifecycle = v['lifecycle'];
               if (lifecycle == 'exit' ||
-                  (lifecycle == 'reconfigure' &&
-                      option('--observe-id') != null)) {
+                  (lifecycle == 'reconfigure' && dependent)) {
                 unawaited(finishApplication());
               } else if (lifecycle == 'restart' || lifecycle == 'reconfigure') {
                 // Main console reconnects to the replacement. Observe leases
                 // belong to the old agent and their windows close with it.
-                if (option('--observe-id') != null) {
+                if (dependent) {
                   unawaited(finishApplication());
                 }
               }
@@ -469,7 +474,7 @@ class Agent extends ChangeNotifier {
         if (!ready.isCompleted) {
           ready.completeError(StateError('Agent disconnected'));
         }
-        if (option('--observe-id') != null && !shutdownReceived) {
+        if (dependent && !shutdownReceived) {
           unawaited(finishApplication());
         } else if (!disposed && !shutdownReceived) {
           notifyListeners();
@@ -492,7 +497,7 @@ class Agent extends ChangeNotifier {
       'type': 'hello',
       'protocol': 1,
       'token': descriptor['token'],
-      'ui_role': option('--observe-id') == null ? 'console' : 'observe',
+      'ui_role': !dependent ? 'console' : 'observe',
     });
     await ready.future.timeout(const Duration(seconds: 3));
     await log('IPC attached');
@@ -555,6 +560,79 @@ class Agent extends ChangeNotifier {
       );
     }
   }
+
+  /// Like [command] but returns the whole acknowledgement (`ok`, `error`,
+  /// `job_id`, `result`) and never throws on a refused command.
+  Future<Map<String, dynamic>> request(
+    String action, {
+    Iterable<String> selected = const [],
+    Map<String, dynamic>? input,
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    if (socket == null) {
+      return {'ok': false, 'error': 'Teacher agent is not connected.'};
+    }
+    final id = ++serial;
+    final c = Completer<Map<String, dynamic>>();
+    pending[id] = c;
+    try {
+      send({
+        'id': id,
+        'action': action,
+        'selected': selected.toList(),
+        'input': ?input,
+      });
+      return await c.future.timeout(timeout);
+    } catch (e) {
+      return {'ok': false, 'error': '$e'};
+    } finally {
+      pending.remove(id);
+    }
+  }
+
+  /// Human-readable failure of a [request] result.
+  static String failure(Map<String, dynamic> result) {
+    final detail = (result['result'] as Map?)?['error_detail'];
+    return '${detail ?? result['error'] ?? 'Operation failed'}';
+  }
+
+  /// Opens (or focuses) the two-panel file window for one Student.
+  Future<void> openFiles(Map<String, dynamic> row) async {
+    if (row['online'] != true) {
+      error = 'Student is offline';
+      notifyListeners();
+      return;
+    }
+    pendingObserveFocus = 'files:${row['id']}';
+    final result = await request('files_window', selected: ['${row['id']}']);
+    if (result['ok'] != true) {
+      pendingObserveFocus = null;
+      error = failure(result);
+      notifyListeners();
+    }
+  }
+
+  /// Opens (or focuses) the dedicated Activity window for one Student.
+  Future<void> openActivity(Map<String, dynamic> row) async {
+    if (row['online'] != true) {
+      error = 'Student is offline';
+      notifyListeners();
+      return;
+    }
+    pendingObserveFocus = 'activity:${row['id']}';
+    final result = await request('activity_window', selected: ['${row['id']}']);
+    if (result['ok'] != true) {
+      pendingObserveFocus = null;
+      error = failure(result);
+      notifyListeners();
+    }
+  }
+
+  /// File jobs reported by the Rust hub (collect / fetch / push).
+  List<Map<String, dynamic>> get fileJobs =>
+      ((state['tools'] as Map? ?? const {})['fs_jobs'] as List? ?? const [])
+          .map((e) => Map<String, dynamic>.from(e as Map))
+          .toList();
 
   Future<void> openObserve(Map<String, dynamic> row) async {
     if (row['online'] != true) {

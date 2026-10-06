@@ -48,7 +48,11 @@ class _TeacherSettingsDialogState extends State<TeacherSettingsDialog> {
   @override
   void initState() {
     super.initState();
-    downloadPort = TextEditingController(text: '80');
+    final shareNow = widget.agent.state['student_download'] as Map? ?? const {};
+    final sharedPort = Uri.tryParse('${shareNow['url'] ?? ''}')?.port;
+    downloadPort = TextEditingController(
+      text: '${sharedPort ?? widget.agent.preferences['download_port'] ?? 80}',
+    );
     maxFile = TextEditingController(
       text: '${section('tools')['max_file_mb'] ?? 300}',
     );
@@ -201,6 +205,7 @@ class _TeacherSettingsDialogState extends State<TeacherSettingsDialog> {
             });
         if (picked == null) return;
       }
+      await widget.agent.savePreferences({'download_port': number});
       await widget.agent.command('student_download_start', [], {
         if (picked != null) ...picked,
         'port': number,
@@ -558,6 +563,13 @@ class _TeacherSettingsDialogState extends State<TeacherSettingsDialog> {
           downloadPort,
           'HTTP download port',
           hint: '80: Students only enter the IP address',
+        ),
+        const Padding(
+          padding: EdgeInsets.only(bottom: 12),
+          child: Text(
+            'Takes effect when you press Share below — not Save & reconnect.',
+            style: TextStyle(fontSize: 12, color: Colors.blueGrey),
+          ),
         ),
         AnimatedBuilder(
           animation: widget.agent,

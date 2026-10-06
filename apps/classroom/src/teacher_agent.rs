@@ -29,7 +29,12 @@ use tracing::{info, warn};
 const IPC_VERSION: u32 = 1;
 const MAX_FRAME: usize = 8 * 1024 * 1024;
 const MAX_COMMAND: usize = 64 * 1024;
-const MAX_CLIENTS: usize = 4;
+const MAX_CLIENTS: usize = 6;
+const MAX_OBSERVE: usize = 3;
+const MAX_FILE_WINDOWS: usize = 2;
+const MAX_ACTIVITY_WINDOWS: usize = 2;
+const MAX_INTERNET_WINDOWS: usize = 2;
+const MAX_VSCODE_WINDOWS: usize = 2;
 
 #[derive(Clone)]
 struct Snapshot {
@@ -368,6 +373,10 @@ pub(super) fn run(
     // The persistent coordinator owns UI launches, including windows that are
     // still starting or outlive a reopened main console.
     let mut observe_windows: HashMap<String, std::process::Child> = HashMap::new();
+    let mut files_windows: HashMap<String, std::process::Child> = HashMap::new();
+    let mut activity_windows: HashMap<String, std::process::Child> = HashMap::new();
+    let mut internet_windows: Vec<std::process::Child> = Vec::new();
+    let mut vscode_windows: Vec<std::process::Child> = Vec::new();
     let mut publish_due = Instant::now();
     let mut metrics = Instant::now();
     let mut restart_requested = false;
@@ -449,6 +458,7 @@ pub(super) fn run(
                 let command = request.command;
                 let id = command.id;
                 let mut job_id: Option<String> = None;
+                let mut payload: Option<Value> = None;
                 let response = match command.action.as_str() {
                     "thumbnail_size" => command.input["width"]
                         .as_u64()
@@ -548,7 +558,7 @@ pub(super) fn run(
                                 publish_due = Instant::now();
                                 Ok(())
                             } else if let Some(console) = console {
-                                if observe_windows.len() >= MAX_CLIENTS - 1 {
+                                if observe_windows.len() >= MAX_OBSERVE {
                                     Err("Close an Observe window before opening another")
                                 } else {
                                     let mut launch = std::process::Command::new(console);
@@ -616,7 +626,7 @@ pub(super) fn run(
                         publish_due = Instant::now();
                         Ok(())
                     }
-                    "tool_message" | "tool_file" | "tool_update" => {
+                    "tool_message" | "tool_file" | "tool_update" | "tool_launch" | "tool_power" | "tool_policy" | "tool_vscode_policy" => {
                         if command.action == "tool_update"
                             && (session.is_some() || observe.is_some())
                         {
@@ -633,6 +643,35 @@ pub(super) fn run(
                             })
                             .map(|r| r.instance_id.clone())
                             .collect();
+                        // Enforcement (Internet rules, VS Code policy) needs an elevated,
+                        // up-to-date Student; apply to every computer that qualifies rather
+                        // than refusing the whole batch for one that does not, and report
+                        // exactly which were skipped and why.
+                        if command.action == "tool_policy" || command.action == "tool_vscode_policy" {
+                            let caps = tools_hub.snapshot()["capabilities"].clone();
+                            let mut skipped = Vec::new();
+                            recipients.retain(|id| {
+                                if caps[id]["guard"] == 1 {
+                                    true
+                                } else {
+                                    if let Some(row) = rows.iter().find(|r| &r.instance_id == id) {
+                                        skipped.push(json!({"name":row.hostname,"ip":row.endpoint.ip().to_string()}));
+                                    }
+                                    false
+                                }
+                            });
+                            if !skipped.is_empty() {
+                                payload = Some(json!({"skipped": skipped}));
+                            }
+                            if recipients.is_empty() && !skipped.is_empty() {
+                                let _ = request.reply.send(json!({
+                                    "type":"ack","id":id,"ok":false,
+                                    "error":"No selected computer can enforce this: all need the updated build running as administrator on Windows",
+                                    "result":payload,
+                                }));
+                                continue;
+                            }
+                        }
                         if command.action == "tool_update" && command.selected.is_empty() {
                             let package = command.input["path"].as_str().map(Path::new);
                             if let Some(m) =
@@ -651,6 +690,14 @@ pub(super) fn run(
                                 "update"
                             } else if command.action == "tool_file" {
                                 "file"
+                            } else if command.action == "tool_launch" {
+                                "launch"
+                            } else if command.action == "tool_power" {
+                                "power"
+                            } else if command.action == "tool_policy" {
+                                "policy"
+                            } else if command.action == "tool_vscode_policy" {
+                                "vscode_policy"
                             } else {
                                 "message"
                             },
@@ -690,6 +737,297 @@ pub(super) fn run(
                                 snapshot.error = Some(format!("{e:#}"));
                                 Err("Classroom job could not be updated")
                             }
+                        }
+                    }
+                    "fs_collect" | "fs_list" | "fs_result" | "fs_transfer" | "fs_cancel" | "fs_open" | "activity_request" | "activity_monitoring_set" | "vscode_list" => {
+                        let rows = roster.lock().unwrap().snapshot();
+                        let input = &command.input;
+                        let outcome: Result<Option<Value>> = (|| match command.action.as_str() {
+                            "fs_collect" => {
+                                let recipients: Vec<(String, String)> = rows
+                                    .iter()
+                                    .filter(|r| {
+                                        r.online
+                                            && (command.selected.is_empty()
+                                                || command.selected.contains(&r.instance_id))
+                                    })
+                                    .map(|r| (r.instance_id.clone(), r.hostname.clone()))
+                                    .collect();
+                                let root = super::classroom_tools::collection_root(
+                                    input["label"].as_str().unwrap_or(""),
+                                )?;
+                                job_id = Some(tools_hub.fs_collect(&recipients, input, &root)?);
+                                Ok(Some(json!({"folder":root,"students":recipients.len()})))
+                            }
+                            "fs_list" => {
+                                let hidden = input["hidden"].as_bool().unwrap_or(false);
+                                let path = input["path"].as_str().unwrap_or("");
+                                let list = if input["side"] == "student" {
+                                    let student = input["student"].as_str().unwrap_or("");
+                                    anyhow::ensure!(
+                                        rows.iter().any(|r| r.online && r.instance_id == student),
+                                        "Student is offline"
+                                    );
+                                    tools_hub.fs_list_remote(student, path, hidden)?
+                                } else {
+                                    tools_hub.fs_list_local(path, hidden)?
+                                };
+                                job_id = Some(list);
+                                Ok(None)
+                            }
+                            "fs_result" => Ok(Some(
+                                tools_hub.fs_list_result(input["id"].as_str().unwrap_or("")),
+                            )),
+                            "activity_request" => {
+                                let student = input["student"].as_str().unwrap_or("");
+                                anyhow::ensure!(
+                                    rows.iter().any(|r| r.online && r.instance_id == student),
+                                    "Student is offline"
+                                );
+                                let (queued, cached) = tools_hub.activity_view(student)?;
+                                job_id = queued;
+                                Ok(Some(json!({"cached": cached})))
+                            }
+                            "fs_transfer" => {
+                                let student = input["student"].as_str().unwrap_or("");
+                                let row = rows
+                                    .iter()
+                                    .find(|r| r.online && r.instance_id == student)
+                                    .context("Student is offline")?;
+                                let paths: Vec<String> = input["paths"]
+                                    .as_array()
+                                    .into_iter()
+                                    .flatten()
+                                    .filter_map(|p| p.as_str().map(str::to_owned))
+                                    .collect();
+                                job_id = Some(tools_hub.fs_transfer(
+                                    input["push"].as_bool().unwrap_or(false),
+                                    (&row.instance_id, &row.hostname),
+                                    &paths,
+                                    input["dest"].as_str().unwrap_or(""),
+                                )?);
+                                Ok(None)
+                            }
+                            "fs_cancel" => {
+                                tools_hub.fs_cancel(input["id"].as_str().unwrap_or(""))?;
+                                Ok(None)
+                            }
+                            "activity_monitoring_set" => {
+                                tools_hub.set_activity_monitoring(input["enabled"].as_bool().unwrap_or(false));
+                                publish_due = Instant::now();
+                                Ok(None)
+                            }
+                            "vscode_list" => {
+                                let student = input["student"].as_str().unwrap_or("");
+                                anyhow::ensure!(
+                                    rows.iter().any(|r| r.online && r.instance_id == student),
+                                    "Student is offline"
+                                );
+                                job_id = Some(tools_hub.vscode_list(student)?);
+                                Ok(None)
+                            }
+                            _ => {
+                                // Only folders a file job created or targets may be revealed.
+                                let wanted = input["path"].as_str().unwrap_or("");
+                                let known = tools_hub.snapshot()["fs_jobs"]
+                                    .as_array()
+                                    .into_iter()
+                                    .flatten()
+                                    .any(|job| {
+                                        job["dest"] == wanted
+                                            || job["targets"].as_array().into_iter().flatten().any(
+                                                |t| t["folder"] == wanted,
+                                            )
+                                    });
+                                anyhow::ensure!(known, "Unknown folder");
+                                std::process::Command::new(if cfg!(windows) {
+                                    "explorer"
+                                } else {
+                                    "open"
+                                })
+                                .arg(wanted)
+                                .spawn()?;
+                                Ok(None)
+                            }
+                        })();
+                        match outcome {
+                            Ok(value) => {
+                                payload = value;
+                                publish_due = Instant::now();
+                                Ok(())
+                            }
+                            Err(error) => {
+                                payload = Some(json!({"error_detail":format!("{error:#}")}));
+                                Err("File operation failed")
+                            }
+                        }
+                    }
+                    "internet_window" => {
+                        internet_windows.retain_mut(|child| matches!(child.try_wait(), Ok(None)));
+                        let rows = roster.lock().unwrap().snapshot();
+                        let ids: Vec<&str> = rows
+                            .iter()
+                            .filter(|r| r.online && command.selected.contains(&r.instance_id))
+                            .map(|r| r.instance_id.as_str())
+                            .collect();
+                        if ids.is_empty() {
+                            Err("Select at least one online Student")
+                        } else if internet_windows.len() >= MAX_INTERNET_WINDOWS {
+                            Err("Close an Internet access window before opening another")
+                        } else if let Some(console) = console {
+                            let audience = command.input["audience"].as_str().unwrap_or("the class");
+                            match std::process::Command::new(console)
+                                .arg("--internet-ids")
+                                .arg(ids.join(","))
+                                .arg("--internet-audience")
+                                .arg(audience)
+                                .arg("--ipc-file")
+                                .arg(path)
+                                .spawn()
+                            {
+                                Ok(child) => {
+                                    info!(students = ids.len(), pid = child.id(), "Internet access window launched");
+                                    internet_windows.push(child);
+                                    publish_due = Instant::now();
+                                    Ok(())
+                                }
+                                Err(error) => {
+                                    snapshot.error = Some(error.to_string());
+                                    Err("Could not open Internet access window")
+                                }
+                            }
+                        } else {
+                            Err("Teacher console executable unavailable")
+                        }
+                    }
+                    "vscode_window" => {
+                        vscode_windows.retain_mut(|child| matches!(child.try_wait(), Ok(None)));
+                        let rows = roster.lock().unwrap().snapshot();
+                        let ids: Vec<&str> = rows
+                            .iter()
+                            .filter(|r| r.online && command.selected.contains(&r.instance_id))
+                            .map(|r| r.instance_id.as_str())
+                            .collect();
+                        if ids.is_empty() {
+                            Err("Select at least one online Student")
+                        } else if vscode_windows.len() >= MAX_VSCODE_WINDOWS {
+                            Err("Close a VS Code control window before opening another")
+                        } else if let Some(console) = console {
+                            let audience = command.input["audience"].as_str().unwrap_or("the class");
+                            match std::process::Command::new(console)
+                                .arg("--vscode-ids")
+                                .arg(ids.join(","))
+                                .arg("--vscode-audience")
+                                .arg(audience)
+                                .arg("--ipc-file")
+                                .arg(path)
+                                .spawn()
+                            {
+                                Ok(child) => {
+                                    info!(students = ids.len(), pid = child.id(), "VS Code control window launched");
+                                    vscode_windows.push(child);
+                                    publish_due = Instant::now();
+                                    Ok(())
+                                }
+                                Err(error) => {
+                                    snapshot.error = Some(error.to_string());
+                                    Err("Could not open VS Code control window")
+                                }
+                            }
+                        } else {
+                            Err("Teacher console executable unavailable")
+                        }
+                    }
+                    "activity_window" => {
+                        activity_windows.retain(|_, child| matches!(child.try_wait(), Ok(None)));
+                        let rows = roster.lock().unwrap().snapshot();
+                        let Some(row) = rows
+                            .iter()
+                            .find(|r| r.online && command.selected.first() == Some(&r.instance_id))
+                        else {
+                            let _ = request.reply.send(json!({"type":"ack","id":id,"ok":false,"error":"Student is offline"}));
+                            continue;
+                        };
+                        if let Some(child) = activity_windows.get(&row.instance_id) {
+                            snapshot.observe_focus.0 = format!("activity:{}", row.instance_id);
+                            snapshot.observe_focus.1 += 1;
+                            snapshot.observe_focus.2 = child.id();
+                            publish_due = Instant::now();
+                            Ok(())
+                        } else if activity_windows.len() >= MAX_ACTIVITY_WINDOWS {
+                            Err("Close an Activity window before opening another")
+                        } else if let Some(console) = console {
+                            match std::process::Command::new(console)
+                                .arg("--activity-id")
+                                .arg(&row.instance_id)
+                                .arg("--activity-name")
+                                .arg(&row.hostname)
+                                .arg("--ipc-file")
+                                .arg(path)
+                                .spawn()
+                            {
+                                Ok(child) => {
+                                    snapshot.observe_focus.0 = format!("activity:{}", row.instance_id);
+                                    snapshot.observe_focus.1 += 1;
+                                    snapshot.observe_focus.2 = child.id();
+                                    publish_due = Instant::now();
+                                    info!(student_id=%row.instance_id,pid=child.id(),"Activity window launched");
+                                    activity_windows.insert(row.instance_id.clone(), child);
+                                    Ok(())
+                                }
+                                Err(error) => {
+                                    snapshot.error = Some(error.to_string());
+                                    Err("Could not open Activity window")
+                                }
+                            }
+                        } else {
+                            Err("Teacher console executable unavailable")
+                        }
+                    }
+                    "files_window" => {
+                        files_windows.retain(|_, child| matches!(child.try_wait(), Ok(None)));
+                        let rows = roster.lock().unwrap().snapshot();
+                        let Some(row) = rows
+                            .iter()
+                            .find(|r| r.online && command.selected.first() == Some(&r.instance_id))
+                        else {
+                            let _ = request.reply.send(json!({"type":"ack","id":id,"ok":false,"error":"Student is offline"}));
+                            continue;
+                        };
+                        if let Some(child) = files_windows.get(&row.instance_id) {
+                            snapshot.observe_focus.0 = format!("files:{}", row.instance_id);
+                            snapshot.observe_focus.1 += 1;
+                            snapshot.observe_focus.2 = child.id();
+                            publish_due = Instant::now();
+                            Ok(())
+                        } else if files_windows.len() >= MAX_FILE_WINDOWS {
+                            Err("Close a file window before opening another")
+                        } else if let Some(console) = console {
+                            match std::process::Command::new(console)
+                                .arg("--files-id")
+                                .arg(&row.instance_id)
+                                .arg("--files-name")
+                                .arg(&row.hostname)
+                                .arg("--ipc-file")
+                                .arg(path)
+                                .spawn()
+                            {
+                                Ok(child) => {
+                                    snapshot.observe_focus.0 = format!("files:{}", row.instance_id);
+                                    snapshot.observe_focus.1 += 1;
+                                    snapshot.observe_focus.2 = child.id();
+                                    publish_due = Instant::now();
+                                    info!(student_id=%row.instance_id,pid=child.id(),"File window launched");
+                                    files_windows.insert(row.instance_id.clone(), child);
+                                    Ok(())
+                                }
+                                Err(error) => {
+                                    snapshot.error = Some(error.to_string());
+                                    Err("Could not open file window")
+                                }
+                            }
+                        } else {
+                            Err("Teacher console executable unavailable")
                         }
                     }
                     "observe_open" => {
@@ -843,7 +1181,7 @@ pub(super) fn run(
                     _ => Err("Command unavailable in the current presentation state"),
                 };
                 let _ = request.reply.send(
-                    json!({"type":"ack","id":id,"ok":response.is_ok(),"error":response.err(),"job_id":job_id}),
+                    json!({"type":"ack","id":id,"ok":response.is_ok(),"error":response.err(),"job_id":job_id,"result":payload}),
                 );
                 if command.action != "observe_input" {
                     info!(id,action=%command.action,elapsed_ms=started.elapsed().as_secs_f64()*1000.0,"Flutter agent command processed");
@@ -874,6 +1212,11 @@ pub(super) fn run(
                     .map_or(Value::Null, super::observe_coordinator::View::state);
                 snapshot.rows = roster.lock().unwrap().snapshot();
                 snapshot.tools = tools_hub.snapshot();
+                snapshot.tools["activity_monitoring"] = json!(tools_hub.activity_monitoring());
+                let new_alerts = tools_hub.activity_alerts();
+                if !new_alerts.is_empty() {
+                    snapshot.tools["new_alerts"] = json!(new_alerts);
+                }
                 if pending_diagnostics.is_none() {
                     snapshot.diagnostics = diagnostics.snapshot();
                 }

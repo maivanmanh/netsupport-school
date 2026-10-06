@@ -684,7 +684,33 @@ mod tests {
         still.bytes[0] = 2;
         assert!(policy.observe_frame(&still, start + Duration::from_millis(1_301)));
         assert_eq!(policy.target_fps(start + Duration::from_millis(1_301)), 24);
-        assert_eq!(policy.target_fps(start + Duration::from_millis(1_800)), 5);
+        assert_eq!(policy.target_fps(start + Duration::from_millis(2_400)), 24);
+        assert_eq!(policy.target_fps(start + Duration::from_millis(2_502)), 5);
+    }
+
+    #[test]
+    fn repeated_typing_changes_keep_typing_cadence_between_sparse_samples() {
+        let start = Instant::now();
+        let mut policy = QualityController::new(&config(), start);
+        let mut still = frame(1);
+        still.width = 100;
+        still.height = 100;
+        still.row_pitch = 400;
+        still.bytes = vec![1; 100 * 100 * 4];
+        policy.observe_frame(&still, start);
+        assert_eq!(policy.target_fps(start + Duration::from_millis(1_300)), 5);
+
+        for (index, millis) in [1_301_u64, 2_200, 3_100].into_iter().enumerate() {
+            // One sampled pixel changes, matching a small text/cursor update.
+            still.bytes[0] = u8::try_from(index + 2).unwrap();
+            policy.observe_frame(&still, start + Duration::from_millis(millis));
+            assert_eq!(
+                policy.target_fps(start + Duration::from_millis(millis + 900)),
+                24,
+                "typing tier should survive a normal pause after sample {index}"
+            );
+        }
+        assert_eq!(policy.target_fps(start + Duration::from_millis(4_301)), 5);
     }
 
     #[test]

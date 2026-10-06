@@ -33,9 +33,11 @@ use platform::{infer_teacher_address, select_adapter, AdapterCandidate, Selected
 use socket2::{Domain, Protocol, Socket, Type};
 use tracing::{info, warn};
 
+mod activity;
 mod benchmark;
 mod benchmark_report;
 mod classroom_tools;
+mod clipboard_guard;
 mod compact_log;
 mod dashboard_view;
 mod desktop_tray;
@@ -62,6 +64,8 @@ mod stream_profile;
 mod student_bootstrap;
 mod student_connection_ui;
 mod student_file_ui;
+mod guard;
+mod student_lock;
 mod student_fps_badge;
 mod student_presentation;
 mod student_settings;
@@ -71,6 +75,7 @@ mod teacher_dashboard;
 mod teacher_repair;
 mod udp_ingress;
 mod udp_sender;
+mod vscode_control;
 use process_metrics::ProcessMetrics;
 use quality::{QualityController, ReceiverMediaReport};
 use student_presentation::StudentPresentation;
@@ -1592,6 +1597,7 @@ fn run_teacher_media_inner(
                 sent_packets = interval_packets,
                 send_errors = fan.send_errors,
                 send_would_block = fan.would_block,
+                send_resource_backpressure = fan.resource_backpressure,
                 send_retry_recovered = fan.retry_recovered,
                 send_abandoned_packets = fan.abandoned_packets,
                 send_retry_wait_interval_ms = (fan.retry_wait_us - previous_fanout.retry_wait_us) as f64 / 1_000.0,
@@ -1835,6 +1841,7 @@ fn run_teacher_media_inner(
         nack_cache_misses,
         send_errors = fan.send_errors,
         send_would_block = fan.would_block,
+        send_resource_backpressure = fan.resource_backpressure,
         send_retry_recovered = fan.retry_recovered,
         send_abandoned_packets = fan.abandoned_packets,
         intentionally_dropped_packets,
@@ -2088,6 +2095,7 @@ struct FanoutSnapshot {
     send_errors: u64,
     abandoned_packets: u64,
     would_block: u64,
+    resource_backpressure: u64,
     retry_recovered: u64,
     retry_wait_us: u64,
     pacing_wait_us: u64,
@@ -2103,6 +2111,7 @@ impl FanoutSnapshot {
             send_errors: load(&stats.send_errors),
             abandoned_packets: load(&stats.abandoned_packets),
             would_block: load(&stats.would_block),
+            resource_backpressure: load(&stats.resource_backpressure),
             retry_recovered: load(&stats.retry_recovered),
             retry_wait_us: load(&stats.retry_wait_us),
             pacing_wait_us: load(&stats.pacing_wait_us),

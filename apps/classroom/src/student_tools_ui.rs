@@ -139,6 +139,8 @@ pub struct StudentToolsUi {
     popup: Option<Popup>,
     message_epoch: u64,
     files: super::student_file_ui::FileProgress,
+    lock: Option<super::student_lock::Lock>,
+    lock_retry: std::time::Instant,
 }
 impl StudentToolsUi {
     pub fn new(inbox: Arc<Inbox>) -> Self {
@@ -147,9 +149,41 @@ impl StudentToolsUi {
             inbox,
             popup: None,
             files: super::student_file_ui::FileProgress::default(),
+            lock: None,
+            lock_retry: std::time::Instant::now(),
+        }
+    }
+    /// A lock the Teacher can no longer lift (silent for this long) ends itself.
+    const LOCK_FAILSAFE_MS: u64 = 60_000;
+    fn pump_lock(&mut self) {
+        let (epoch, message) = self.inbox.lock_state();
+        if message.is_some() && self.inbox.silent_ms() > Self::LOCK_FAILSAFE_MS {
+            tracing::warn!("Teacher silent too long; lifting screen lock");
+            self.inbox.set_lock(None);
+            self.lock = None;
+            return;
+        }
+        let Some(message) = message else {
+            self.lock = None;
+            return;
+        };
+        if let Some(lock) = self.lock.as_mut() {
+            if lock.epoch() != epoch {
+                lock.update(epoch, &message);
+            }
+            if lock.pump().is_err() {
+                self.lock = None;
+            }
+        } else if self.lock_retry.elapsed() >= std::time::Duration::from_secs(1) {
+            self.lock_retry = std::time::Instant::now();
+            match super::student_lock::Lock::start(epoch, &message) {
+                Ok(lock) => self.lock = Some(lock),
+                Err(error) => tracing::warn!(%error, "Could not show lock screen"),
+            }
         }
     }
     pub fn pump(&mut self) {
+        self.pump_lock();
         self.files.pump(&self.inbox);
         let epoch = self.inbox.message_epoch();
         if epoch != self.message_epoch {
@@ -564,7 +598,7 @@ fn fit_message(canvas: &Canvas, text: &str) -> (usize, Vec<String>) {
     (width, wrap(canvas, text, width - 2 * PAD))
 }
 /// Word wrap by rendered width; words longer than a line are split by character.
-fn wrap(canvas: &Canvas, text: &str, max_width: usize) -> Vec<String> {
+pub(super) fn wrap(canvas: &Canvas, text: &str, max_width: usize) -> Vec<String> {
     let mut lines = Vec::new();
     for paragraph in text.lines() {
         let mut line = String::new();

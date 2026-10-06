@@ -25,6 +25,7 @@ fs2 = "0.4"
 enigo = "0.6"
 app-core = { path = "../../crates/app-core" }
 clap.workspace = true
+libc.workspace = true
 classroom-config = { path = "../../crates/classroom-config" }
 codec-macos-vt = { path = "../../crates/codec-macos-vt" }
 codec-windows-mf = { path = "../../crates/codec-windows-mf" }
@@ -64,4 +65,5 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows = { workspace = true, features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_UI_HiDpi", "Win32_UI_Shell"] }
+windows = { workspace = true, features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_UI_HiDpi", "Win32_UI_Shell", "Win32_NetworkManagement_WindowsFilteringPlatform", "Win32_Security", "Win32_System_Rpc", "Win32_System_Threading", "Win32_UI_Accessibility", "Win32_System_Variant", "Win32_System_DataExchange"] }
+rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }

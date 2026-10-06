@@ -10,6 +10,8 @@ use std::{
 pub struct SendBudget {
     deadline: Instant,
     pub would_block: u64,
+    /// Transient kernel send-queue exhaustion, distinct from WouldBlock.
+    pub resource_backpressure: u64,
     pub recovered: u64,
     pub retry_wait: Duration,
     remaining_retry_budget: Duration,
@@ -20,6 +22,7 @@ impl SendBudget {
         Self {
             deadline: now + duration,
             would_block: 0,
+            resource_backpressure: 0,
             recovered: 0,
             retry_wait: Duration::ZERO,
             remaining_retry_budget: duration.min(Duration::from_millis(2)),
@@ -42,10 +45,14 @@ impl SendBudget {
 
     fn send_with(&mut self, mut send: impl FnMut() -> io::Result<usize>) -> io::Result<usize> {
         let first = match send() {
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => error,
+            Err(error) if is_transient_backpressure(&error) => error,
             result => return result,
         };
-        self.would_block += 1;
+        if first.kind() == io::ErrorKind::WouldBlock {
+            self.would_block += 1;
+        } else {
+            self.resource_backpressure += 1;
+        }
         let started = Instant::now();
         let retry_deadline = (started + self.remaining_retry_budget).min(self.deadline);
         let result = loop {
@@ -56,7 +63,7 @@ impl SendBudget {
             // turn a sub-ms socket retry into a full missed video tick.
             thread::yield_now();
             match send() {
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                Err(error) if is_transient_backpressure(&error) => {}
                 result => break result,
             }
         };
@@ -67,6 +74,23 @@ impl SendBudget {
             self.recovered += 1;
         }
         result
+    }
+}
+
+fn is_transient_backpressure(error: &io::Error) -> bool {
+    if error.kind() == io::ErrorKind::WouldBlock {
+        return true;
+    }
+    match error.raw_os_error() {
+        #[cfg(target_os = "macos")]
+        Some(55) => true, // ENOBUFS
+        #[cfg(target_os = "freebsd")]
+        Some(55) => true, // ENOBUFS
+        #[cfg(target_os = "linux")]
+        Some(105) => true, // ENOBUFS
+        #[cfg(target_os = "windows")]
+        Some(10055) => true, // WSAENOBUFS
+        _ => false,
     }
 }
 
@@ -150,6 +174,24 @@ mod tests {
         });
         assert_eq!(result.unwrap(), 1200);
         assert_eq!((budget.would_block, budget.recovered), (1, 1));
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn recovers_macos_enobufs_without_abandoning_access_unit() {
+        let mut budget = SendBudget::new(Instant::now(), Duration::from_secs(1));
+        let mut attempts = 0;
+        let result = budget.send_with(|| {
+            attempts += 1;
+            if attempts == 1 {
+                Err(io::Error::from_raw_os_error(55))
+            } else {
+                Ok(1200)
+            }
+        });
+        assert_eq!(result.unwrap(), 1200);
+        assert_eq!(budget.would_block, 0);
+        assert_eq!(budget.resource_backpressure, 1);
+        assert_eq!(budget.recovered, 1);
     }
     #[test]
     fn exhausted_budget_is_shared_and_permanent_errors_are_not_retried() {

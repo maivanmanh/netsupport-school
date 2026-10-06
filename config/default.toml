@@ -51,7 +51,10 @@ adaptive_idle_after_ms = 1200
 adaptive_typing_fps = 24
 adaptive_small_change_percent = 0.005
 adaptive_large_change_percent = 0.3
-adaptive_small_hold_ms = 400
+# Keep the typing cadence through normal pauses between characters/keystrokes.
+# A sub-second hold made the target FPS oscillate between typing and idle on
+# sparse screen-capture samples, producing visibly uneven delivery.
+adaptive_small_hold_ms = 1200
 adaptive_pressure_encode_ms = 28
 adaptive_pressure_cpu_percent = 80.0
 adaptive_receiver_loss_percent = 2.0

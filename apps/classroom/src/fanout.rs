@@ -53,6 +53,7 @@ pub struct FanoutStats {
     pub send_errors: AtomicU64,
     pub abandoned_packets: AtomicU64,
     pub would_block: AtomicU64,
+    pub resource_backpressure: AtomicU64,
     pub retry_recovered: AtomicU64,
     pub retry_wait_us: AtomicU64,
     pub pacing_wait_us: AtomicU64,
@@ -275,6 +276,9 @@ impl Worker {
         stats
             .would_block
             .fetch_add(budget.would_block, Ordering::Relaxed);
+        stats
+            .resource_backpressure
+            .fetch_add(budget.resource_backpressure, Ordering::Relaxed);
         stats
             .retry_recovered
             .fetch_add(budget.recovered, Ordering::Relaxed);

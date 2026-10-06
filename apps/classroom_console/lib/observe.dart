@@ -12,6 +12,7 @@ import 'agent.dart';
 import 'observe_stats.dart';
 import 'classroom_tools_ui.dart';
 import 'file_transfer.dart';
+
 import 'package:desktop_drop/desktop_drop.dart';
 
 /// An independent native desktop window/process; never modal to the console.
@@ -1315,6 +1316,41 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                             size: 20,
                           ),
                           onPressed: toggleFullScreen,
+                        ),
+                        IconButton(
+                          style: IconButton.styleFrom(
+                            minimumSize: const Size(32, 32),
+                            padding: const EdgeInsets.all(4),
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
+                          tooltip: 'Browse and collect files',
+                          icon: const Icon(
+                            Icons.folder_copy_outlined,
+                            size: 19,
+                          ),
+                          onPressed: () {
+                            widget.agent.request(
+                              'files_window',
+                              selected: [widget.studentId],
+                            );
+                            revealChrome();
+                          },
+                        ),
+                        IconButton(
+                          style: IconButton.styleFrom(
+                            minimumSize: const Size(32, 32),
+                            padding: const EdgeInsets.all(4),
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
+                          tooltip: 'Open windows, browser tabs and downloads',
+                          icon: const Icon(Icons.visibility_outlined, size: 19),
+                          onPressed: () {
+                            widget.agent.request(
+                              'activity_window',
+                              selected: [widget.studentId],
+                            );
+                            revealChrome();
+                          },
                         ),
                         IconButton(
                           style: IconButton.styleFrom(

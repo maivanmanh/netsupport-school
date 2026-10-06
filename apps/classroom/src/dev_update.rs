@@ -137,7 +137,7 @@ pub fn capabilities() -> serde_json::Value {
                     .and_then(|p| hash(&p).ok())
                     .is_some_and(|h| r["sha256"] == h)
         });
-    serde_json::json!({"dev_update":1,"connection_popup":1,"os":std::env::consts::OS,"arch":std::env::consts::ARCH,
+    serde_json::json!({"dev_update":1,"connection_popup":1,"fs":1,"launch":1,"power":1,"os":std::env::consts::OS,"arch":std::env::consts::ARCH,
         "build":env!("CLASSROOM_BUILD_ID"),"pid":std::process::id(),"last_update":receipt})
 }
 pub fn connected() {

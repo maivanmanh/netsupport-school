@@ -10,6 +10,13 @@ import 'classroom_tools_ui.dart';
 import 'settings.dart';
 import 'file_transfer.dart';
 import 'student_file_drop.dart';
+import 'file_collection.dart';
+import 'launch_apps.dart';
+import 'power_controls.dart';
+import 'internet_access.dart';
+import 'activity_window.dart';
+import 'files_window.dart';
+import 'vscode_access.dart';
 
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -40,9 +47,18 @@ Future<void> main(List<String> args) async {
     },
   );
   final observeId = agent.option('--observe-id');
+  final filesId = agent.option('--files-id');
+  final activityId = agent.option('--activity-id');
+  final internetIds = agent.option('--internet-ids');
+  final vscodeIds = agent.option('--vscode-ids');
   const lifecycle = MethodChannel('classroom/lifecycle');
   lifecycle.setMethodCallHandler((call) async {
-    if (call.method == 'reopenConsole' && observeId != null) {
+    if (call.method == 'reopenConsole' &&
+        (observeId != null ||
+            filesId != null ||
+            activityId != null ||
+            internetIds != null ||
+            vscodeIds != null)) {
       await agent.command('show_console');
     }
   });
@@ -60,41 +76,87 @@ Future<void> main(List<String> args) async {
       // Native maximize below is a usable fallback if monitor discovery fails.
     }
   }
+  final theme = ThemeData(
+    useMaterial3: true,
+    fontFamily: 'ClassroomSystem',
+    colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xff156b79)),
+    visualDensity: VisualDensity.compact,
+  );
+  final Widget home;
+  final Size windowSize, minimumSize;
+  final String title;
+  if (filesId != null) {
+    final name = agent.option('--files-name') ?? 'Student';
+    home = FilesWindow(agent: agent, studentId: filesId, name: name);
+    windowSize = const Size(1180, 720);
+    minimumSize = const Size(820, 520);
+    title = 'Files · $name';
+  } else if (activityId != null) {
+    final name = agent.option('--activity-name') ?? 'Student';
+    home = ActivityWindow(
+      agent: agent,
+      studentId: activityId,
+      studentName: name,
+    );
+    windowSize = const Size(1080, 760);
+    minimumSize = const Size(760, 560);
+    title = 'Activity · $name';
+  } else if (internetIds != null) {
+    final audience = agent.option('--internet-audience') ?? 'the class';
+    home = InternetWindow(
+      agent: agent,
+      studentIds: internetIds.split(',').where((s) => s.isNotEmpty).toList(),
+      audience: audience,
+    );
+    windowSize = const Size(980, 660);
+    minimumSize = const Size(860, 560);
+    title = 'Internet access · $audience';
+  } else if (vscodeIds != null) {
+    final audience = agent.option('--vscode-audience') ?? 'the class';
+    home = VsCodeWindow(
+      agent: agent,
+      studentIds: vscodeIds.split(',').where((s) => s.isNotEmpty).toList(),
+      audience: audience,
+    );
+    windowSize = const Size(1020, 720);
+    minimumSize = const Size(860, 560);
+    title = 'VS Code extensions · $audience';
+  } else if (observeId != null) {
+    final name = agent.option('--observe-name') ?? 'Student';
+    home = ObserveWindow(agent: agent, studentId: observeId, name: name);
+    windowSize = observeBounds?.size ?? const Size(1280, 800);
+    minimumSize = Size(
+      (observeBounds?.width ?? 800).clamp(0, 800),
+      (observeBounds?.height ?? 600).clamp(0, 600),
+    );
+    title = 'Observe · $name';
+  } else {
+    home = ClassroomApp(agent: agent);
+    windowSize = const Size(1280, 820);
+    minimumSize = const Size(740, 520);
+    title = 'Classroom · Teacher console';
+  }
+  final dependent =
+      filesId != null ||
+      activityId != null ||
+      internetIds != null ||
+      vscodeIds != null ||
+      observeId != null;
   runApp(
-    observeId == null
-        ? ClassroomApp(agent: agent)
-        : MaterialApp(
+    dependent
+        ? MaterialApp(
             debugShowCheckedModeBanner: false,
-            theme: ThemeData(
-              useMaterial3: true,
-              fontFamily: 'ClassroomSystem',
-              colorScheme: ColorScheme.fromSeed(
-                seedColor: const Color(0xff156b79),
-              ),
-              visualDensity: VisualDensity.compact,
-            ),
-            home: ObserveWindow(
-              agent: agent,
-              studentId: observeId,
-              name: agent.option('--observe-name') ?? 'Student',
-            ),
-          ),
+            theme: theme,
+            home: home,
+          )
+        : home,
   );
   await WidgetsBinding.instance.waitUntilFirstFrameRasterized;
   await windowManager.waitUntilReadyToShow(
     WindowOptions(
-      size: observeId == null
-          ? const Size(1280, 820)
-          : observeBounds?.size ?? const Size(1280, 800),
-      minimumSize: observeId == null
-          ? const Size(740, 520)
-          : Size(
-              (observeBounds?.width ?? 800).clamp(0, 800),
-              (observeBounds?.height ?? 600).clamp(0, 600),
-            ),
-      title: observeId == null
-          ? 'Classroom · Teacher console'
-          : 'Observe · ${agent.option('--observe-name') ?? 'Student'}',
+      size: windowSize,
+      minimumSize: minimumSize,
+      title: title,
       backgroundColor: Color(0xfff3f5f9),
     ),
     () async {
@@ -172,6 +234,111 @@ class _ConsoleState extends State<Console> with WindowListener {
     final ids = targets.map((r) => r['id'] as String).toList();
     if (ids.any((id) => !ready.contains(id))) return const [];
     return ids.where(ready.contains).toList();
+  }
+
+  Set<String> get lockedIds => {
+    for (final id
+        in ((agent.state['tools'] as Map? ?? const {})['locked'] as List? ??
+            const []))
+      '$id',
+  };
+
+  Set<String> get clipboardBlockedIds => {
+    for (final id
+        in ((agent.state['tools'] as Map? ?? const {})['clipboard_blocked']
+                as List? ??
+            const []))
+      '$id',
+  };
+
+  bool get activityMonitoringOn =>
+      (agent.state['tools'] as Map? ?? const {})['activity_monitoring'] == true;
+
+  Future<void> toggleActivityMonitoring() => agent.request(
+    'activity_monitoring_set',
+    input: {'enabled': !activityMonitoringOn},
+  );
+
+  Future<void> internetAccess() {
+    final ids = toolRecipients;
+    if (ids.isEmpty) return Future.value();
+    final audience = selectionMode && selected.isNotEmpty
+        ? '${ids.length} selected computers'
+        : 'the class (${ids.length} online)';
+    return agent.request(
+      'internet_window',
+      selected: ids,
+      input: {'audience': audience},
+    );
+  }
+
+  Future<void> vscodeAccess() {
+    final ids = toolRecipients;
+    if (ids.isEmpty) return Future.value();
+    final audience = selectionMode && selected.isNotEmpty
+        ? '${ids.length} selected computers'
+        : 'the class (${ids.length} online)';
+    return agent.request(
+      'vscode_window',
+      selected: ids,
+      input: {'audience': audience},
+    );
+  }
+
+  Future<void> powerAction(String op) {
+    final ids = toolRecipients;
+    return runPower(
+      context,
+      agent,
+      op: op,
+      ids: ids,
+      audience: selectionMode && selected.isNotEmpty
+          ? '${ids.length} selected computers'
+          : 'the class (${ids.length} online)',
+    );
+  }
+
+  Future<void> launchApps() {
+    final ids = toolRecipients;
+    if (ids.isEmpty) return Future.value();
+    return showLaunchDialog(
+      context,
+      agent,
+      studentIds: ids,
+      audience: selectionMode && selected.isNotEmpty
+          ? '${ids.length} selected students'
+          : 'the class (${ids.length} online)',
+    );
+  }
+
+  Future<void> collectFiles() {
+    final ids = toolRecipients;
+    if (ids.isEmpty) return Future.value();
+    return showCollectDialog(
+      context,
+      agent,
+      studentIds: ids,
+      audience: selectionMode && selected.isNotEmpty
+          ? '${ids.length} selected students'
+          : 'the class (${ids.length} online)',
+    );
+  }
+
+  Future<void> collectMenu(Map<String, dynamic> row, Offset at) async {
+    if (row['online'] != true) return;
+    final choice = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(at.dx, at.dy, at.dx, at.dy),
+      items: const [
+        PopupMenuItem(value: 'files', child: Text('Collect files…')),
+        PopupMenuItem(value: 'observe', child: Text('Observe screen')),
+      ],
+    );
+    if (choice == 'files') {
+      await agent.openFiles(row);
+    } else if (choice == 'observe') {
+      await inspect(row);
+    }
   }
 
   Future<void> sendClassMessage() async {
@@ -561,6 +728,158 @@ class _ConsoleState extends State<Console> with WindowListener {
                                 : null,
                             icon: const Icon(Icons.attach_file, size: 18),
                           ),
+                          IconButton(
+                            tooltip: selectionMode && onlineSelected.isNotEmpty
+                                ? 'Launch an app on selected students'
+                                : 'Launch an app on the class',
+                            visualDensity: VisualDensity.compact,
+                            onPressed: !agent.commandBusy && canUseTools
+                                ? launchApps
+                                : null,
+                            icon: const Icon(
+                              Icons.rocket_launch_outlined,
+                              size: 18,
+                            ),
+                          ),
+                          AnimatedBuilder(
+                            animation: agent,
+                            builder: (context, _) => IconButton(
+                              tooltip: activityMonitoringOn
+                                  ? 'Activity monitoring is on — Students collect open windows, browser tabs and downloads in the background. Tap to turn off.'
+                                  : 'Activity monitoring is off — Students are not collecting this. Tap to turn on for the whole class.',
+                              visualDensity: VisualDensity.compact,
+                              isSelected: activityMonitoringOn,
+                              onPressed: !agent.commandBusy
+                                  ? toggleActivityMonitoring
+                                  : null,
+                              icon: const Icon(
+                                Icons.visibility_outlined,
+                                size: 18,
+                              ),
+                              selectedIcon: const Icon(
+                                Icons.visibility,
+                                size: 18,
+                                color: Color(0xff156b79),
+                              ),
+                            ),
+                          ),
+                          AnimatedBuilder(
+                            animation: agent,
+                            builder: (context, _) => IconButton(
+                              tooltip: 'Internet access',
+                              visualDensity: VisualDensity.compact,
+                              onPressed: !agent.commandBusy && canUseTools
+                                  ? internetAccess
+                                  : null,
+                              icon: Badge(
+                                isLabelVisible: restrictedStudents(
+                                  agent,
+                                ).isNotEmpty,
+                                label: Text(
+                                  '${restrictedStudents(agent).length}',
+                                ),
+                                child: const Icon(
+                                  Icons.public_off_outlined,
+                                  size: 18,
+                                ),
+                              ),
+                            ),
+                          ),
+                          AnimatedBuilder(
+                            animation: agent,
+                            builder: (context, _) => IconButton(
+                              tooltip: 'VS Code extensions',
+                              visualDensity: VisualDensity.compact,
+                              onPressed: !agent.commandBusy && canUseTools
+                                  ? vscodeAccess
+                                  : null,
+                              icon: Badge(
+                                isLabelVisible: vscodeBlockedStudents(
+                                  agent,
+                                ).isNotEmpty,
+                                label: Text(
+                                  '${vscodeBlockedStudents(agent).length}',
+                                ),
+                                child: const Icon(
+                                  Icons.extension_outlined,
+                                  size: 18,
+                                ),
+                              ),
+                            ),
+                          ),
+                          AnimatedBuilder(
+                            animation: agent,
+                            builder: (context, _) => PopupMenuButton<String>(
+                              tooltip: 'Lock, log out, restart or shut down',
+                              enabled: !agent.commandBusy && canUseTools,
+                              padding: EdgeInsets.zero,
+                              icon: Badge(
+                                isLabelVisible:
+                                    lockedIds.isNotEmpty ||
+                                    clipboardBlockedIds.isNotEmpty,
+                                label: Text(
+                                  '${lockedIds.length + clipboardBlockedIds.length}',
+                                ),
+                                child: const Icon(
+                                  Icons.power_settings_new,
+                                  size: 18,
+                                ),
+                              ),
+                              onSelected: powerAction,
+                              itemBuilder: (_) => powerMenuItems(
+                                anyLocked: lockedIds.isNotEmpty,
+                                anyClipboardBlocked:
+                                    clipboardBlockedIds.isNotEmpty,
+                              ),
+                            ),
+                          ),
+                          AnimatedBuilder(
+                            animation: agent,
+                            builder: (context, _) => PopupMenuButton<String>(
+                              tooltip:
+                                  selectionMode && onlineSelected.isNotEmpty
+                                  ? 'Collect files from selected students'
+                                  : 'Collect files from the class',
+                              enabled: !agent.commandBusy && canUseTools,
+                              padding: EdgeInsets.zero,
+                              icon: Badge(
+                                isLabelVisible: agent.fileJobs.any(
+                                  (j) =>
+                                      j['kind'] == 'collect' &&
+                                      (j['targets'] as List).any(
+                                        (t) => jobTargetActive(
+                                          Map<String, dynamic>.from(t as Map),
+                                        ),
+                                      ),
+                                ),
+                                smallSize: 8,
+                                child: const Icon(
+                                  Icons.download_for_offline_outlined,
+                                  size: 18,
+                                ),
+                              ),
+                              onSelected: (action) {
+                                if (action == 'new') {
+                                  collectFiles();
+                                } else {
+                                  showCollectProgress(context, agent);
+                                }
+                              },
+                              itemBuilder: (_) => [
+                                const PopupMenuItem(
+                                  value: 'new',
+                                  child: Text('Collect files…'),
+                                ),
+                                PopupMenuItem(
+                                  value: 'progress',
+                                  enabled: agent.fileJobs.any(
+                                    (j) => j['kind'] == 'collect',
+                                  ),
+                                  child: const Text('Collection progress'),
+                                ),
+                              ],
+                            ),
+                          ),
                           AnimatedBuilder(
                             animation: toolActivity,
                             builder: (context, _) => IconButton(
@@ -577,6 +896,26 @@ class _ConsoleState extends State<Console> with WindowListener {
                                   Icons.forum_outlined,
                                   size: 18,
                                 ),
+                              ),
+                            ),
+                          ),
+                          AnimatedBuilder(
+                            animation: toolActivity,
+                            builder: (context, _) => IconButton(
+                              visualDensity: VisualDensity.compact,
+                              tooltip: toolActivity.disconnects.isEmpty
+                                  ? 'Disconnect alerts'
+                                  : '${toolActivity.disconnects.length} disconnect alert${toolActivity.disconnects.length == 1 ? '' : 's'}',
+                              onPressed: () =>
+                                  showDisconnectsDialog(context, toolActivity),
+                              icon: Badge(
+                                isLabelVisible:
+                                    toolActivity.unreadDisconnects > 0,
+                                backgroundColor: const Color(0xffb83b40),
+                                label: Text(
+                                  '${toolActivity.unreadDisconnects}',
+                                ),
+                                child: const Icon(Icons.link_off, size: 18),
                               ),
                             ),
                           ),
@@ -984,6 +1323,44 @@ class _ConsoleState extends State<Console> with WindowListener {
   }
 
   Widget connectionDot(Map<String, dynamic> r) {
+    final dot = _statusDot(r);
+    final internet = restrictedStudents(agent)['${r['id']}'];
+    final locked = lockedIds.contains(r['id']);
+    final clipboardBlocked = clipboardBlockedIds.contains(r['id']);
+    if (!locked && !clipboardBlocked && internet == null) return dot;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (internet != null)
+          Tooltip(
+            message: 'Internet: ${modeLabel(internet)}',
+            child: const Icon(
+              Icons.public_off,
+              size: 15,
+              color: Color(0xffb83b40),
+            ),
+          ),
+        if (locked)
+          const Tooltip(
+            message: 'Screen locked',
+            child: Icon(Icons.lock, size: 15, color: Color(0xffdb8a22)),
+          ),
+        if (clipboardBlocked)
+          const Tooltip(
+            message: 'Clipboard blocked',
+            child: Icon(
+              Icons.content_paste_off,
+              size: 15,
+              color: Color(0xffdb8a22),
+            ),
+          ),
+        const SizedBox(width: 4),
+        dot,
+      ],
+    );
+  }
+
+  Widget _statusDot(Map<String, dynamic> r) {
     final Color color;
     if (r['online'] != true) {
       color = agent.seenOnlineIds.contains(r['id'])
@@ -1057,6 +1434,7 @@ class _ConsoleState extends State<Console> with WindowListener {
       borderRadius: BorderRadius.circular(6),
       child: InkWell(
         onTap: () => selectionMode ? toggle(id) : inspect(r),
+        onSecondaryTapDown: (d) => collectMenu(r, d.globalPosition),
         borderRadius: BorderRadius.circular(6),
         child: SizedBox(
           height: 48,
@@ -1154,6 +1532,16 @@ class _ConsoleState extends State<Console> with WindowListener {
           ),
         ),
         IconButton(
+          tooltip: 'Browse and collect files',
+          icon: const Icon(Icons.folder_copy_outlined, size: 17),
+          onPressed: r['online'] == true ? () => agent.openFiles(r) : null,
+        ),
+        IconButton(
+          tooltip: 'Open windows, browser tabs and downloads',
+          icon: const Icon(Icons.visibility_outlined, size: 17),
+          onPressed: r['online'] == true ? () => agent.openActivity(r) : null,
+        ),
+        IconButton(
           tooltip: 'Inspect screen',
           icon: const Icon(Icons.open_in_full, size: 17),
           onPressed: () => inspect(r),
@@ -1173,6 +1561,7 @@ class _ConsoleState extends State<Console> with WindowListener {
       child: InkWell(
         borderRadius: BorderRadius.circular(14),
         onTap: () => selectionMode ? toggle(id) : inspect(r),
+        onSecondaryTapDown: (d) => collectMenu(r, d.globalPosition),
         child: list
             ? Padding(
                 padding: const EdgeInsets.all(12),
