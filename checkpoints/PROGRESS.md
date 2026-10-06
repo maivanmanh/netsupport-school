@@ -3346,3 +3346,36 @@ Status: owner-reported Win+R local dispatch fixed and tested Windows-to-Windows.
   test directly with this opened Teacher. No prolonged LAN/performance tests.
   Exact next step: drop a file/folder onto .94, confirm destination, check existing
   transfer progress and Student Desktop. Mac Student not redeployed/tested.
+
+## 2026-10-06 — Simplify Student file/message popups and click-to-copy
+
+- Rust Student message/file windows are borderless without OS title/minimize/
+  maximize/close chrome. Match connection toast light background and narrow accent;
+  smaller spacing/file width320. Keep essential OK/Reply/input, file progress,
+  Show/collapse/Close actions and existing transfer lifecycle semantics.
+- Message placement centers outer frame on monitor work area in both axes, including
+  Reply expand/collapse (same display). Files stay bottom-right16px, now clamp small
+  work areas and show topmost without focus activation. No media-path changes.
+- Message body/background click copies full original Unicode/multiline message,
+  excluding buttons/reply editor. Show Copied2s; native clipboard unavailable/busy
+  retries via UI pump up to400ms with no sleeping. Final failure shows click-again
+  hint; logs contain no message or clipboard content. Vendor minifb exposes native
+  Win32 movable Unicode clipboard ownership and Cocoa NSPasteboard text only.
+- Rust124pass/2ignored: center geometry negative origins/small screens, copy/action
+  hit separation, existing wrapping/reply/file progress tests. Paired Teacher,
+  Mac Student and Windows x64 Student release build succeeded; packages version
+  paired-20261006-102317, Teacher target/simple-student-popup-build/Classroom Console.app.
+- Windows .94 updated/restarted through Classroom updater and confirms new version.
+  Short native test: message320×150, center_dx=0/center_dy=0, no caption/topmost;
+  file320×170 (two rows), right/bottom16, no caption/topmost. Simulated body click
+  followed by Get-Clipboard exactly matches synthetic Vietnamese/multiline text.
+  File used normal Teacher tool_file channel. Evidence target/simple-popup-native-
+  result.txt and simple-popup-deploy.txt. Temporary tasks/scripts/test Desktop
+  payloads removed, completed test message dismissed and file popup cleanup requested.
+- Initial instrumentation read a UTF-8 script as Windows ANSI, so result was missing;
+  corrected test script to UTF-8 BOM and reused displayed test message. App required
+  no fix from that instrumentation issue. Future Unicode PowerShell workers must
+  include UTF-8 BOM or explicit Get-Content -Encoding UTF8.
+- Matching Teacher opened. Mac clipboard/UI compiled/bundled, not native-tested or
+  remotely deployed in this turn (only .94 active). Exact next step: owner verifies
+  simplified popups with normal file/message actions; no prolonged media test needed.

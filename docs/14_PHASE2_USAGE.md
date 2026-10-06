@@ -306,3 +306,16 @@ progress/cancel/retry ở khu vực File transfer hiện có. Item có chỉ bá
 lại kết nối sau xác nhận và sau staging; lỗi ACK dừng batch và hiện thông báo.
 Student không cần cập nhật cho tính năng UI này. Teacher vẫn bundle cả Mac và
 Windows Student mới build theo quy tắc paired build của dự án.
+
+### Student: popup gọn và copy message (2026-10-06)
+
+Popup nhận file và message là cửa sổ Rust không viền/thanh tiêu đề hệ điều hành,
+nền sáng và accent nhỏ giống popup Connecting/Connected. File hiển thị gọn ở góc
+phải dưới, giữ progress, Show, thu gọn và Close sau khi xong. Message căn giữa
+work area theo cả hai trục, kể cả khi mở/đóng ô Reply; giữ OK/Reply và bàn phím.
+
+Click phần nội dung hoặc vùng trống phía trên các nút sẽ copy toàn bộ message gốc
+vào clipboard Unicode của Student, không chỉ các dòng đang thấy. Hiện `Copied`
+trong2s. Vùng nhập Reply và các nút không gây copy. Clipboard busy được thử lại
+trong400ms qua các UI pump (không sleep UI); nếu vẫn lỗi thì hiện nhắc click lại.
+Không ghi nội dung clipboard/message vào log. Cần cập nhật Student để dùng UI này.

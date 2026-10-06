@@ -261,6 +261,7 @@ features = [
     "libloaderapi",
     "errhandlingapi",
     "fileapi",
+    "winbase",
 ]
 
 [target.x86_64-unknown-redox.dependencies.orbclient]

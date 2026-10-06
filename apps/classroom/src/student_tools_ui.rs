@@ -10,14 +10,14 @@ use protocol::ToolPacket;
 use std::sync::{Arc, Mutex};
 
 const TITLE: &str = "Classroom · Message from teacher";
-const PAD: usize = 20;
-const HEADER: usize = 44;
+const PAD: usize = 16;
+const HEADER: usize = 32;
 const LINE: usize = 21;
 const MAX_LINES: usize = 12;
-const MIN_WIDTH: usize = 340;
-const MAX_WIDTH: usize = 560;
-const BUTTON_H: usize = 32;
-const BUTTON_W: usize = 84;
+const MIN_WIDTH: usize = 320;
+const MAX_WIDTH: usize = 520;
+const BUTTON_H: usize = 28;
+const BUTTON_W: usize = 72;
 const GAP: usize = 10;
 const REPLY_LINES: usize = 3;
 const REPLY_BOX_H: usize = REPLY_LINES * LINE + 12;
@@ -130,6 +130,9 @@ struct Popup {
     focus: Focus,
     last_draw: std::time::Instant,
     message_scroll: usize,
+    copy_pending: Option<std::time::Instant>,
+    copy_notice_until: Option<std::time::Instant>,
+    copy_failed: bool,
 }
 pub struct StudentToolsUi {
     inbox: Arc<Inbox>,
@@ -192,10 +195,14 @@ fn open_window(width: usize, height: usize) -> Result<Window> {
             visible: false,
             topmost: true,
             resize: false,
+            borderless: true,
+            title: false,
             ..Default::default()
         },
     )?;
     window.set_target_fps(0);
+    let (x, y) = centered(window.work_area(), window.outer_frame());
+    window.set_outer_origin(x, y);
     Ok(window)
 }
 impl Popup {
@@ -226,6 +233,9 @@ impl Popup {
             focus,
             last_draw: std::time::Instant::now(),
             message_scroll: 0,
+            copy_pending: None,
+            copy_notice_until: None,
+            copy_failed: false,
         };
         p.present()?;
         p.window.set_visible(true);
@@ -243,14 +253,15 @@ impl Popup {
         Ok(())
     }
     /// minifb cannot resize a fixed window, so expanding for Reply (or
-    /// collapsing on Cancel) reopens it at the same top-left position.
+    /// collapsing on Cancel) reopens it centered on the same display.
     fn set_replying(&mut self, replying: bool) -> Result<()> {
         self.replying = replying;
         self.characters.lock().unwrap().clear();
         let layout = Layout::new(self.layout.width, self.lines.len(), replying);
-        let [x, y, ..] = self.window.outer_frame();
+        let area = self.window.work_area();
         let mut window = open_window(layout.width, layout.height)?;
         window.set_input_callback(Box::new(Characters(Arc::clone(&self.characters))));
+        let (x, y) = centered(area, window.outer_frame());
         window.set_outer_origin(x, y);
         self.canvas.resize(layout.width, layout.height);
         self.layout = layout;
@@ -354,6 +365,27 @@ impl Popup {
         }
         if self.replying && click.is_some_and(|(x, y)| self.in_reply_box(x, y)) {
             self.focus = Focus::Input;
+        } else if click.is_some_and(|(x, y)| copy_hit(&self.layout, self.replying, x, y)) {
+            self.copy_pending =
+                Some(std::time::Instant::now() + std::time::Duration::from_millis(400));
+        }
+        if let Some(deadline) = self.copy_pending {
+            match self.window.copy_text(&self.message.text) {
+                Ok(()) => {
+                    self.copy_pending = None;
+                    self.copy_failed = false;
+                    self.copy_notice_until =
+                        Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
+                }
+                Err(error) if std::time::Instant::now() >= deadline => {
+                    tracing::warn!(%error, "Student message clipboard copy failed");
+                    self.copy_pending = None;
+                    self.copy_failed = true;
+                    self.copy_notice_until =
+                        Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
+                }
+                Err(_) => {} // Retry on next UI pump; never sleep/block the UI.
+            }
         }
         if self.last_draw.elapsed() >= std::time::Duration::from_millis(33) {
             self.present()?;
@@ -389,9 +421,10 @@ impl Popup {
             ..
         } = self.layout;
         self.canvas.pixels.fill(0x00f7_f9fb);
-        self.canvas.fill_rect([0, 0, width, HEADER], 0x0017_3747);
         self.canvas
-            .text(PAD, 15, "Message from your teacher", 0x00ff_ffff, 1);
+            .fill_rect([0, 0, 4, self.layout.height], 0x000d_7785);
+        self.canvas
+            .text(PAD, 9, "Message from teacher", 0x0065_7583, 1);
         let top = HEADER + 16;
         for (i, line) in self
             .lines
@@ -449,6 +482,22 @@ impl Popup {
                     .text(PAD + 10, box_top + 6 + i * LINE, &line, 0x0022_3342, 1);
             }
         }
+        if !self.replying {
+            let notice = if self
+                .copy_notice_until
+                .is_some_and(|t| std::time::Instant::now() < t)
+            {
+                if self.copy_failed {
+                    "Click again to copy"
+                } else {
+                    "Copied"
+                }
+            } else {
+                "Click to copy"
+            };
+            self.canvas
+                .text(PAD, self.layout.buttons_top + 7, notice, 0x0065_7583, 1);
+        }
         let can_send = !self.reply.trim().is_empty();
         for (button, area) in self.layout.buttons(self.replying, self.message.allow_reply) {
             let primary = matches!(button, Button::Ok | Button::Send);
@@ -480,6 +529,22 @@ impl Popup {
             );
         }
     }
+}
+fn centered(area: [isize; 4], frame: [isize; 4]) -> (isize, isize) {
+    (
+        area[0] + (area[2] - frame[2]).max(0) / 2,
+        area[1] + (area[3] - frame[3]).max(0) / 2,
+    )
+}
+/// Copy from body/background only; buttons and reply editor keep their actions.
+#[allow(clippy::cast_precision_loss)]
+fn copy_hit(layout: &Layout, replying: bool, x: f32, y: f32) -> bool {
+    let bottom = if replying {
+        layout.reply_top
+    } else {
+        layout.buttons_top
+    };
+    x >= 0.0 && x < layout.width as f32 && y >= 0.0 && y < bottom as f32
 }
 /// Picks the narrowest comfortable width (within bounds) and wraps to it.
 fn fit_message(canvas: &Canvas, text: &str) -> (usize, Vec<String>) {
@@ -525,6 +590,28 @@ fn wrap(canvas: &Canvas, text: &str, max_width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn message_center_and_copy_preserve_action_areas() {
+        assert_eq!(centered([0, 0, 1920, 1040], [0, 0, 320, 130]), (800, 455));
+        assert_eq!(
+            centered([-1920, 40, 1920, 1000], [0, 0, 520, 300]),
+            (-1220, 390)
+        );
+        assert_eq!(centered([10, 20, 200, 100], [0, 0, 320, 150]), (10, 20));
+        let collapsed = Layout::new(MIN_WIDTH, 3, false);
+        assert!(copy_hit(&collapsed, false, 40.0, (HEADER + 16) as f32));
+        assert!(!copy_hit(&collapsed, false, -1.0, 40.0));
+        for (_, [x, y, ..]) in collapsed.buttons(false, true) {
+            assert!(!copy_hit(&collapsed, false, (x + 2) as f32, (y + 2) as f32));
+        }
+        let reply = Layout::new(MIN_WIDTH, 3, true);
+        assert!(!copy_hit(
+            &reply,
+            true,
+            PAD as f32 + 10.0,
+            (reply.reply_top + 25) as f32
+        ));
+    }
     #[test]
     fn short_message_opens_compact_without_reply_box() {
         let canvas = Canvas::new(1, 1);

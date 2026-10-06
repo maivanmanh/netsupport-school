@@ -534,8 +534,13 @@ impl Window {
         #[cfg(any(windows, target_os = "macos"))]
         self.0.show_inactive();
     }
-    /// Notification surface: raise above ordinary windows without taking focus.
-    /// Semi-transparent diagnostic overlay: never activates or intercepts input.
+    /// Copy plain Unicode text through the OS clipboard, without a shell process.
+    pub fn copy_text(&mut self, text: &str) -> Result<()> {
+        #[cfg(any(windows, target_os = "macos"))]
+        { self.0.copy_text(text) }
+        #[cfg(not(any(windows, target_os = "macos")))]
+        { let _ = text; Err(Error::UpdateFailed("Clipboard unavailable".into())) }
+    }
     /// Clip a passive diagnostic window to an ellipse on Windows/macOS.
     pub fn set_round_overlay(&mut self) {
         #[cfg(any(target_os = "windows", target_os = "macos"))]

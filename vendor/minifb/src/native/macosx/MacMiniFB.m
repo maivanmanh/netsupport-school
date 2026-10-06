@@ -968,6 +968,18 @@ void mfb_passive_overlay(void* ptr, unsigned char alpha) {
     [window setCollectionBehavior:NSWindowCollectionBehaviorTransient | NSWindowCollectionBehaviorIgnoresCycle | NSWindowCollectionBehaviorFullScreenAuxiliary];
 }
 
+bool mfb_copy_text(const unsigned char* bytes, size_t length) {
+    @autoreleasepool {
+        NSString* text = [[NSString alloc] initWithBytes:bytes length:length encoding:NSUTF8StringEncoding];
+        if (!text) return false;
+        NSPasteboard* board = [NSPasteboard generalPasteboard];
+        [board clearContents];
+        BOOL ok = [board setString:text forType:NSPasteboardTypeString];
+        [text release];
+        return ok;
+    }
+}
+
 void mfb_round_overlay(void* ptr) {
     NSWindow* window = (NSWindow*)ptr;
     [window setOpaque:NO];

@@ -1,5 +1,5 @@
 //! Rust-only Student window for incoming files: compact, bottom-right,
-//! movable (native title bar), collapsible. It shows each file's name and
+//! borderless, collapsible. It shows each file's name and
 //! progress, cannot be closed while a transfer is active, and offers "Show"
 //! (reveal the saved file in Finder/Explorer) once a file has arrived.
 use super::{
@@ -11,10 +11,10 @@ use minifb::{MouseButton, MouseMode, Window, WindowOptions};
 use std::{path::Path, sync::Arc, time::Instant};
 
 const TITLE: &str = "Classroom · Files from teacher";
-const WIDTH: usize = 360;
-const HEADER: usize = 36;
-const ROW: usize = 56;
-const FOOTER: usize = 44;
+const WIDTH: usize = 320;
+const HEADER: usize = 30;
+const ROW: usize = 52;
+const FOOTER: usize = 36;
 const MAX_ROWS: usize = 3;
 const MARGIN: isize = 16;
 const PAD: usize = 14;
@@ -84,6 +84,8 @@ fn open(layout: Layout) -> Result<Window> {
             visible: false,
             topmost: true,
             resize: false,
+            borderless: true,
+            title: false,
             ..Default::default()
         },
     )?;
@@ -104,7 +106,7 @@ impl FileWindow {
         canvas.set_density(window.backing_scale());
         let [ax, ay, aw, ah] = window.work_area();
         let [_, _, w, h] = window.outer_frame();
-        window.set_outer_origin(ax + aw - w - MARGIN, ay + ah - h - MARGIN);
+        window.set_outer_origin(ax + (aw - w - MARGIN).max(0), ay + (ah - h - MARGIN).max(0));
         Ok(Self {
             window,
             canvas,
@@ -208,7 +210,7 @@ impl FileWindow {
                 self.canvas.pixel_height(),
             )?;
             if !self.shown {
-                self.window.show_inactive();
+                self.window.show_inactive_topmost();
                 self.shown = true;
             }
             self.last_draw = Instant::now();
@@ -223,24 +225,24 @@ impl FileWindow {
         let active: Vec<_> = transfers.iter().filter(|t| t.state.active()).collect();
         let c = &mut self.canvas;
         c.pixels.fill(0x00f7_f9fb);
-        c.fill_rect([0, 0, WIDTH, HEADER], 0x0017_3747);
+        c.fill_rect([0, 0, 4, layout.height()], 0x000d_7785);
         let title = if layout.collapsed {
             summary(transfers)
         } else {
             "Files from your teacher".to_owned()
         };
         let title = ellipsize(c, &title, WIDTH - PAD - 44);
-        c.text(PAD, 10, &title, 0x00ff_ffff, 1);
+        c.text(PAD, 7, &title, 0x0065_7583, 1);
         let collapse = layout.collapse_button();
         c.button(
             collapse,
-            0x0029_4b5e,
+            0x00e5_ebf0,
             self.hover == Some(Hit::Collapse),
             false,
         );
         let glyph = if layout.collapsed { "+" } else { "–" };
         let gw = c.text_width(glyph, 1);
-        c.text(collapse[0] + (26 - gw) / 2, 9, glyph, 0x00ff_ffff, 1);
+        c.text(collapse[0] + (26 - gw) / 2, 7, glyph, 0x0022_3342, 1);
         if layout.collapsed {
             return;
         }
@@ -301,7 +303,7 @@ impl FileWindow {
         }
         let close = layout.close_button();
         let footer = if !active.is_empty() {
-            "Receiving… close when done".to_owned()
+            "Receiving…".to_owned()
         } else if transfers.len() > MAX_ROWS {
             format!("+ {} earlier", transfers.len() - MAX_ROWS)
         } else {

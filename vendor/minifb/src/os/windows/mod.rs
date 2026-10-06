@@ -962,6 +962,35 @@ impl Window {
         if visible { unsafe {winuser::SetForegroundWindow(self.hwnd);} }
     }
     // Keep notification painting out of the foreground/key-focus path.
+    pub fn copy_text(&mut self, text: &str) -> Result<()> {
+        use winapi::um::winbase;
+        let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+        // SAFETY: owned HWND on UI thread; movable memory remains ours until
+        // SetClipboardData succeeds, then the OS owns it. Always close clipboard.
+        unsafe {
+            let memory = winbase::GlobalAlloc(winbase::GMEM_MOVEABLE, wide.len() * 2);
+            if memory.is_null() { return Err(Error::UpdateFailed("Clipboard allocation failed".into())); }
+            let data = winbase::GlobalLock(memory);
+            if data.is_null() {
+                winbase::GlobalFree(memory);
+                return Err(Error::UpdateFailed("Clipboard memory unavailable".into()));
+            }
+            std::ptr::copy_nonoverlapping(wide.as_ptr(), data as *mut u16, wide.len());
+            winbase::GlobalUnlock(memory);
+            if winuser::OpenClipboard(self.hwnd) == 0 {
+                winbase::GlobalFree(memory);
+                return Err(Error::UpdateFailed("Clipboard busy".into()));
+            }
+            let ok = winuser::EmptyClipboard() != 0 &&
+                !winuser::SetClipboardData(winuser::CF_UNICODETEXT, memory as _).is_null();
+            winuser::CloseClipboard();
+            if !ok {
+                winbase::GlobalFree(memory);
+                return Err(Error::UpdateFailed("Could not copy message".into()));
+            }
+        }
+        Ok(())
+    }
     pub fn set_round_overlay(&mut self) {
         // SAFETY: owned HWND; Windows owns the region on success, otherwise release it.
         unsafe {
