@@ -148,3 +148,9 @@ Evidence cục bộ: `target/dev-update-tests/final-raw-mac/REPORT.json`,
 `target/dev-update-tests/final-bundle-mac/REPORT.json` và
 `target/dev-update-tests/windows-fixed-two-updates/REPORT.json` cùng ZIP diagnostics.
 Các file runtime này bị ignore; báo cáo bền vững nằm trong checkpoint.
+
+## Bootstrap browser — 06-10-2026
+
+Lần cài đầu có thể tải ZIP từ Teacher qua Chrome, giải nén và double-click, không
+cần SSH. IP/port Teacher có sẵn trong package. Các lượt update/log sau đó vẫn đi
+qua Classroom như trên. Xem [hướng dẫn bootstrap LAN](20_LAN_STUDENT_BOOTSTRAP.md).

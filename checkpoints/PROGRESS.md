@@ -3142,3 +3142,34 @@ Status: owner-reported Win+R local dispatch fixed and tested Windows-to-Windows.
   Exact next step: owner manually checks final Mac UI. When Windows Teacher is
   available, build/deploy final UI gutter correction and smoke actual click/drop;
   remove temporary Observe instrumentation tasks then. No new performance claims.
+
+## 2026-10-06 — LAN Student bootstrap and connection diagnostics
+
+- Owner approved Teacher HTTP ZIP download at `/`, unzip/double-click Student,
+  room configuration included; connection popup controlled by Teacher; Windows
+  Student tray must not offer ordinary quit. This is initial dev lab setup, not
+  a web application/media rewrite or privileged process protection.
+- Added student_bootstrap.rs and student_connection_ui.rs; integrated startup,
+  tools capability/preference, tray, Teacher snapshot/commands, Flutter Settings,
+  config and Mac/Windows bundle scripts. Docs20 and decision log describe limits.
+- Verified Rust117 pass/2ignored (final targeted ZIP/HTTP2 pass), Flutter27 pass,
+  analyze clean, Rust/Mac bundle/Windows Student x64 release builds. Fixed small
+  desktop sidebar test scrolling. Restored unrelated SDK pubspec.lock entries.
+- Actual local IP206. `.94` Student updated through old Classroom agent (no SSH
+  exe copy), receipt complete; then HTTP-downloaded ZIP independently extracted
+  and opened without args in user desktop. Connected to206:47800, native popup
+  auto-hidden ~3.03s after room-ready. Teacher live toggle state and Student received
+  true observed; rapid off/on may coalesce, separate native-off visibility unmeasured.
+  Collected1/1 Student diagnostics via Classroom,0missing. No prolonged media tests.
+- Port80 bind denied on this Mac;8080 works without changing OS policies. Final
+  running Mac bundle target/student-bootstrap-build/Classroom Console.app, HTTP
+  http://192.168.50.206:8080/. Student path on .94:
+  C:/Users/mvmanh/Classroom-browser-bootstrap-20261006/ClassroomStudent.exe.
+  Native measurement task removed, apps remain running for owner. Preserve v1.
+- Evidence/limitations: diagnostics/2026-10-06-lan-student-bootstrap.md and ignored
+  target/bootstrap-tests/REPORT.json + Classroom-diagnostics.zip. No physical x64,
+  Chrome click or40-PC acceptance claim. Windows Teacher Flutter UI build deferred.
+- Exact next step: owner uses Settings→Student setup/browser ZIP when adding a lab
+  Student. Save Teacher settings to retain popup preference across restart; update
+  and diagnostics afterwards use existing Classroom TCP/IPC. Production protected
+  Student service and port80 privileged setup remain separate work.

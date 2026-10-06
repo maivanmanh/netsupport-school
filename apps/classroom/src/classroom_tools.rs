@@ -217,7 +217,15 @@ struct State {
     capabilities: HashMap<String, Value>,
 }
 #[derive(Default)]
-pub struct Hub(Mutex<State>);
+pub struct Hub(Mutex<State>, AtomicBool);
+impl Hub {
+    pub fn set_connection_popup(&self, enabled: bool) {
+        self.1.store(enabled, Ordering::Release);
+    }
+    pub fn connection_popup(&self) -> bool {
+        self.1.load(Ordering::Acquire)
+    }
+}
 impl Hub {
     pub fn request_diagnostics(&self, student: &str, id: &str, token: &str) -> Result<()> {
         let mut state = self.0.lock().unwrap();
@@ -246,7 +254,7 @@ impl Hub {
                 }
             }
         }
-        json!({"capabilities":s.capabilities,"ready":s.peers.keys().collect::<Vec<_>>(),"jobs":s.jobs.iter().map(|j|json!({"id":j.packet.id,"kind":j.packet.action,"name":j.packet.name,"size":j.packet.size,"text":j.packet.text.chars().take(240).collect::<String>(),"targets":j.targets.iter().map(|(id,t)|json!({"id":id,"status":t.status,"done":t.done,"reply":t.reply,"error":t.error})).collect::<Vec<_>>()})).collect::<Vec<_>>()})
+        json!({"connection_popup":self.connection_popup(),"capabilities":s.capabilities,"ready":s.peers.keys().collect::<Vec<_>>(),"jobs":s.jobs.iter().map(|j|json!({"id":j.packet.id,"kind":j.packet.action,"name":j.packet.name,"size":j.packet.size,"text":j.packet.text.chars().take(240).collect::<String>(),"targets":j.targets.iter().map(|(id,t)|json!({"id":id,"status":t.status,"done":t.done,"reply":t.reply,"error":t.error})).collect::<Vec<_>>()})).collect::<Vec<_>>()})
     }
     /// Hashes a staged file off the caller's thread, then offers it to every
     /// recipient that has not been cancelled meanwhile. The hash lets Students
@@ -788,10 +796,14 @@ fn serve(
         let g = st.generation;
         st.peers.insert(hello.student.clone(), g);
         if let Some(c) = &capability {
-            st.capabilities.insert(hello.student.clone(), json!({"dev_update":c["dev_update"],"os":c["os"],"arch":c["arch"],"build":c["build"],"pid":c["pid"]}));
+            st.capabilities.insert(hello.student.clone(), json!({"dev_update":c["dev_update"],"connection_popup":c["connection_popup"],"os":c["os"],"arch":c["arch"],"build":c["build"],"pid":c["pid"]}));
         }
         g
     };
+    let popup_supported = capability
+        .as_ref()
+        .is_some_and(|c| c["connection_popup"] == 1);
+    let mut last_popup = None;
     let confirmed = capability
         .as_ref()
         .is_some_and(|c| hub.confirm_update(&hello.student, c));
@@ -812,6 +824,14 @@ fn serve(
                 send(s, &packet("ok"))?;
             } else {
                 anyhow::ensure!(p.action == "poll", "Invalid tools action");
+                let popup = hub.connection_popup();
+                if popup_supported && last_popup != Some(popup) {
+                    let mut preference = packet("connection_status");
+                    preference.status = if popup { "on" } else { "off" }.into();
+                    send(s, &preference)?;
+                    last_popup = Some(popup);
+                    continue;
+                }
                 let next = hub
                     .0
                     .lock()
@@ -924,6 +944,8 @@ pub struct Inbox {
     events: Mutex<VecDeque<ToolPacket>>,
     transfers: Mutex<VecDeque<Transfer>>,
     pub update_exit: AtomicBool,
+    pub connection_popup: AtomicBool,
+    connection_popup_path: Mutex<Option<PathBuf>>,
 }
 /// Student-side view of one incoming file, for the local progress window.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -950,6 +972,27 @@ pub struct Transfer {
 }
 const MAX_TRANSFERS: usize = 32;
 impl Inbox {
+    pub fn initialize_connection_popup(&self, profile: &Path, default: bool) {
+        let path = profile.with_file_name("connection-popup.txt");
+        let enabled = fs::read_to_string(&path).map_or(default, |s| s.trim() == "on");
+        self.connection_popup.store(enabled, Ordering::Release);
+        *self.connection_popup_path.lock().unwrap() = Some(path);
+    }
+    fn set_connection_popup(&self, enabled: bool) {
+        self.connection_popup.store(enabled, Ordering::Release);
+        info!(enabled, "Student connection popup preference received");
+        if let Some(path) = self.connection_popup_path.lock().unwrap().as_ref() {
+            let result = (|| -> std::io::Result<()> {
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(path, if enabled { "on" } else { "off" })
+            })();
+            if let Err(error) = result {
+                tracing::warn!(%error,"Connection popup preference could not be saved");
+            }
+        }
+    }
     pub fn take(&self) -> Option<ToolPacket> {
         self.messages.lock().unwrap().pop_front()
     }
@@ -1155,6 +1198,13 @@ pub fn student(
                         }
                         match p.action.as_str() {
                             "collect_diagnostics" => diagnostic_request = Some(p),
+                            "connection_status" => {
+                                anyhow::ensure!(
+                                    matches!(p.status.as_str(), "on" | "off"),
+                                    "Invalid connection preference"
+                                );
+                                inbox.set_connection_popup(p.status == "on");
+                            }
                             "message" => {
                                 let mut q = inbox.messages.lock().unwrap();
                                 if q.len() < 16 {

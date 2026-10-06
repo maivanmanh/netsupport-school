@@ -50,6 +50,7 @@ struct Snapshot {
     lifecycle: &'static str,
     settings: Value,
     diagnostics: Value,
+    student_download: Value,
 }
 #[derive(Deserialize)]
 struct Command {
@@ -125,7 +126,7 @@ fn state_json(state: &Snapshot, sent: &mut HashMap<String, u64>) -> Value {
         "recipients":state.recipients,"stream_id":state.stream_id,"error":state.error,
         "tray_available":state.tray,"ui_request":state.ui_request,"open_settings":state.open_settings,
         "students":students,"observe":state.observe,"tools":state.tools,"lifecycle":state.lifecycle,
-        "settings":state.settings,"diagnostics":state.diagnostics,
+        "settings":state.settings,"diagnostics":state.diagnostics,"student_download":state.student_download,
         "observe_focus":state.observe_focus})
 }
 async fn client(
@@ -238,6 +239,7 @@ pub(super) fn run(
         Arc::clone(&roster),
     ));
     let tools_hub = Arc::new(super::classroom_tools::Hub::default());
+    tools_hub.set_connection_popup(config.tools.connection_popup);
     let mut diagnostics = super::diagnostics::Collector::new(config, parent)?;
     let tools_server = super::classroom_tools::teacher(
         SocketAddrV4::new(
@@ -314,6 +316,7 @@ pub(super) fn run(
         lifecycle: "running",
         settings: serde_json::to_value(config)?,
         diagnostics: diagnostics.snapshot(),
+        student_download: json!({"phase":"off"}),
     };
     let (states, receiver) = watch::channel(snapshot.clone());
     let (commands, mut requests) = mpsc::channel::<Request>(16);
@@ -359,6 +362,7 @@ pub(super) fn run(
     // A freshly launched console must never see half a JSON descriptor.
     fs::rename(&temporary, path)?;
     info!(ipc_port=port,bind_ip=%bind_ip,control_port=config.network.control_port,"Flutter Teacher agent ready");
+    let mut student_download: Option<super::student_bootstrap::Share> = None;
     let mut session: Option<Session> = None;
     let mut observe: Option<super::observe_coordinator::View> = None;
     // The persistent coordinator owns UI launches, including windows that are
@@ -371,6 +375,9 @@ pub(super) fn run(
     let result = (|| -> Result<()> {
         'agent: loop {
             diagnostics.poll();
+            if let Some(share) = &student_download {
+                snapshot.student_download = share.state.lock().unwrap().clone();
+            }
             #[cfg(not(windows))]
             host.update();
             if server.is_finished() || ipc.is_finished() {
@@ -443,6 +450,60 @@ pub(super) fn run(
                 let id = command.id;
                 let mut job_id: Option<String> = None;
                 let response = match command.action.as_str() {
+                    "connection_popup" => {
+                        if let Some(enabled) = command.input["enabled"].as_bool() {
+                            tools_hub.set_connection_popup(enabled);
+                            snapshot.settings["tools"]["connection_popup"] = enabled.into();
+                            publish_due = Instant::now();
+                            Ok(())
+                        } else {
+                            Err("Missing popup preference")
+                        }
+                    }
+                    "student_download_stop" => {
+                        student_download = None;
+                        snapshot.student_download = json!({"phase":"off"});
+                        publish_due = Instant::now();
+                        Ok(())
+                    }
+                    "student_download_start" => {
+                        if student_download.is_some() {
+                            Err("Stop the current download share first")
+                        } else {
+                            let source = command.input["path"]
+                                .as_str()
+                                .map(PathBuf::from)
+                                .or_else(super::student_bootstrap::bundled_package);
+                            let port = command.input["port"].as_u64().unwrap_or(80);
+                            if let Some(source) = source {
+                                match u16::try_from(port).ok().filter(|p| *p != 0).map(|port| {
+                                    super::student_bootstrap::Share::start(
+                                        source,
+                                        parent.join("student-downloads"),
+                                        bind_ip,
+                                        port,
+                                        config.network.control_port,
+                                        tools_hub.connection_popup(),
+                                    )
+                                }) {
+                                    Some(Ok(share)) => {
+                                        snapshot.student_download =
+                                            share.state.lock().unwrap().clone();
+                                        student_download = Some(share);
+                                        publish_due = Instant::now();
+                                        Ok(())
+                                    }
+                                    Some(Err(error)) => {
+                                        snapshot.error = Some(format!("{error:#}"));
+                                        Err("Student download could not start; inspect error or choose another port")
+                                    }
+                                    None => Err("Download port must be 1..65535"),
+                                }
+                            } else {
+                                Err("Choose a Windows Student dev-update ZIP or bundle student-packages/student-windows-x64.zip")
+                            }
+                        }
+                    }
                     "collect_diagnostics" => {
                         if session.is_some() {
                             pending_diagnostics = Some(command.selected.clone());

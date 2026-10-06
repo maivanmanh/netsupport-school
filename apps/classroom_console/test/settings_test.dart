@@ -37,8 +37,19 @@ void main() {
         'Observe',
         'File transfer',
         'Diagnostics',
+        'Student setup',
         'Connection',
       ]) {
+        await tester.scrollUntilVisible(
+          find.widgetWithText(ListTile, section),
+          section == 'Connection' ? -80 : 80,
+          scrollable: find.descendant(
+            of: find.byKey(const ValueKey('teacher-settings-sections')),
+            matching: find.byType(Scrollable),
+          ),
+        );
+        await tester.ensureVisible(find.widgetWithText(ListTile, section));
+        await tester.pumpAndSettle();
         await tester.tap(find.text(section));
         await tester.pumpAndSettle();
         expect(tester.takeException(), isNull);

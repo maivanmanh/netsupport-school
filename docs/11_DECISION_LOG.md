@@ -147,3 +147,12 @@ pre-exit Student compatibility probe, same-volume supervised swap, receipt-confi
 reconnect and rollback. This is not production release authentication or OS
 permission automation. See `19_DEV_STUDENT_UPDATES.md`. Physical Windows wired
 1/5/10/20/40 acceptance remains pending and is not altered by this scope.
+
+## D-LanBootstrap — 2026-10-06, owner authorization
+
+Owner approved optional Teacher-hosted HTTP ZIP download at `/` for initial LAN
+Student setup, browser/extract/double-click rather than shell piping. This is a
+package endpoint, not a web product/UI or media transport. Rust Student receives
+room IP/port via adjacent config; Teacher controls native connection diagnostics.
+Windows Student tray omits Exit/Restart; process protection remains service work.
+Existing unattended logs/update flow remains after bootstrap. See doc20.

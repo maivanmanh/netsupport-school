@@ -17,5 +17,10 @@ try {
  Copy-Item $RustAgent "$destination/ClassroomAgent.exe" -Force
  $student=Join-Path (Split-Path $RustAgent -Parent) 'ClassroomStudent.exe'
  if(Test-Path -LiteralPath $student){Copy-Item -LiteralPath $student "$destination/ClassroomStudent.exe" -Force}
+ $package="$root/target/updates/student-windows-x64.zip"
+ if(Test-Path -LiteralPath $package){
+   New-Item -ItemType Directory -Force "$destination/student-packages" | Out-Null
+   Copy-Item -LiteralPath $package "$destination/student-packages/student-windows-x64.zip" -Force
+ }
  Write-Output "Bundle: $destination"
 } finally { Pop-Location }

@@ -30,11 +30,13 @@ class _TeacherSettingsDialogState extends State<TeacherSettingsDialog> {
     'File transfer',
     'Diagnostics',
     'Student updates',
+    'Student setup',
   ];
   int page = 0;
   String? error;
   bool preparingUpdate = false;
-  late final TextEditingController ip, port, adapter, maxFile;
+  bool preparingDownload = false;
+  late final TextEditingController ip, port, adapter, maxFile, downloadPort;
   int resolution = 1920, fps = 30, observeFps = 60, interval = 2000;
   double bitrate = 6;
   bool adaptive = true, enhanced = true;
@@ -46,6 +48,7 @@ class _TeacherSettingsDialogState extends State<TeacherSettingsDialog> {
   @override
   void initState() {
     super.initState();
+    downloadPort = TextEditingController(text: '80');
     maxFile = TextEditingController(
       text: '${section('tools')['max_file_mb'] ?? 300}',
     );
@@ -98,6 +101,7 @@ class _TeacherSettingsDialogState extends State<TeacherSettingsDialog> {
     port.dispose();
     adapter.dispose();
     maxFile.dispose();
+    downloadPort.dispose();
     super.dispose();
   }
 
@@ -178,6 +182,36 @@ class _TeacherSettingsDialogState extends State<TeacherSettingsDialog> {
     }
   }
 
+  Future<void> startStudentDownload({bool choosePackage = false}) async {
+    final number = int.tryParse(downloadPort.text.trim());
+    if (number == null || number < 1 || number > 65535) {
+      setState(() => error = 'Download port must be 1–65535.');
+      return;
+    }
+    setState(() {
+      preparingDownload = true;
+      error = null;
+    });
+    try {
+      Map<String, dynamic>? picked;
+      if (choosePackage) {
+        picked = await const MethodChannel('classroom/files')
+            .invokeMapMethod<String, dynamic>('chooseFile', {
+              'directory': widget.agent.endpoint.parent.path,
+            });
+        if (picked == null) return;
+      }
+      await widget.agent.command('student_download_start', [], {
+        if (picked != null) ...picked,
+        'port': number,
+      });
+    } catch (e) {
+      if (mounted) setState(() => error = 'Could not share Student app: $e');
+    } finally {
+      if (mounted) setState(() => preparingDownload = false);
+    }
+  }
+
   void save() {
     final n = int.tryParse(port.text.trim());
     final address = ip.text.trim();
@@ -237,7 +271,13 @@ class _TeacherSettingsDialogState extends State<TeacherSettingsDialog> {
           'max_fps': observeFps,
         },
         'diagnostics': {'auto_collect': autoCollect},
-        'tools': {'max_file_mb': limit},
+        'tools': {
+          'max_file_mb': limit,
+          'connection_popup':
+              (widget.agent.state['tools'] as Map?)?['connection_popup'] ??
+              section('tools')['connection_popup'] ??
+              false,
+        },
       }),
     );
   }
@@ -504,6 +544,117 @@ class _TeacherSettingsDialogState extends State<TeacherSettingsDialog> {
           },
         ),
       ],
+      [
+        const Text(
+          'Share Student app',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+        ),
+        const SizedBox(height: 12),
+        const Text(
+          'Students open the Teacher URL in Chrome, download the ZIP, extract all files into a local folder and double-click ClassroomStudent.exe. The ZIP includes this room’s address.',
+        ),
+        const SizedBox(height: 16),
+        field(
+          downloadPort,
+          'HTTP download port',
+          hint: '80: Students only enter the IP address',
+        ),
+        AnimatedBuilder(
+          animation: widget.agent,
+          builder: (_, _) {
+            final share =
+                widget.agent.state['student_download'] as Map? ?? const {};
+            final phase = share['phase'] ?? 'off';
+            final active = phase != 'off';
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (phase == 'sharing') ...[
+                  SelectableText(
+                    '${share['url']}',
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  Text(
+                    '${share['arch']} · ${((share['size'] as num? ?? 0) / 1048576).toStringAsFixed(1)} MB · ${share['downloads'] ?? 0} downloads',
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: () => Clipboard.setData(
+                      ClipboardData(text: '${share['url']}'),
+                    ),
+                    icon: const Icon(Icons.copy),
+                    label: const Text('Copy URL'),
+                  ),
+                ],
+                if (phase == 'preparing') const LinearProgressIndicator(),
+                if (phase == 'error')
+                  Text(
+                    '${share['error']}',
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
+                if (active)
+                  OutlinedButton.icon(
+                    onPressed: () async {
+                      try {
+                        await widget.agent.command('student_download_stop');
+                      } catch (e) {
+                        if (mounted) setState(() => error = '$e');
+                      }
+                    },
+                    icon: const Icon(Icons.stop),
+                    label: const Text('Stop sharing app'),
+                  )
+                else ...[
+                  FilledButton.icon(
+                    onPressed: preparingDownload
+                        ? null
+                        : () => startStudentDownload(),
+                    icon: const Icon(Icons.download),
+                    label: const Text('Share bundled Student app'),
+                  ),
+                  OutlinedButton(
+                    onPressed: preparingDownload
+                        ? null
+                        : () => startStudentDownload(choosePackage: true),
+                    child: const Text('Choose Windows Student ZIP…'),
+                  ),
+                ],
+              ],
+            );
+          },
+        ),
+        const SizedBox(height: 20),
+        AnimatedBuilder(
+          animation: widget.agent,
+          builder: (_, _) {
+            final tools = widget.agent.state['tools'] as Map? ?? const {};
+            return SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Student connection popup'),
+              subtitle: const Text(
+                'Show connection status; hide 3 seconds after connecting. Applies now to supported Students; Save remembers this setting.',
+              ),
+              value: tools['connection_popup'] as bool? ?? false,
+              onChanged: (value) async {
+                try {
+                  await widget.agent.command('connection_popup', [], {
+                    'enabled': value,
+                  });
+                } catch (e) {
+                  if (mounted) setState(() => error = '$e');
+                }
+              },
+            );
+          },
+        ),
+        const Text(
+          'Windows Student tray has no Exit or Restart menu. Task Manager and administrator controls remain available. HTTP sharing stops when the Teacher agent exits. Port 80 may require permission; use 8080 if unavailable.',
+        ),
+      ],
     ];
     return Dialog(
       child: SizedBox(
@@ -528,6 +679,7 @@ class _TeacherSettingsDialogState extends State<TeacherSettingsDialog> {
                   SizedBox(
                     width: 152,
                     child: ListView(
+                      key: const ValueKey('teacher-settings-sections'),
                       children: [
                         for (var i = 0; i < sections.length; i++)
                           ListTile(

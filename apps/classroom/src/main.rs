@@ -59,6 +59,8 @@ mod refinement;
 mod remote_input;
 mod startup;
 mod stream_profile;
+mod student_bootstrap;
+mod student_connection_ui;
 mod student_file_ui;
 mod student_presentation;
 mod student_settings;
@@ -324,7 +326,33 @@ async fn run(
         )
         .await;
     }
-    let profile_path = startup::profile_path(cli.launch_profile.as_deref())?;
+    // A downloaded portable Student uses its adjacent room configuration, not
+    // another room remembered by this user. Explicit CLI/config still wins.
+    let bootstrap = if student_only && cli.config.is_none() {
+        student_bootstrap::Bootstrap::load(
+            std::env::current_exe()?
+                .parent()
+                .context("Student directory missing")?,
+        )?
+    } else {
+        None
+    };
+    let profile_path = if cli.launch_profile.is_none() {
+        if let Some(bootstrap) = &bootstrap {
+            let base = startup::profile_path(None)?;
+            base.parent()
+                .context("Profile directory missing")?
+                .join(format!(
+                    "bootstrap-room-{}-{}",
+                    bootstrap.teacher_ip, bootstrap.control_port
+                ))
+                .join("profile.toml")
+        } else {
+            startup::profile_path(None)?
+        }
+    } else {
+        startup::profile_path(cli.launch_profile.as_deref())?
+    };
     if student_only && cli.teacher_ip.is_none() {
         cli.teacher_ip = startup::load(&profile_path).map(|profile| profile.teacher_ip);
     }
@@ -350,6 +378,11 @@ async fn run(
         None
     };
     let (mut config, config_path) = Config::load(cli.config.as_deref())?;
+    if let Some(bootstrap) = &bootstrap {
+        config.network.teacher_ip = bootstrap.teacher_ip;
+        config.network.control_port = bootstrap.control_port;
+        config.tools.connection_popup = bootstrap.connection_popup;
+    }
     if student_only || matches!(cli.role, Some(CliRole::Student)) {
         student_settings::apply_saved(&mut config, &profile_path)?;
     }
@@ -1859,6 +1892,10 @@ async fn run_student_media(
         }
     };
     let inbox = std::sync::Arc::new(classroom_tools::Inbox::default());
+    inbox.initialize_connection_popup(profile_path, config.tools.connection_popup);
+    if let Some(desktop) = desktop.as_mut() {
+        desktop.connection_preference = Some(std::sync::Arc::clone(&inbox));
+    }
     if let Some(desktop) = desktop.as_mut() {
         desktop.tools = Some(student_tools_ui::StudentToolsUi::new(
             std::sync::Arc::clone(&inbox),

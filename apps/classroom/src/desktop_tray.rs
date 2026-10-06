@@ -46,8 +46,11 @@ mod native {
                 menu.append(&show)?;
             }
             menu.append_items(&[&settings, &PredefinedMenuItem::separator()])?;
-            menu.append(&restart)?;
-            menu.append(&exit)?;
+            // Windows Students expose status/settings, never a normal quit path.
+            if teacher || !cfg!(windows) {
+                menu.append(&restart)?;
+                menu.append(&exit)?;
+            }
             // Small code-generated monitor symbol, no image/network dependency.
             let mut rgba = vec![0_u8; 24 * 24 * 4];
             for y in 3..21 {
@@ -236,6 +239,8 @@ mod windows_teacher {
 pub use windows_teacher::WindowsTeacherTray;
 
 pub struct StudentDesktop {
+    connection_status: super::student_connection_ui::ConnectionStatus,
+    pub connection_preference: Option<std::sync::Arc<super::classroom_tools::Inbox>>,
     pub tools: Option<super::student_tools_ui::StudentToolsUi>,
     host: minifb::Window,
     tray: Option<DesktopTray>,
@@ -268,6 +273,8 @@ impl StudentDesktop {
         };
         Ok(Self {
             tools: None,
+            connection_status: super::student_connection_ui::ConnectionStatus::default(),
+            connection_preference: None,
             host,
             tray,
             exit_requested: false,
@@ -276,6 +283,11 @@ impl StudentDesktop {
         })
     }
     pub fn pump(&mut self, status: &str, presenting: bool) {
+        let enabled = self.connection_preference.as_ref().is_some_and(|i| {
+            i.connection_popup
+                .load(std::sync::atomic::Ordering::Acquire)
+        });
+        self.connection_status.pump(enabled, status, presenting);
         if let Some(tools) = self.tools.as_mut() {
             tools.pump();
         }

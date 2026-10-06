@@ -37,6 +37,13 @@ PLIST
 cat > "$ROOT/target/flutter-helper.entitlements" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>com.apple.security.app-sandbox</key><true/><key>com.apple.security.inherit</key><true/></dict></plist>
 PLIST
+# Optional initial Windows Student bootstrap, served only when Teacher enables it.
+STUDENT_PACKAGE="${CLASSROOM_STUDENT_PACKAGE:-$ROOT/target/updates/student-windows-x64.zip}"
+rm -f "$BUILD_APP/Contents/Resources/student-packages/student-windows-x64.zip"
+if [[ -f "$STUDENT_PACKAGE" ]]; then
+  mkdir -p "$BUILD_APP/Contents/Resources/student-packages"
+  cp "$STUDENT_PACKAGE" "$BUILD_APP/Contents/Resources/student-packages/student-windows-x64.zip"
+fi
 python3 "$ROOT/scripts/sign-macos-app.py" "$BUILD_APP" \
   --identifier com.classroom.classroomConsole \
   --helper "$AGENT_APP" \

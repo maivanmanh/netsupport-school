@@ -86,3 +86,4 @@ auto_collect = false
 [tools]
 # Per ordinary file/completed ZIP, in MiB. Student updates use a separate limit.
 max_file_mb = 300
+connection_popup = false

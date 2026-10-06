@@ -247,3 +247,12 @@ không cần SSH sau lần bootstrap đầu. Có UI trong Settings → Student u
 và CLI không cần click giao diện: `scripts/classroom-dev-update.py`. Gói update
 được kiểm tra checksum/OS/kiến trúc; lỗi startup/reconnect có rollback.
 Xem [hướng dẫn và giới hạn](docs/19_DEV_STUDENT_UPDATES.md).
+
+## Cài Student lần đầu từ Teacher qua LAN
+
+**Settings → Student setup → Share bundled Student app** cho phép Student mở URL
+Teacher trong Chrome, tải ZIP, giải nén rồi double-click `ClassroomStudent.exe`;
+IP/port phòng có sẵn. Teacher bật/tắt popup Connecting/Connected (auto-hide3s).
+Windows Student tray không có Exit/Restart. Xem
+[hướng dẫn bootstrap LAN](docs/20_LAN_STUDENT_BOOTSTRAP.md) và các giới hạn cổng80,
+package/debug và process protection.

@@ -29,10 +29,14 @@ pub struct Config {
 #[serde(default)]
 pub struct ToolsConfig {
     pub max_file_mb: u32,
+    pub connection_popup: bool,
 }
 impl Default for ToolsConfig {
     fn default() -> Self {
-        Self { max_file_mb: 300 }
+        Self {
+            max_file_mb: 300,
+            connection_popup: false,
+        }
     }
 }
 
