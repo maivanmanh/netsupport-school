@@ -960,6 +960,16 @@ impl Window {
         if visible { unsafe {winuser::SetForegroundWindow(self.hwnd);} }
     }
     // Keep notification painting out of the foreground/key-focus path.
+    pub fn set_passive_overlay(&mut self, alpha: u8) {
+        // SAFETY: owned HWND, owner UI thread; only presentation attributes change.
+        unsafe {
+            let style = winuser::GetWindowLongW(self.hwnd, winuser::GWL_EXSTYLE);
+            winuser::SetWindowLongW(self.hwnd, winuser::GWL_EXSTYLE, style |
+                (winuser::WS_EX_LAYERED | winuser::WS_EX_TRANSPARENT |
+                 winuser::WS_EX_NOACTIVATE | winuser::WS_EX_TOOLWINDOW) as i32);
+            winuser::SetLayeredWindowAttributes(self.hwnd, 0, alpha, winuser::LWA_ALPHA);
+        }
+    }
     pub fn show_inactive_topmost(&mut self) {
         unsafe { winuser::SetWindowPos(self.hwnd, winuser::HWND_TOPMOST, 0, 0, 0, 0,
             winuser::SWP_SHOWWINDOW | winuser::SWP_NOSIZE | winuser::SWP_NOMOVE | winuser::SWP_NOACTIVATE); }

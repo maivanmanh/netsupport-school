@@ -16,6 +16,24 @@ use std::{
     sync::{mpsc, Arc},
 };
 use tokio::sync::watch;
+/// Raw cursor packets must fit the existing64KiB control budget, including base64.
+fn cursor_shape(image: &media_core::PointerImage, fraction: f32) -> serde_json::Value {
+    let scale = (96.0 / f64::from(image.width.max(image.height))).min(1.0);
+    let width = (f64::from(image.width) * scale).round().max(1.0) as usize;
+    let height = (f64::from(image.height) * scale).round().max(1.0) as usize;
+    let mut pixels = Vec::with_capacity(width * height * 4);
+    for y in 0..height {
+        for x in 0..width {
+            let sx = x * usize::from(image.width) / width;
+            let sy = y * usize::from(image.height) / height;
+            let at = (sy * usize::from(image.width) + sx) * 4;
+            pixels.extend_from_slice(&image.bgra[at..at + 4]);
+        }
+    }
+    serde_json::json!({"serial":image.serial,"width":width,"height":height,
+        "hotspot_x":f64::from(image.hotspot_x)*scale,"hotspot_y":f64::from(image.hotspot_y)*scale,
+        "width_fraction":fraction,"bgra":base64::engine::general_purpose::STANDARD.encode(pixels)})
+}
 const HEADER: usize = 32;
 const CAPACITY: usize = HEADER + 1920 * 1080 * 4;
 
@@ -102,6 +120,7 @@ impl Publisher {
         let ids = super::presentation_ids::PresentationIds::new()?;
         let mut ids = ids;
         let stream_id = ids.next()?;
+        let (pointer_tx, pointer_rx) = mpsc::sync_channel(1);
         let worker = thread::spawn(move || {
             let media_stop = Arc::clone(&cancel);
             let sender = state.clone();
@@ -116,9 +135,13 @@ impl Publisher {
                     &sender,
                     Some(&recipients),
                     Some(source_cursor),
+                    Some(pointer_tx),
                 )
             });
             let mut input = super::remote_input::Controller::default();
+            let mut pointer_source = None;
+            let mut last_cursor = 0;
+            let mut cursor_tick = Instant::now();
             let mut had_viewer = false;
             let began = Instant::now();
             while !cancel.load(Ordering::Acquire)
@@ -131,6 +154,31 @@ impl Publisher {
                     || (!had_viewer && began.elapsed() > Duration::from_secs(15))
                 {
                     break;
+                }
+                if pointer_source.is_none() {
+                    pointer_source = pointer_rx.try_recv().ok();
+                }
+                if input.enabled() && cursor_tick.elapsed() >= Duration::from_millis(50) {
+                    cursor_tick = Instant::now();
+                    if let Some(sample) = pointer_source.as_mut().and_then(|p| p.sample()) {
+                        if let Some(image) = sample
+                            .image
+                            .filter(|image| image.is_valid() && image.serial != last_cursor)
+                        {
+                            last_cursor = image.serial;
+                            roster
+                                .lock()
+                                .unwrap()
+                                .cursor_status(protocol::ObserveMessage {
+                                    action: "cursor".into(),
+                                    key: cursor_shape(&image, sample.width_fraction).to_string(),
+                                    ..Default::default()
+                                });
+                        }
+                    }
+                }
+                if !input.enabled() {
+                    last_cursor = 0;
                 }
                 for _ in 0..64 {
                     let message = roster.lock().unwrap().take_input();
@@ -309,6 +357,11 @@ impl Output {
         control: &control_transport::StudentControl,
         stream_id: u64,
     ) -> Result<()> {
+        if let Some(cursor) = control.take_cursor_status() {
+            if let Ok(shape) = serde_json::from_str::<serde_json::Value>(&cursor.key) {
+                println!("{}", serde_json::json!({"cursor":shape}));
+            }
+        }
         if let Some(status) = control.take_input_status() {
             println!(
                 "{}",
@@ -428,5 +481,33 @@ pub async fn receive(
         );
         let _ = control.probe_rtt();
         tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::*;
+    #[test]
+    fn large_cursor_stays_within_control_budget_and_preserves_hotspot() {
+        let image = media_core::PointerImage {
+            serial: 1,
+            width: 128,
+            height: 128,
+            hotspot_x: 64,
+            hotspot_y: 32,
+            bgra: vec![255; 128 * 128 * 4],
+        };
+        let value = cursor_shape(&image, 0.02);
+        assert_eq!(value["width"], 96);
+        assert_eq!(value["height"], 96);
+        assert_eq!(value["hotspot_x"], 48.0);
+        assert_eq!(value["hotspot_y"], 24.0);
+        let message = protocol::ObserveMessage {
+            action: "cursor".into(),
+            key: value.to_string(),
+            ..Default::default()
+        };
+        use prost::Message;
+        assert!(message.encoded_len() + 64 < protocol::MAX_CONTROL_FRAME_BYTES);
     }
 }

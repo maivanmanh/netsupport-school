@@ -328,6 +328,37 @@ void main() {
       a.notifyListeners();
       await t.pump();
       expect(titles.last, 'Control · PC 01');
+      a.state['observe']['cursor'] = {
+        'serial': 1,
+        'width': 1,
+        'height': 1,
+        'hotspot_x': 0,
+        'hotspot_y': 0,
+        'width_fraction': .02,
+        'bgra': '/wAA/w==',
+      };
+      a.notifyListeners();
+      await t.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 40));
+      });
+      await t.pump();
+      final hover = await t.createGesture(kind: PointerDeviceKind.mouse);
+      await hover.addPointer(
+        location: t.getCenter(find.byKey(const ValueKey('observe-image'))),
+      );
+      await hover.moveTo(
+        t.getCenter(find.byKey(const ValueKey('observe-image'))) +
+            const Offset(10, 10),
+      );
+      await t.pump();
+      expect(find.byType(RawImage), findsOneWidget);
+      await hover.removePointer();
+      expect(
+        find.byWidgetPredicate(
+          (w) => w is MouseRegion && w.cursor == SystemMouseCursors.none,
+        ),
+        findsOneWidget,
+      );
       expect(
         find.text('Shared control · Student input stays enabled'),
         findsNothing,
@@ -342,7 +373,7 @@ void main() {
       final region = find
           .descendant(of: image, matching: find.byType(MouseRegion))
           .first;
-      expect(t.widget<MouseRegion>(region).cursor, SystemMouseCursors.basic);
+      expect(t.widget<MouseRegion>(region).cursor, SystemMouseCursors.none);
       final mouse = await t.createGesture(kind: PointerDeviceKind.mouse);
       await mouse.addPointer(location: const Offset(400, 300));
       await mouse.moveTo(const Offset(600, 450));

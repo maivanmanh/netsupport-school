@@ -3242,3 +3242,28 @@ Status: owner-reported Win+R local dispatch fixed and tested Windows-to-Windows.
 - Exact next step:owner checks grid slider and normal Observe UX. Existing Student
   builds can accept new size requests, but Observe cadence fix requires newStudent;
   .94 already updated. Mac Student built/bundled,not remotely deployed/validated.
+
+## 2026-10-06 — responsive remote cursor shape and Student rendered-FPS badge
+
+- Control retains local Teacher position, receives changed Student BGRA cursor+
+  hotspot through latest-only bounded TCP slot/Notify, separate mode acknowledgments.
+  Reuse capture PointerSource, sample shape20Hz only in active Control; limit96px
+  and64KiB message. Publish changed cursor immediately through Teacher IPC. Flutter
+  decode once/serial and move via ValueNotifier/RepaintBoundary without full UI
+  rebuild; normal arrow fallback and Observe OS cursor preserved.
+- Student broadcast badge88×28,semi-transparent alpha200,topmost/click-through/no
+  title/buttons,16px bottom/right; render-video FPS each1s, excluding pointer-only
+  redraw. Owner UI thread; no frame copies or new process; closes with preview.
+  [diagnostics].student_fps_badge=false disables. No badge in Observe/headless.
+- Rust121pass/2ignored;control-transport10pass/doctests with stable rustdoc;Flutter
+  30pass/analyze clean. Windows .94 update through Classroom confirmed build
+  paired-20261006-093510. Paired build/bundled fresh Students verified.
+- Short live cursor fixture:received two32×32 bitmaps/serials with different hashes
+  and hotspots. A first probe sent Control before first video and was discarded by
+  existing readiness path; corrected fixture waited first frame. No prolonged test.
+- Teacher ScreenCaptureKit share rejected by macOS TCC after new ad-hoc build;
+  owner asked to grant Screen Recording to target/cursor-fps-build/Classroom Console.app
+  and restart before video FPS badge validation. Permission not automated. Native
+  badge validation pending; Mac Student build/bundle only. See docs/21_CONTROL_CURSOR_AND_STUDENT_FPS.md.
+- Exact next step:restart Teacher after owner grant,run one short class broadcast
+  to verify badge/alpha/click-through/close; keep apps available for owner's tests.

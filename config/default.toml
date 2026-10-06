@@ -82,6 +82,7 @@ bitrate_kbps = 0            # 0 = derived from [video] and the frame rate
 [diagnostics]
 # Collect a bounded Teacher/Student log ZIP after each presentation stops.
 auto_collect = false
+student_fps_badge = true
 
 [tools]
 # Per ordinary file/completed ZIP, in MiB. Student updates use a separate limit.

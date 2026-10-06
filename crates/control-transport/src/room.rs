@@ -60,6 +60,8 @@ pub struct RoomRoster {
     students: Vec<RoomStudent>,
     inputs: std::collections::VecDeque<protocol::ObserveMessage>,
     input_status: Option<protocol::ObserveMessage>,
+    cursor_status: Option<protocol::ObserveMessage>,
+    cursor_changed: Arc<tokio::sync::Notify>,
 }
 impl RoomRoster {
     #[must_use]
@@ -91,6 +93,10 @@ impl RoomRoster {
             row.thumbnail = Some(Arc::new(thumbnail));
         }
         true
+    }
+    pub fn cursor_status(&mut self, status: protocol::ObserveMessage) {
+        self.cursor_status = Some(status);
+        self.cursor_changed.notify_one();
     }
     pub fn input_status(&mut self, status: protocol::ObserveMessage) {
         self.input_status = Some(status);
@@ -347,10 +353,17 @@ async fn handle_authorized(
             }
         }
     }));
+    let cursor_changed = Arc::clone(&roster.lock().unwrap().cursor_changed);
     let mut heartbeat = tokio::time::interval(Duration::from_secs(1));
     let mut heard_at = std::time::Instant::now();
     loop {
         tokio::select! {
+            _ = cursor_changed.notified() => {
+                let cursor = roster.lock().unwrap().cursor_status.take();
+                if let Some(cursor) = cursor {
+                    send(&mut writer,&Envelope {protocol_version:protocol::PROTOCOL_VERSION,payload:Some(Payload::Observe(cursor))}).await?;
+                }
+            }
             _ = heartbeat.tick() => {
                 let status=roster.lock().unwrap().input_status.take();
                 if let Some(status)=status {
@@ -411,6 +424,25 @@ async fn handle_authorized(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cursor_changes_are_latest_only_and_do_not_replace_mode_ack() {
+        let mut roster = super::RoomRoster::default();
+        roster.input_status(protocol::ObserveMessage {
+            action: "status".into(),
+            key: "control".into(),
+            ..Default::default()
+        });
+        for serial in 0..100 {
+            roster.cursor_status(protocol::ObserveMessage {
+                action: "cursor".into(),
+                key: serial.to_string(),
+                ..Default::default()
+            });
+        }
+        assert_eq!(roster.input_status.as_ref().unwrap().key, "control");
+        assert_eq!(roster.cursor_status.as_ref().unwrap().key, "99");
+    }
+
     use super::*;
     use crate::{register_student_for_presentation, StudentRegistration};
 

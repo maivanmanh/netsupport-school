@@ -62,6 +62,7 @@ mod stream_profile;
 mod student_bootstrap;
 mod student_connection_ui;
 mod student_file_ui;
+mod student_fps_badge;
 mod student_presentation;
 mod student_settings;
 mod student_tools_ui;
@@ -2199,6 +2200,9 @@ fn run_student_media_loop(
             )
         });
         let ui_result = (|| -> Result<()> {
+            let mut fps_badge = student_fps_badge::FpsBadge::new(
+                renderer.is_some() && config.diagnostics.student_fps_badge,
+            );
             let mut last_render_metrics = Instant::now();
             let mut render_stages = media_core::diagnostics::StageMetrics::default();
             let mut last_capture_us = 0_u64;
@@ -2254,6 +2258,7 @@ fn run_student_media_loop(
                                 width: frame.width,
                                 height: frame.height,
                             })?;
+                            fps_badge.frame();
                         } else if let Some(output) = observation.as_mut() {
                             surface_published = output.present(&frame)?;
                         }
@@ -2333,6 +2338,7 @@ fn run_student_media_loop(
                     log_stages("student", std::mem::take(&mut render_stages));
                     last_render_metrics = Instant::now();
                 }
+                fps_badge.pump();
                 thread::sleep(Duration::from_millis(1));
             }
             if let Some(renderer) = renderer.as_mut() {

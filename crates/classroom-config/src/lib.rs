@@ -40,11 +40,22 @@ impl Default for ToolsConfig {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct DiagnosticsConfig {
     /// Collect bounded, sanitized runtime logs after a presentation stops.
     pub auto_collect: bool,
+    /// Passive rendered-FPS badge during class broadcast (not Observe receiver).
+    pub student_fps_badge: bool,
+}
+
+impl Default for DiagnosticsConfig {
+    fn default() -> Self {
+        Self {
+            auto_collect: false,
+            student_fps_badge: true,
+        }
+    }
 }
 
 /// One-to-one Observe/Control tuning. When `enhanced`, the Teacher offers what

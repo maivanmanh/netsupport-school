@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
@@ -51,6 +52,55 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
   bool autoHide = true, chromeVisible = true, fullScreen = false;
   bool overChrome = false;
   Offset? pointerPosition;
+  final localCursor = ValueNotifier<Offset?>(null);
+  ui.Image? remoteCursor;
+  String? cursorKey;
+  int cursorGeneration = 0;
+  double cursorFraction = .015, cursorHotX = 0, cursorHotY = 0;
+
+  void syncCursor() {
+    final shape = view['cursor'];
+    if (shape is! Map || !controls) return;
+    final key = '${view['surface']}:${shape['serial']}';
+    if (key == cursorKey) return;
+    cursorKey = key;
+    final generation = ++cursorGeneration;
+    try {
+      final width = (shape['width'] as num).toInt();
+      final height = (shape['height'] as num).toInt();
+      final pixels = base64Decode(shape['bgra'] as String);
+      if (width < 1 ||
+          width > 96 ||
+          height < 1 ||
+          height > 96 ||
+          pixels.length != width * height * 4) {
+        return;
+      }
+      ui.decodeImageFromPixels(pixels, width, height, ui.PixelFormat.bgra8888, (
+        image,
+      ) {
+        if (!mounted || generation != cursorGeneration) {
+          image.dispose();
+          return;
+        }
+        final old = remoteCursor;
+        setState(() {
+          remoteCursor = image;
+          cursorFraction =
+              ((shape['width_fraction'] as num?)?.toDouble() ?? .015).clamp(
+                .001,
+                .25,
+              );
+          cursorHotX = ((shape['hotspot_x'] as num?)?.toDouble() ?? 0) / width;
+          cursorHotY = ((shape['hotspot_y'] as num?)?.toDouble() ?? 0) / height;
+        });
+        old?.dispose();
+      });
+    } catch (_) {
+      /* Keep the local arrow if remote shape is unavailable. */
+    }
+  }
+
   int pressedButtons = 0;
   final pressedKeys = <String>{};
   bool windowFocused = true;
@@ -209,6 +259,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
       fit: fit,
     );
     pointerPosition = point;
+    localCursor.value = e.localPosition;
     input({'action': 'move', 'x': point.dx, 'y': point.dy});
   }
 
@@ -409,6 +460,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
   }
 
   void changed() {
+    syncCursor();
     if (closing) return;
     final request = widget.agent.state['observe_focus'] as List?;
     if (!closing &&
@@ -438,6 +490,10 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
     final source = view['surface'] as String?;
     if (source != null && source != path && !attaching) {
       modeError = null; // Errors belong to the old surface/session.
+      cursorKey = null;
+      ++cursorGeneration;
+      remoteCursor?.dispose();
+      remoteCursor = null;
       attach(source);
     }
     final viewError = view['error'] as String? ?? '';
@@ -760,6 +816,9 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
     widget.agent.removeListener(changed);
     windowManager.removeListener(this);
     focus.dispose();
+    ++cursorGeneration;
+    remoteCursor?.dispose();
+    localCursor.dispose();
     super.dispose();
   }
 
@@ -890,7 +949,10 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
         child: MouseRegion(
           // The OS cursor responds immediately, independently of video latency.
           // Click coordinates use the same transform as this local pointer.
-          cursor: SystemMouseCursors.basic,
+          cursor: controls && remoteCursor != null
+              ? SystemMouseCursors.none
+              : SystemMouseCursors.basic,
+          onExit: (_) => localCursor.value = null,
           child: Focus(
             focusNode: focus,
             onKeyEvent: key,
@@ -940,6 +1002,43 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                 fit: StackFit.expand,
                 children: [
                   if (texture != null) textureView(),
+                  if (controls && remoteCursor != null)
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: RepaintBoundary(
+                          child: ValueListenableBuilder<Offset?>(
+                            valueListenable: localCursor,
+                            builder: (context, position, _) {
+                              if (position == null) {
+                                return const SizedBox.shrink();
+                              }
+                              final width = (cursorFraction * size.width).clamp(
+                                12.0,
+                                96.0,
+                              );
+                              final height =
+                                  width *
+                                  remoteCursor!.height /
+                                  remoteCursor!.width;
+                              return Stack(
+                                children: [
+                                  Positioned(
+                                    left: position.dx - cursorHotX * width,
+                                    top: position.dy - cursorHotY * height,
+                                    width: width,
+                                    height: height,
+                                    child: RawImage(
+                                      image: remoteCursor,
+                                      filterQuality: FilterQuality.medium,
+                                    ),
+                                  ),
+                                ],
+                              );
+                            },
+                          ),
+                        ),
+                      ),
+                    ),
                   if (!live)
                     Center(
                       child: Text(

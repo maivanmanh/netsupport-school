@@ -163,6 +163,7 @@ extern "C" {
     fn mfb_request_close(window: *mut c_void);
     fn mfb_set_visible(window: *mut c_void, visible: bool);
     fn mfb_show_inactive(window: *mut c_void);
+    fn mfb_passive_overlay(window: *mut c_void, alpha: u8);
     fn mfb_is_visible(window: *mut c_void) -> bool;
     fn mfb_set_close_to_hide(window: *mut c_void, enabled: bool);
     fn mfb_set_title(window: *mut c_void, title: *const c_char);
@@ -355,6 +356,7 @@ impl Window {
     }
     pub fn request_close(&mut self) { unsafe {mfb_request_close(self.window_handle);} }
     pub fn set_visible(&mut self, visible: bool) { unsafe {mfb_set_visible(self.window_handle, visible);} }
+    pub fn set_passive_overlay(&mut self, alpha: u8) { unsafe { mfb_passive_overlay(self.window_handle, alpha); } }
     pub fn show_inactive(&mut self) { unsafe {mfb_show_inactive(self.window_handle);} }
     pub fn is_visible(&self) -> bool { unsafe {mfb_is_visible(self.window_handle)} }
     pub fn set_close_to_hide(&mut self, enabled: bool) { unsafe {mfb_set_close_to_hide(self.window_handle, enabled);} }

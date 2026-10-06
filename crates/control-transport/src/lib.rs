@@ -87,6 +87,7 @@ pub struct StudentControl {
     connected: Arc<AtomicBool>,
     presentation: Arc<Mutex<Option<StartPresentation>>>,
     input_status: Arc<Mutex<Option<protocol::ObserveMessage>>>,
+    cursor_status: Arc<Mutex<Option<protocol::ObserveMessage>>>,
     _tasks: Arc<StudentControlTasks>,
 }
 
@@ -238,6 +239,9 @@ impl StudentControl {
     }
 
     #[must_use]
+    pub fn take_cursor_status(&self) -> Option<protocol::ObserveMessage> {
+        self.cursor_status.lock().ok()?.take()
+    }
     pub fn take_input_status(&self) -> Option<protocol::ObserveMessage> {
         self.input_status.lock().ok()?.take()
     }
@@ -384,6 +388,8 @@ pub async fn register_student_for_presentation(
     });
     let input_status = Arc::new(Mutex::new(None));
     let read_status = Arc::clone(&input_status);
+    let cursor_status = Arc::new(Mutex::new(None));
+    let read_cursor = Arc::clone(&cursor_status);
     let reader_presentation = Arc::clone(&presentation_state);
     let reader_rtt = Arc::clone(&rtt);
     let reader_connected = Arc::clone(&connected);
@@ -410,7 +416,11 @@ pub async fn register_student_for_presentation(
             }
             let pong = match envelope.payload {
                 Some(Payload::Observe(status)) => {
-                    *read_status.lock().unwrap() = Some(status);
+                    if status.action == "cursor" {
+                        *read_cursor.lock().unwrap() = Some(status);
+                    } else {
+                        *read_status.lock().unwrap() = Some(status);
+                    }
                     continue;
                 }
                 Some(Payload::ControlPong(pong)) => pong,
@@ -481,6 +491,7 @@ pub async fn register_student_for_presentation(
             connected: Arc::clone(&connected),
             presentation: presentation_state,
             input_status,
+            cursor_status,
             _tasks: Arc::new(StudentControlTasks {
                 reader: reader_task.abort_handle(),
                 writer: writer_task.abort_handle(),

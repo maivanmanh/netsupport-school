@@ -28,3 +28,10 @@ Unlike the existing topmost method this does not make a hidden notification
 visible before its first paint or steal foreground keyboard focus.
 - Windows titleless borderless windows explicitly use `WS_POPUP`: style zero
   means `WS_OVERLAPPED` and Windows otherwise adds `WS_CAPTION` automatically.
+
+### Passive FPS badge (2026-10-06)
+
+`set_passive_overlay(alpha)` makes a native titleless overlay semi-transparent and
+click-through. Windows uses LAYERED/TRANSPARENT/NOACTIVATE/TOOLWINDOW and constant
+alpha; macOS sets window alpha/ignoresMouseEvents and excludes window cycling.
+The presentation owns the badge's lifetime; it never takes keyboard focus.

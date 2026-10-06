@@ -959,3 +959,11 @@ void mfb_show_inactive(void* ptr) {
     [window orderFrontRegardless];
 }
 
+
+// Passive diagnostics must not consume mouse clicks or show in window switching.
+void mfb_passive_overlay(void* ptr, unsigned char alpha) {
+    NSWindow* window = (NSWindow*)ptr;
+    [window setAlphaValue:(CGFloat)alpha / 255.0];
+    [window setIgnoresMouseEvents:YES];
+    [window setCollectionBehavior:NSWindowCollectionBehaviorTransient | NSWindowCollectionBehaviorIgnoresCycle | NSWindowCollectionBehaviorFullScreenAuxiliary];
+}

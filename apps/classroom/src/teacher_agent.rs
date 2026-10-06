@@ -861,6 +861,13 @@ pub(super) fn run(
             {
                 publish_due = Instant::now();
             }
+            if observe
+                .as_ref()
+                .and_then(super::observe_coordinator::View::cursor_serial)
+                != snapshot.observe["cursor"]["serial"].as_u64()
+            {
+                publish_due = Instant::now();
+            }
             if Instant::now() >= publish_due {
                 snapshot.observe = observe
                     .as_ref()

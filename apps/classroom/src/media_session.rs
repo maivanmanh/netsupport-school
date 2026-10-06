@@ -25,6 +25,7 @@ pub(super) fn publish(
         state,
         recipients,
         None,
+        None,
     )
 }
 
@@ -38,6 +39,7 @@ pub(super) fn publish_with_cursor_policy(
     state: &watch::Sender<Option<RoomPresentation>>,
     recipients: Option<&Arc<std::collections::HashSet<String>>>,
     cursor: Option<Arc<AtomicBool>>,
+    pointer_source: Option<std::sync::mpsc::SyncSender<Box<dyn media_core::PointerSource>>>,
 ) -> Result<()> {
     let mut capture = PlatformCapture::new();
     if let Some(cursor) = cursor {
@@ -49,6 +51,9 @@ pub(super) fn publish_with_cursor_policy(
         height: config.video.height,
         max_fps: config.video.max_fps,
     })?;
+    if let (Some(sender), Some(source)) = (pointer_source, capture.pointer_source()) {
+        let _ = sender.try_send(source);
+    }
     let dimensions = capture
         .output_dimensions()
         .context("capture dimensions missing")?;

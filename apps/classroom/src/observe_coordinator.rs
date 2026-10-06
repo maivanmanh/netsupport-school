@@ -73,6 +73,9 @@ impl View {
     pub fn state(&self) -> Value {
         self.status.lock().unwrap().value.clone()
     }
+    pub fn cursor_serial(&self) -> Option<u64> {
+        self.status.lock().unwrap().value["cursor"]["serial"].as_u64()
+    }
     pub fn is_live(&self) -> bool {
         self.status.lock().unwrap().value["phase"] == "live"
     }
@@ -231,6 +234,9 @@ fn run(
                 if v["mode"].is_string() {
                     s.value["mode"] = v["mode"].clone();
                     s.value["error"] = v["error"].clone();
+                }
+                if v["cursor"].is_object() {
+                    s.value["cursor"] = v["cursor"].clone();
                 }
                 if v["metrics"].is_object() {
                     s.value["metrics"] = v["metrics"].clone();
