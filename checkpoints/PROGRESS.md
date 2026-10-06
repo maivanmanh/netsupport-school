@@ -3413,3 +3413,23 @@ Status: owner-reported Win+R local dispatch fixed and tested Windows-to-Windows.
 - Mac implementation build/bundle-verified only, not deployed/native-tested this
   turn; active endpoint was Windows .94. Exact next step: owner tests custom border
   and normal reply once; no additional prolonged media/LAN benchmark required.
+
+## 2026-10-06 — v1.1.0 release packaging
+
+- Owner explicitly confirmed keeping GitHub Public and authorized push/release.
+  Preserve v1 assets; prepare a separate v1.1.0 release.
+- Version Rust workspace 1.1.0, Flutter 1.1.0+2; derive Mac Student/nested Agent
+  bundle versions from these sources. Fresh paired Mac Teacher, Mac Student and
+  Windows GNU x64 Student built with label v1.1.0 into target/release-v1.1.0.
+- Rust application regression:126 passed/2 ignored; Flutter analyzer clean and
+  31 tests passed. macOS signatures and both embedded Student manifest hashes
+  verified; clean Mac archives checked. Teacher root HTTP test downloaded fresh
+  Windows Student with bootstrap config and matching executable SHA256; endpoint
+  stopped after check. No logs/settings/tokens included in release archives.
+- Old test IP192.168.50.206 no longer assigned; adapter now172.16.49.233.
+  Release Teacher opened with current local IP for smoke test. Windows .94 SSH
+  actually timed out; no credential failure inferred. Manual GitHub Actions
+  windows-2022 workflow builds fresh paired x64 Teacher/Student using Flutter3.38.6
+  and app-local VC runtime instead; source push99887f4, run37418693586.
+- Native performance acceptance unchanged: this packaging verification is not
+  40physical-PC wired-LAN acceptance. See docs/21_RELEASE_V1_1_0.md.
