@@ -3433,3 +3433,11 @@ Status: owner-reported Win+R local dispatch fixed and tested Windows-to-Windows.
   and app-local VC runtime instead; source push99887f4, run37418693586.
 - Native performance acceptance unchanged: this packaging verification is not
   40physical-PC wired-LAN acceptance. See docs/21_RELEASE_V1_1_0.md.
+- Windows CI run37418693586 succeeded; native MSVC x64 Teacher and portable
+  Student archives retrieved. Windows Teacher includes freshly built matching
+  student-packages/student-windows-x64.zip. No further runtime tests per owner.
+  Public v1.1.0 release packages: Teacher/Student macOS arm64 and Windows x64,
+  Vietnamese release notes and SHA256SUMS.txt. Release source target40f9d95;
+  packaging workflow source99887f4 differs only in documentation.
+  Next step: owner downloads release and tests normal classroom workflow when
+  convenient; no additional benchmark implied by successful builds.
