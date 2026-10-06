@@ -564,6 +564,11 @@ impl Window {
 
             if opts.borderless {
                 flags &= !winuser::WS_THICKFRAME;
+                if !opts.title {
+                    // Style zero is WS_OVERLAPPED; Windows adds a caption itself.
+                    // A genuine titleless notification must be a popup window.
+                    flags |= winuser::WS_POPUP;
+                }
             }
 
             //TODO: UpdateLayeredWindow, etc.
@@ -953,6 +958,11 @@ impl Window {
     pub fn set_visible(&mut self, visible: bool) {
         unsafe { winuser::ShowWindow(self.hwnd, if visible {winuser::SW_RESTORE} else {winuser::SW_HIDE}); }
         if visible { unsafe {winuser::SetForegroundWindow(self.hwnd);} }
+    }
+    // Keep notification painting out of the foreground/key-focus path.
+    pub fn show_inactive_topmost(&mut self) {
+        unsafe { winuser::SetWindowPos(self.hwnd, winuser::HWND_TOPMOST, 0, 0, 0, 0,
+            winuser::SWP_SHOWWINDOW | winuser::SWP_NOSIZE | winuser::SWP_NOMOVE | winuser::SWP_NOACTIVATE); }
     }
     pub fn show_inactive(&mut self) { unsafe { winuser::ShowWindow(self.hwnd, winuser::SW_SHOWNOACTIVATE); } }
     pub fn is_visible(&self) -> bool { unsafe {winuser::IsWindowVisible(self.hwnd) != 0} }

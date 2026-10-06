@@ -164,6 +164,63 @@ void main() {
     expect(cover.dy, closeTo(0.5, 0.0001));
   });
   testWidgets(
+    'A recovered Observe session clears the previous receiver failure',
+    (t) async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+            const MethodChannel('window_manager'),
+            (_) async => null,
+          );
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+            const MethodChannel('classroom/observe'),
+            (c) async => c.method == 'attach'
+                ? 4
+                : c.method == 'stats'
+                ? {
+                    'width': 1920,
+                    'height': 1080,
+                    'sequence': 2,
+                    'native_frames': 2,
+                  }
+                : null,
+          );
+      final a = ObserveAgent()
+        ..state = {
+          'observe': {
+            'id': 'pc',
+            'phase': 'error',
+            'mode': 'observe',
+            'surface': '/private/tmp/failed-frame',
+            'error': 'Observe receiver exited: exit status: 1',
+          },
+        };
+      await t.pumpWidget(
+        MaterialApp(
+          home: ObserveWindow(agent: a, studentId: 'pc', name: 'PC'),
+        ),
+      );
+      a.notifyListeners();
+      await t.pump();
+      expect(find.textContaining('Observe receiver exited'), findsOneWidget);
+      a.state = {
+        'observe': {
+          'id': 'pc',
+          'phase': 'live',
+          'mode': 'observe',
+          'surface': '/private/tmp/recovered-frame',
+        },
+      };
+      a.notifyListeners();
+      await t.pump(const Duration(milliseconds: 100));
+      await t.pump();
+      expect(find.textContaining('Observe receiver exited'), findsNothing);
+      expect(find.byType(Texture), findsOneWidget);
+      await t.pumpWidget(const SizedBox());
+      a.dispose();
+    },
+  );
+  testWidgets(
     'Independent fit window stays read-only until acknowledged Control',
     (t) async {
       final titles = <String>[];

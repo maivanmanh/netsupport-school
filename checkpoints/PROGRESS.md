@@ -3173,3 +3173,24 @@ Status: owner-reported Win+R local dispatch fixed and tested Windows-to-Windows.
   Student. Save Teacher settings to retain popup preference across restart; update
   and diagnostics afterwards use existing Classroom TCP/IPC. Production protected
   Student service and port80 privileged setup remain separate work.
+
+## 2026-10-06 — smaller topmost notification, paired builds, Observe error recovery
+
+- Student popup300×78, bottom/right16px work-area margin, no title/control buttons,
+  topmost without activation, auto-hide3s. Native Windows probe exposed automatic
+  WS_CAPTION with style zero; explicitly use WS_POPUP for titleless borderless windows.
+- Owner build rule now in PROJECT_NOTES.md/AGENTS.md. Build Mac Teacher+Mac Student+
+  Windows x64 Student together and bundle matching ZIPs; Windows script also builds
+  paired Rust roles before Flutter (native Windows Teacher validation deferred).
+- Observe receiver logs: first2connections NoRoute65, third received live frames.
+  Fixed stale error latched in Flutter after recovery; receiver failure now includes
+  actual fatal error from bounded log tail. Regression covers fresh source recovery.
+- Verified Rust119pass/2ignored,Flutter28pass,analyze clean; paired release builds
+  and Teacher ZIP identity. Windows deployment through Classroom updater confirms
+  restarted version. Evidence:diagnostics/2026-10-06-popup-paired-build-observe.md.
+- Exact next step: owner tests existing Observe/control UI on final paired bundle.
+  No extended media benchmark or physical40-PC acceptance in this milestone.
+- Final native Windows verification:style94000000,no caption/system menu/min/max,
+  exstyle8 TOPMOST;300×78,16px margins. Updater complete paired-20261006-082848.
+  Running Teacher:target/popup-final-build/Classroom Console.app. Matching fresh
+  Mac Student:target/popup-final-build/Classroom Student.app; Windows updated .94.

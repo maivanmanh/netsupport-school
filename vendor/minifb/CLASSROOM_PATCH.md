@@ -21,3 +21,10 @@ of logical window dimensions. Completed left clicks are latched until the next
 native pump with release coordinates; SharedData Rust/C layout is kept in sync.
 An explicit diagnostic posts a zero-pressure mouse-down/up pair to NSApp's queue.
 Normal runtime never injects input. All native source/header changes rebuild.
+
+Notification windows can use `show_inactive_topmost`: Windows SetWindowPos with
+HWND_TOPMOST and SWP_NOACTIVATE, macOS floating level + orderFrontRegardless.
+Unlike the existing topmost method this does not make a hidden notification
+visible before its first paint or steal foreground keyboard focus.
+- Windows titleless borderless windows explicitly use `WS_POPUP`: style zero
+  means `WS_OVERLAPPED` and Windows otherwise adds `WS_CAPTION` automatically.

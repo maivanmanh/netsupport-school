@@ -437,6 +437,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
     recordState();
     final source = view['surface'] as String?;
     if (source != null && source != path && !attaching) {
+      modeError = null; // Errors belong to the old surface/session.
       attach(source);
     }
     final viewError = view['error'] as String? ?? '';
@@ -444,7 +445,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
     if (modeAcknowledged || viewError.isNotEmpty) {
       modeRequestTimer?.cancel();
       requestedMode = null;
-      if (viewError.isNotEmpty) modeError = viewError;
+      // Session errors are rendered directly from view, never latched as a mode error.
       if (modeAcknowledged) modeError = null;
     }
     final phase = view['phase'];

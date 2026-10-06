@@ -3,13 +3,29 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FLUTTER="${FLUTTER_BIN:-/Users/mvmanh/Development/flutter-sdk/bin/flutter}"
 cd "$ROOT"
+export CARGO_TARGET_DIR="$ROOT/target"
 SIGN_MODE="${CLASSROOM_MAC_SIGN_MODE:-adhoc}"
 case "$SIGN_MODE" in
   adhoc) SIGN_OPTIONS=(--development-ad-hoc); MANIFEST="$ROOT/target/teacher-development-signing.json" ;;
   apple) python3 scripts/sign-macos-app.py --check-identity; SIGN_OPTIONS=(); MANIFEST="$ROOT/target/teacher-signing.json" ;;
   *) echo "CLASSROOM_MAC_SIGN_MODE must be adhoc or apple" >&2; exit 1 ;;
 esac
-cargo build --release --bin Classroom
+# Always build paired roles from the same working tree; never ship a stale Student.
+export CLASSROOM_BUILD_LABEL="${CLASSROOM_BUILD_LABEL:-paired-$(date +%Y%m%d-%H%M%S)}"
+rustup run stable cargo build --release --bin Classroom --bin ClassroomStudent
+CROSS_DIR="$ROOT/target/rustup-windows"
+env CARGO_TARGET_DIR="$CROSS_DIR" rustup run stable cargo build --release \
+  --bin ClassroomStudent --target x86_64-pc-windows-gnu
+mkdir -p "$ROOT/target/updates"
+STUDENT_PACKAGE="$ROOT/target/updates/student-windows-x64.zip"
+python3 scripts/classroom-dev-update.py package \
+  "$CROSS_DIR/x86_64-pc-windows-gnu/release/ClassroomStudent.exe" \
+  --version "$CLASSROOM_BUILD_LABEL" --output "$STUDENT_PACKAGE"
+CLASSROOM_MAC_OUTPUT_DIR="${CLASSROOM_MAC_OUTPUT_DIR:-$ROOT/target}" \
+  bash scripts/build-student-macos.sh
+MAC_STUDENT="${CLASSROOM_MAC_OUTPUT_DIR:-$ROOT/target}/Classroom Student.app"
+python3 scripts/classroom-dev-update.py package "$MAC_STUDENT" \
+  --version "$CLASSROOM_BUILD_LABEL" --output "$ROOT/target/updates/student-macos-arm64.zip"
 cd apps/classroom_console
 "$FLUTTER" build macos --release
 BUILD_APP="$ROOT/apps/classroom_console/build/macos/Build/Products/Release/classroom_console.app"
@@ -37,13 +53,10 @@ PLIST
 cat > "$ROOT/target/flutter-helper.entitlements" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>com.apple.security.app-sandbox</key><true/><key>com.apple.security.inherit</key><true/></dict></plist>
 PLIST
-# Optional initial Windows Student bootstrap, served only when Teacher enables it.
-STUDENT_PACKAGE="${CLASSROOM_STUDENT_PACKAGE:-$ROOT/target/updates/student-windows-x64.zip}"
-rm -f "$BUILD_APP/Contents/Resources/student-packages/student-windows-x64.zip"
-if [[ -f "$STUDENT_PACKAGE" ]]; then
-  mkdir -p "$BUILD_APP/Contents/Resources/student-packages"
-  cp "$STUDENT_PACKAGE" "$BUILD_APP/Contents/Resources/student-packages/student-windows-x64.zip"
-fi
+# These packages were rebuilt above; missing packages are fatal, never optional.
+mkdir -p "$BUILD_APP/Contents/Resources/student-packages"
+cp "$STUDENT_PACKAGE" "$BUILD_APP/Contents/Resources/student-packages/student-windows-x64.zip"
+cp "$ROOT/target/updates/student-macos-arm64.zip" "$BUILD_APP/Contents/Resources/student-packages/student-macos-arm64.zip"
 python3 "$ROOT/scripts/sign-macos-app.py" "$BUILD_APP" \
   --identifier com.classroom.classroomConsole \
   --helper "$AGENT_APP" \

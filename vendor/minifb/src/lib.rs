@@ -534,6 +534,13 @@ impl Window {
         #[cfg(any(windows, target_os = "macos"))]
         self.0.show_inactive();
     }
+    /// Notification surface: raise above ordinary windows without taking focus.
+    pub fn show_inactive_topmost(&mut self) {
+        #[cfg(windows)]
+        self.0.show_inactive_topmost();
+        #[cfg(target_os = "macos")]
+        { self.0.topmost(true); self.0.show_inactive(); }
+    }
     /// Native visibility (Windows/macOS).
     pub fn is_visible(&self) -> bool {
         #[cfg(any(windows, target_os = "macos"))]

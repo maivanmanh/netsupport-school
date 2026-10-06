@@ -2,6 +2,16 @@
 use super::dashboard_view::Canvas;
 use minifb::{Window, WindowOptions};
 use std::time::{Duration, Instant};
+const WIDTH: usize = 300;
+const HEIGHT: usize = 78;
+const MARGIN: isize = 16;
+fn bottom_right(area: [isize; 4], frame: [isize; 4]) -> (isize, isize) {
+    let [x, y, w, h] = area;
+    (
+        x + (w - frame[2] - MARGIN).max(0),
+        y + (h - frame[3] - MARGIN).max(0),
+    )
+}
 
 #[derive(Default)]
 pub struct ConnectionStatus {
@@ -44,17 +54,21 @@ impl ConnectionStatus {
         if self.window.is_none() {
             match Window::new(
                 "Classroom · Connection",
-                400,
-                118,
+                WIDTH,
+                HEIGHT,
                 WindowOptions {
                     visible: false,
                     resize: false,
+                    borderless: true,
+                    title: false,
                     ..Default::default()
                 },
             ) {
                 Ok(mut window) => {
                     window.set_target_fps(0);
-                    self.canvas = Some(Canvas::new(400, 118));
+                    let (x, y) = bottom_right(window.work_area(), window.outer_frame());
+                    window.set_outer_origin(x, y);
+                    self.canvas = Some(Canvas::new(WIDTH, HEIGHT));
                     self.window = Some(window);
                     self.last_draw = None;
                     tracing::info!(connected, status, "Student connection popup shown");
@@ -80,15 +94,18 @@ impl ConnectionStatus {
             let canvas = self.canvas.as_mut().unwrap();
             canvas.set_density(window.backing_scale());
             canvas.pixels.fill(0x00f7_f9fb);
-            canvas.fill_rect([0, 0, 400, 36], 0x0017_3747);
-            canvas.text(16, 9, "Classroom Student", 0x00ff_ffff, 1);
             canvas.fill_rect(
-                [16, 60, 10, 10],
+                [0, 0, 4, HEIGHT],
+                if connected { 0x0021_a366 } else { 0x00e5_9a23 },
+            );
+            canvas.text(16, 9, "Classroom Student", 0x0065_7583, 1);
+            canvas.fill_rect(
+                [16, 37, 8, 8],
                 if connected { 0x0021_a366 } else { 0x00e5_9a23 },
             );
             canvas.text(
-                36,
-                52,
+                34,
+                28,
                 if connected {
                     "Connected to server"
                 } else {
@@ -98,8 +115,8 @@ impl ConnectionStatus {
                 1,
             );
             canvas.text(
-                36,
-                80,
+                34,
+                51,
                 status
                     .trim_start_matches("Connected to Teacher ")
                     .trim_start_matches("Connecting to Teacher "),
@@ -114,10 +131,29 @@ impl ConnectionStatus {
                 tracing::warn!(%error,"Connection popup draw failed");
                 self.dismissed = true;
             }
-            window.show_inactive();
+            let (x, y) = bottom_right(window.work_area(), window.outer_frame());
+            window.set_outer_origin(x, y);
+            window.show_inactive_topmost();
             self.last_draw = Some(Instant::now());
         } else {
             window.update();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn notification_respects_work_area_margin_negative_origins_and_small_screens() {
+        assert_eq!(
+            bottom_right([0, 0, 1920, 1040], [0, 0, 300, 78]),
+            (1604, 946)
+        );
+        assert_eq!(
+            bottom_right([-1920, 40, 1920, 1000], [0, 0, 300, 78]),
+            (-316, 946)
+        );
+        assert_eq!(bottom_right([10, 20, 200, 60], [0, 0, 300, 78]), (10, 20));
     }
 }

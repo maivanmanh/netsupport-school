@@ -47,7 +47,7 @@ Mac Student dev giữ Exit/Restart để test. Updater vẫn có thể đóng/th
 
 ## Packaging / tự động hóa
 
-Mac Teacher build tự bundle package nếu tồn tại:
+Mac Teacher build luôn build lại Teacher/Student và bundle package tương ứng:
 
 ```sh
 python3 scripts/classroom-dev-update.py package \
@@ -57,8 +57,9 @@ CLASSROOM_MAC_OUTPUT_DIR="$PWD/target/student-bootstrap-build" \
   CLASSROOM_MAC_SIGN_MODE=adhoc bash scripts/build-flutter-macos.sh
 ```
 
-Có thể override `CLASSROOM_STUDENT_PACKAGE` bằng path ZIP. Windows Teacher build
-cũng copy `target/updates/student-windows-x64.zip` sang `student-packages/` khi có.
+Teacher không dùng package cũ/optional. Build script Mac tạo cả Student Mac dev
+và Windows x64, cùng label; Windows Teacher script build Rust x64 roles rồi tạo
+package trước Flutter. Xem [project notes](../PROJECT_NOTES.md).
 Nếu chưa bundle, UI **Choose Windows Student ZIP…** chọn dev-update ZIP có manifest
 Windows, executable `ClassroomStudent.exe` ở root, checksum đúng. Cần binary mới
 có đọc bootstrap; không dùng Student/Teacher legacy cho lần cài này.

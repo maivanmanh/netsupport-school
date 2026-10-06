@@ -8,7 +8,7 @@ case "$SIGN_MODE" in
   apple) python3 scripts/sign-macos-app.py --check-identity; SIGN_OPTIONS=(); MANIFEST="$ROOT/target/student-signing.json" ;;
   *) echo "CLASSROOM_MAC_SIGN_MODE must be adhoc or apple" >&2; exit 1 ;;
 esac
-cargo build --release --bin ClassroomStudent
+env CARGO_TARGET_DIR="$ROOT/target" rustup run stable cargo build --release --bin ClassroomStudent
 STAGING="$ROOT/target/student-macos-staging/Classroom Student.app"
 OUTPUT_DIR="${CLASSROOM_MAC_OUTPUT_DIR:-$ROOT/target}"
 mkdir -p "$OUTPUT_DIR"

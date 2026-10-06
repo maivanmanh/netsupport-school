@@ -249,3 +249,11 @@ Chưa có bằng chứng yêu cầu redesign Teacher. Giữ các quyết định
 ưu tiên xác định nút thắt receiver/network và giảm thời gian phục hồi. Các mốc
 nghiệm thu Phase 1 phía trên vẫn áp dụng; báo cáo chi tiết liên kết ở mục trước
 là nguồn bằng chứng, không suy rộng số đo A/B thành hiệu năng 1080p/40 máy.
+
+### Owner build rule — 2026-10-06
+
+Read [PROJECT_NOTES.md](PROJECT_NOTES.md). Every requested build must rebuild both
+Teacher and Student from the same source revision and include the corresponding
+fresh Student package in Teacher, ready for LAN sharing. Never ship a Teacher
+with an optional/missing/stale Student ZIP. This does not require deploying every
+Student for a Teacher-only change; preserve existing deployment/update rules.

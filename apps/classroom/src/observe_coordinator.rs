@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::{
     collections::VecDeque,
-    io::{BufRead, Write},
+    io::{BufRead, Read, Seek, SeekFrom, Write},
     path::Path,
     process::{Command, Stdio},
     sync::{
@@ -93,9 +93,38 @@ fn enqueue_input(input: &mut VecDeque<Value>, v: Value) -> Result<()> {
     Ok(())
 }
 
+/// Read only the bounded log tail after the receiver has flushed and exited.
+fn receiver_failure(path: &Path) -> Option<String> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let size = file.metadata().ok()?.len();
+    file.seek(SeekFrom::Start(size.saturating_sub(8192))).ok()?;
+    let mut bytes = Vec::with_capacity(8192);
+    file.take(8192).read_to_end(&mut bytes).ok()?;
+    String::from_utf8_lossy(&bytes)
+        .lines()
+        .rev()
+        .find(|line| line.contains("ERROR Classroom terminated with error"))
+        .and_then(|line| line.split_once(" error="))
+        .map(|(_, detail)| detail.chars().take(512).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn receiver_exit_uses_only_error_from_bounded_log_tail() {
+        let path = std::env::temp_dir().join(format!(
+            "classroom-receiver-error-{}.log",
+            std::process::id()
+        ));
+        std::fs::write(&path,format!("{}\nunix_ms=1 ERROR Classroom terminated with error error=\"No route to host (os error 65)\"\n", "info\n".repeat(3000))).unwrap();
+        assert!(receiver_failure(&path)
+            .unwrap()
+            .contains("No route to host"));
+        std::fs::write(&path, "INFO receiver ready\n").unwrap();
+        assert!(receiver_failure(&path).is_none());
+        std::fs::remove_file(path).unwrap();
+    }
     #[test]
     fn motion_is_coalesced_without_crossing_click_barriers() {
         let mut events = VecDeque::new();
@@ -215,7 +244,13 @@ fn run(
             break;
         }
         if let Some(exit) = child.0.try_wait()? {
-            anyhow::ensure!(exit.success(), "Observe receiver exited: {exit}");
+            if !exit.success() {
+                let detail = receiver_failure(&surface.with_extension("log.txt"));
+                anyhow::bail!(
+                    "Observe receiver exited: {exit}{}",
+                    detail.map_or(String::new(), |message| format!(" · {message}"))
+                );
+            }
             break;
         }
         for _ in 0..64 {
