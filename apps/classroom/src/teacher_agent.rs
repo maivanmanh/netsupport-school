@@ -450,6 +450,15 @@ pub(super) fn run(
                 let id = command.id;
                 let mut job_id: Option<String> = None;
                 let response = match command.action.as_str() {
+                    "thumbnail_size" => command.input["width"]
+                        .as_u64()
+                        .filter(|v| [240, 360, 480].contains(v))
+                        .ok_or("Invalid thumbnail size")
+                        .and_then(|width| {
+                            observe_jobs
+                                .set_thumbnail_width(width as u32)
+                                .map_err(|_| "Invalid thumbnail size")
+                        }),
                     "connection_popup" => {
                         if let Some(enabled) = command.input["enabled"].as_bool() {
                             tools_hub.set_connection_popup(enabled);

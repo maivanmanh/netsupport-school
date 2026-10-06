@@ -8,6 +8,18 @@ class LiveAgent extends Agent {
   bool get connected => true;
 }
 
+class TierAgent extends LiveAgent {
+  final widths = <int>[];
+  @override
+  Future<void> command(
+    String action, [
+    Iterable<String> selected = const [],
+    Map<String, dynamic>? input,
+  ]) async {
+    if (action == 'thumbnail_size') widths.add(input!['width'] as int);
+  }
+}
+
 Map<String, dynamic> room(
   List<Map<String, dynamic>> rows, [
   String ip = '10.0.55.200',
@@ -19,6 +31,33 @@ Map<String, dynamic> pc(String id, String ip, bool online) => {
   'online': online,
 };
 void main() {
+  testWidgets(
+    'Thumbnail tiers coalesce slider reversals and suppress repeated tiers',
+    (tester) async {
+      final a = TierAgent();
+      a.thumbnailSize(200);
+      await tester.pump(const Duration(milliseconds: 500));
+      a.thumbnailSize(450);
+      await tester.pump(const Duration(milliseconds: 500));
+      a.thumbnailSize(330);
+      await tester.pump(const Duration(milliseconds: 899));
+      expect(a.widths, isEmpty);
+      await tester.pump(const Duration(milliseconds: 1));
+      expect(a.widths, [360]);
+      a.thumbnailSize(390);
+      await tester.pump(const Duration(seconds: 1));
+      expect(a.widths, [360]);
+      a.thumbnailSize(200);
+      await tester.pump(const Duration(milliseconds: 200));
+      a.thumbnailSize(330);
+      await tester.pump(const Duration(seconds: 1));
+      expect(a.widths, [360]);
+      a.thumbnailSize(480);
+      await tester.pump(const Duration(seconds: 1));
+      expect(a.widths, [360, 480]);
+      a.dispose();
+    },
+  );
   test(
     'Reconnect retires matching offline identity, persists migration, preserves live peers',
     () async {

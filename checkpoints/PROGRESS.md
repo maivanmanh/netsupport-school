@@ -3214,3 +3214,31 @@ Status: owner-reported Win+R local dispatch fixed and tested Windows-to-Windows.
 - Runtime verified after new Teacher launch: actual known-students.json now contains
   exactly1 MAIVANMANHED30/192.168.50.94 record, retaining current Student ID
   1791248125994874600-5256-47810. Both bundled Student ZIPs byte-match fresh packages.
+
+## 2026-10-06 — immediate Observe control and debounced thumbnail tiers
+
+- Student previously slept up to2s after thumbnail response before reading Observe.
+  Move bounded snapshot rate limiting before snapshot work; read next control
+  immediately. Teacher condition-variable wake already bypasses idle interval.
+  No warm encoder pool/continuous capture on40Student machines; only requested
+  Observe source starts. Existing thumbnail work may still finish first.
+- Teacher grid actual item width/Auto selects240/360/480px bounding box;900ms
+  debounce, deduplicate unchanged tier/reversals. Rust validates three widths and
+  atomically keeps only latest tier; next normal request sends it at existing2s
+  cadence, preserving JPEG48KiB bound and source aspect/even dimensions.
+- Rust120pass/2ignored (new real-TCP regression bypasses2s cadence);Flutter30pass
+  including fast slider reversals;analyze clean. Fresh paired Mac Teacher+Mac
+  Student+Windows x64 Student built. Windows .94 updated via Classroom, confirms
+  paired-20261006-092013; no SSH binary deployment.
+- Running isolated Teacher:target/observe-thumbnail-build/Classroom Console.app.
+  Student ZIPs bundled. No need to warm all endpoints or extended benchmark loop.
+- Short live .94 check:received thumbnail tiers240→214×134,360→324×202,
+  480→432×270 (source1728×1080 aspect/even rounding). Observe queue0.048ms,
+  source handshake27.06ms,source-ready61.04ms; first decoded surface frame571.7ms
+  from observe_open command. Previous source-ready3213ms was another cold session,
+  not matched repeated benchmark. New570ms measure excludes Flutter window startup
+  and is NOT glass-to-glass/control latency. Evidence ignored target/
+  observe-thumbnail-runtime.json. Closed probe session,restored360tier,apps running.
+- Exact next step:owner checks grid slider and normal Observe UX. Existing Student
+  builds can accept new size requests, but Observe cadence fix requires newStudent;
+  .94 already updated. Mac Student built/bundled,not remotely deployed/validated.

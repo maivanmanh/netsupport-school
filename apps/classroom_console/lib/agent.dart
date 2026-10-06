@@ -24,6 +24,9 @@ class Agent extends ChangeNotifier {
   int serial = 0;
   bool disposed = false;
   Timer? reconnect;
+  Timer? thumbnailSizeTimer;
+  int? requestedThumbnailWidth;
+  int? sentThumbnailWidth;
   bool exiting = false;
   bool logBusy = false;
   final Map<String, Map<String, dynamic>> known = {};
@@ -145,6 +148,22 @@ class Agent extends ChangeNotifier {
             log('roster save failed: $e');
           });
     }
+  }
+
+  void thumbnailSize(double itemWidth) {
+    final tier = itemWidth <= 280 ? 240 : (itemWidth <= 400 ? 360 : 480);
+    if (tier == requestedThumbnailWidth) return;
+    requestedThumbnailWidth = tier;
+    thumbnailSizeTimer?.cancel();
+    thumbnailSizeTimer = Timer(const Duration(milliseconds: 900), () async {
+      if (disposed || !connected || sentThumbnailWidth == tier) return;
+      try {
+        await command('thumbnail_size', const [], {'width': tier});
+        sentThumbnailWidth = tier;
+      } catch (e) {
+        await log('thumbnail tier request failed: $e');
+      }
+    });
   }
 
   Future<void> rescan() async {
@@ -387,6 +406,8 @@ class Agent extends ChangeNotifier {
     );
     final previous = socket;
     socket = s;
+    requestedThumbnailWidth = null;
+    sentThumbnailWidth = null;
     previous?.destroy();
     s.setOption(SocketOption.tcpNoDelay, true);
     final ready = Completer<void>();
@@ -454,6 +475,7 @@ class Agent extends ChangeNotifier {
           notifyListeners();
           if (!exiting) {
             reconnect?.cancel();
+            thumbnailSizeTimer?.cancel();
             reconnect = Timer(const Duration(seconds: 2), start);
           }
         }
@@ -662,6 +684,7 @@ class Agent extends ChangeNotifier {
     shutdownReceived = true;
     exiting = true;
     reconnect?.cancel();
+    thumbnailSizeTimer?.cancel();
     observeMoveFlush?.cancel();
     pendingObserveMoves.clear();
     await log('application Exit received; closing dependent window');
@@ -672,6 +695,7 @@ class Agent extends ChangeNotifier {
   void dispose() {
     disposed = true;
     reconnect?.cancel();
+    thumbnailSizeTimer?.cancel();
     observeMoveFlush?.cancel();
     observeMoveFlush = null;
     pendingObserveMoves.clear();

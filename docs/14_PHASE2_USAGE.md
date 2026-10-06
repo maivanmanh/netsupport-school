@@ -269,3 +269,18 @@ folder có tối đa 100.000 entry và 4 GiB dữ liệu nguồn, không hỗ tr
 Một lượt drop tối đa 32 item và chuẩn bị tuần tự. Các giới hạn package dev update
 độc lập, không thay bởi `max_file_mb`. File lỗi chuẩn bị được xóa; staged file bỏ
 dở do tiến trình bị tắt được cơ chế outbox hiện có dọn sau 24 giờ ở lần khởi động.
+
+### Adaptive thumbnail tiers (2026-10-06)
+
+Flutter Teacher requests one of three thumbnail bounding boxes from actual grid
+item width (including Auto layout): ≤280px →240×135; ≤400px →360×202;
+otherwise480×270. Capture preserves source aspect ratio and even dimensions, so
+actual received pixels may be smaller. Slider changes debounce900ms; repeated
+same-tier values send nothing. Teacher stores only the latest tier, uses it in the
+next normally paced snapshot request, and retains the2s cadence/48KiB JPEG budget.
+No new per-frame control messages or continuous pre-encoding on idle Students.
+
+Observe wakes the Teacher monitoring wait. Student reads the next control message
+immediately after responding; snapshot rate limiting applies before capture, rather
+than sleeping after responses and delaying Observe. An in-progress snapshot can
+still finish before Observe; cold capture/encoder startup remains on-demand.

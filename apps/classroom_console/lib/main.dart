@@ -914,6 +914,7 @@ class _ConsoleState extends State<Console> with WindowListener {
   ) {
     final columns = gridColumns(c.maxWidth, count, c.maxHeight);
     final itemWidth = (c.maxWidth - (columns - 1) * 16) / columns;
+    agent.thumbnailSize(itemWidth);
     return SliverGridDelegateWithFixedCrossAxisCount(
       crossAxisCount: columns,
       crossAxisSpacing: 16,

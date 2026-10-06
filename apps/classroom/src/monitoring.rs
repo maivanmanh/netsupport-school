@@ -12,7 +12,7 @@ use std::{
     io::{Read, Write},
     net::{Shutdown, SocketAddr, SocketAddrV4, TcpListener, TcpStream},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         Arc, Condvar, Mutex,
     },
     thread,
@@ -25,6 +25,7 @@ pub type ObserveJobs = Arc<ObserveRequests>;
 pub struct ObserveRequests {
     pub entries: Mutex<std::collections::HashMap<String, ObserveJob>>,
     wake: Condvar,
+    thumbnail_width: AtomicU32,
     /// Teacher's enhanced-profile offer (codecs it decodes, fps ceiling).
     offer: (Vec<String>, u32),
 }
@@ -34,6 +35,12 @@ impl ObserveRequests {
             offer,
             ..Self::default()
         }
+    }
+    pub fn set_thumbnail_width(&self, width: u32) -> Result<()> {
+        anyhow::ensure!([240, 360, 480].contains(&width), "Invalid thumbnail tier");
+        self.thumbnail_width.store(width, Ordering::Release);
+        info!(width, "Teacher thumbnail tier changed");
+        Ok(())
     }
     pub fn request(&self, id: String) {
         let mut entries = self.entries.lock().unwrap();
@@ -314,12 +321,22 @@ fn serve(
                 j.profile = reply.codec;
             }
         }
+        let tier = jobs.thumbnail_width.load(Ordering::Acquire);
+        let width = match tier {
+            0 => settings.width,
+            width => width,
+        };
+        let height = if tier == 0 {
+            settings.height
+        } else {
+            width * 9 / 16
+        };
         let request_at = Instant::now();
         send(
             socket,
             Payload::ThumbnailRequest(ThumbnailRequest {
-                width: settings.width,
-                height: settings.height,
+                width,
+                height,
                 interval_ms: settings.interval_ms,
                 quality: u32::from(settings.jpeg_quality),
             }),
@@ -456,6 +473,7 @@ fn capture_requests(
     let mut sequence = 0_u64;
     let mut retry_at = Instant::now();
     let mut previous: Option<VideoFrame> = None;
+    let mut thumbnail_due = Instant::now();
     while !stop.load(Ordering::Acquire) {
         let message = read(socket)?;
         if let Payload::Observe(command) = message {
@@ -516,7 +534,14 @@ fn capture_requests(
         {
             publisher.take();
         }
+        // Read control immediately after each response. Rate-limit only snapshots,
+        // never the Observe command waiting on this connection.
+        sleep(
+            stop,
+            thumbnail_due.saturating_duration_since(Instant::now()),
+        );
         let started = Instant::now();
+        thumbnail_due = started + Duration::from_millis(u64::from(request.interval_ms));
         sequence = sequence.wrapping_add(1);
         let mut frame = ThumbnailFrame {
             width: 0,
@@ -601,11 +626,6 @@ fn capture_requests(
             total_ms = started.elapsed().as_secs_f64() * 1000.0,
             "student thumbnail response complete"
         );
-        // Never let a peer drive capture faster than its requested bounded interval.
-        sleep(
-            stop,
-            Duration::from_millis(u64::from(request.interval_ms)).saturating_sub(started.elapsed()),
-        );
     }
     Ok(())
 }
@@ -655,6 +675,54 @@ fn encode(pixels: &VideoFrame, quality: u8, sequence: u64) -> Result<ThumbnailFr
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn observe_bypasses_student_thumbnail_cadence_on_same_socket() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut student, _) = listener.accept().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let canceled = Arc::clone(&stop);
+        let worker = thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let _ = capture_requests(
+                &mut student,
+                "test",
+                &Arc::new(AtomicBool::new(true)),
+                &canceled,
+                &classroom_config::Config::load(None).unwrap().0,
+                runtime.handle(),
+            );
+        });
+        let _ = read(&mut peer).unwrap();
+        send(
+            &mut peer,
+            Payload::ThumbnailRequest(ThumbnailRequest {
+                width: 240,
+                height: 135,
+                interval_ms: 2000,
+                quality: 65,
+            }),
+        )
+        .unwrap();
+        assert!(matches!(
+            read(&mut peer).unwrap(),
+            Payload::ThumbnailFrame(_)
+        ));
+        let began = Instant::now();
+        send(
+            &mut peer,
+            Payload::Observe(protocol::ObserveMessage {
+                action: "start".into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        assert!(matches!(read(&mut peer).unwrap(), Payload::Observe(_)));
+        assert!(began.elapsed() < Duration::from_millis(500));
+        stop.store(true, Ordering::Release);
+        peer.shutdown(Shutdown::Both).unwrap();
+        worker.join().unwrap();
+    }
     #[test]
     fn observe_request_wakes_target_thumbnail_wait_without_waiting_for_interval() {
         let jobs = Arc::new(ObserveRequests::default());
