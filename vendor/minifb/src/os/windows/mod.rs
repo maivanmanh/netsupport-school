@@ -962,6 +962,19 @@ impl Window {
         if visible { unsafe {winuser::SetForegroundWindow(self.hwnd);} }
     }
     // Keep notification painting out of the foreground/key-focus path.
+    pub fn resize_notification(&mut self, width: usize, height: usize) -> Result<()> {
+        // SAFETY: UI thread, owned borderless HWND; refresh callback pointer before
+        // synchronous WM_SIZE dispatch. No activation, new HWND or window teardown.
+        unsafe {
+            set_window_long(self.hwnd, self as *mut Self as _);
+            if winuser::SetWindowPos(self.hwnd, std::ptr::null_mut(), 0, 0,
+                width as i32 * self.scale_factor, height as i32 * self.scale_factor,
+                winuser::SWP_NOMOVE | winuser::SWP_NOZORDER | winuser::SWP_NOACTIVATE) == 0 {
+                return Err(Error::UpdateFailed("Could not resize notification".into()));
+            }
+        }
+        Ok(())
+    }
     pub fn copy_text(&mut self, text: &str) -> Result<()> {
         use winapi::um::winbase;
         let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();

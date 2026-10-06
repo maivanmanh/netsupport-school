@@ -204,6 +204,14 @@ impl Canvas {
         self.glyphs.clear();
         true
     }
+    /// Thin custom outline for borderless native notifications (logical pixels).
+    pub(crate) fn notification_border(&mut self, width: usize, height: usize) {
+        let color = 0x00b8_c6d1;
+        self.fill_rect([0, 0, width, 1], color);
+        self.fill_rect([0, height.saturating_sub(1), width, 1], color);
+        self.fill_rect([0, 0, 1, height], color);
+        self.fill_rect([width.saturating_sub(1), 0, 1, height], color);
+    }
     pub(crate) fn fill_rect(&mut self, area: [usize; 4], color: u32) {
         self.rect(
             Rect {

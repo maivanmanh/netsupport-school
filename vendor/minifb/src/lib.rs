@@ -534,6 +534,16 @@ impl Window {
         #[cfg(any(windows, target_os = "macos"))]
         self.0.show_inactive();
     }
+    /// Resize a borderless fixed notification in place, retaining its native handle.
+    pub fn resize_notification(&mut self, width: usize, height: usize) -> Result<()> {
+        if width == 0 || height == 0 || width > 8192 || height > 8192 {
+            return Err(Error::UpdateFailed("Invalid notification size".into()));
+        }
+        #[cfg(any(windows, target_os = "macos"))]
+        { self.0.resize_notification(width, height) }
+        #[cfg(not(any(windows, target_os = "macos")))]
+        { Err(Error::UpdateFailed("Notification resize unsupported".into())) }
+    }
     /// Copy plain Unicode text through the OS clipboard, without a shell process.
     pub fn copy_text(&mut self, text: &str) -> Result<()> {
         #[cfg(any(windows, target_os = "macos"))]

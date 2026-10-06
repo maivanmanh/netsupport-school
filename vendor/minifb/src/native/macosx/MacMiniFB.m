@@ -968,6 +968,11 @@ void mfb_passive_overlay(void* ptr, unsigned char alpha) {
     [window setCollectionBehavior:NSWindowCollectionBehaviorTransient | NSWindowCollectionBehaviorIgnoresCycle | NSWindowCollectionBehaviorFullScreenAuxiliary];
 }
 
+void mfb_resize_notification(void* ptr, uint32_t width, uint32_t height) {
+    OSXWindow* window = (OSXWindow*)ptr;
+    [window setContentSize:NSMakeSize(width * window->scale, height * window->scale)];
+}
+
 bool mfb_copy_text(const unsigned char* bytes, size_t length) {
     @autoreleasepool {
         NSString* text = [[NSString alloc] initWithBytes:bytes length:length encoding:NSUTF8StringEncoding];

@@ -244,6 +244,7 @@ impl FileWindow {
         let gw = c.text_width(glyph, 1);
         c.text(collapse[0] + (26 - gw) / 2, 7, glyph, 0x0022_3342, 1);
         if layout.collapsed {
+            c.notification_border(WIDTH, layout.height());
             return;
         }
         for (i, t) in rows(transfers).into_iter().enumerate() {
@@ -325,6 +326,7 @@ impl FileWindow {
             0x00ff_ffff,
             1,
         );
+        c.notification_border(WIDTH, layout.height());
     }
 }
 

@@ -137,11 +137,13 @@ struct Popup {
 pub struct StudentToolsUi {
     inbox: Arc<Inbox>,
     popup: Option<Popup>,
+    message_epoch: u64,
     files: super::student_file_ui::FileProgress,
 }
 impl StudentToolsUi {
     pub fn new(inbox: Arc<Inbox>) -> Self {
         Self {
+            message_epoch: inbox.message_epoch(),
             inbox,
             popup: None,
             files: super::student_file_ui::FileProgress::default(),
@@ -149,6 +151,11 @@ impl StudentToolsUi {
     }
     pub fn pump(&mut self) {
         self.files.pump(&self.inbox);
+        let epoch = self.inbox.message_epoch();
+        if epoch != self.message_epoch {
+            self.popup = None; // Old Teacher session: do not send a dismissed event.
+            self.message_epoch = epoch;
+        }
         if self.popup.is_none() {
             if let Some(p) = self.inbox.take() {
                 match Popup::new(p.clone()) {
@@ -163,6 +170,7 @@ impl StudentToolsUi {
         let Some(p) = self.popup.as_mut() else { return };
         match p.pump() {
             Ok(Some((status, text))) => {
+                p.window.set_visible(false);
                 self.inbox.event(&p.message.id, status, &text, 0);
                 self.popup = None;
             }
@@ -252,20 +260,18 @@ impl Popup {
         self.last_draw = std::time::Instant::now();
         Ok(())
     }
-    /// minifb cannot resize a fixed window, so expanding for Reply (or
-    /// collapsing on Cancel) reopens it centered on the same display.
+    /// Reply changes the existing native surface, never creates a second dialog.
     fn set_replying(&mut self, replying: bool) -> Result<()> {
         self.replying = replying;
         self.characters.lock().unwrap().clear();
         let layout = Layout::new(self.layout.width, self.lines.len(), replying);
         let area = self.window.work_area();
-        let mut window = open_window(layout.width, layout.height)?;
-        window.set_input_callback(Box::new(Characters(Arc::clone(&self.characters))));
-        let (x, y) = centered(area, window.outer_frame());
-        window.set_outer_origin(x, y);
+        self.window
+            .resize_notification(layout.width, layout.height)?;
+        let (x, y) = centered(area, self.window.outer_frame());
+        self.window.set_outer_origin(x, y);
         self.canvas.resize(layout.width, layout.height);
         self.layout = layout;
-        self.window = window;
         self.previous_down = false;
         self.hover = None;
         let (order, default) = focus_order(replying, self.message.allow_reply);
@@ -528,6 +534,7 @@ impl Popup {
                 1,
             );
         }
+        self.canvas.notification_border(width, self.layout.height);
     }
 }
 fn centered(area: [isize; 4], frame: [isize; 4]) -> (isize, isize) {

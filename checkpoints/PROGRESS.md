@@ -3379,3 +3379,37 @@ Status: owner-reported Win+R local dispatch fixed and tested Windows-to-Windows.
 - Matching Teacher opened. Mac clipboard/UI compiled/bundled, not native-tested or
   remotely deployed in this turn (only .94 active). Exact next step: owner verifies
   simplified popups with normal file/message actions; no prolonged media test needed.
+
+## 2026-10-06 — Popup outline, single-window Reply and stale tools events
+
+- Owner clarified OS-borderless still needs custom outline; both Student popups
+  now draw a thin1logical-pixel gray-blue perimeter, including collapsed file view.
+- Teacher log at unix_ms1791257640529 showed Unknown classroom job, followed by
+  disconnect marking pending message d985e98d9ec9ba229d206b8bb865d435 error. A message
+  event from previous Teacher history/session must not close an otherwise healthy
+  tools channel or fail unrelated current jobs. Hub ACK/discards unknown job events;
+  known-job recipient/status/size/reply rules unchanged. Safe event IDs/status logged,
+  never message/reply text. Pre-fix evidence target/reply-before-teacher-log.txt.
+- Add per-Hub tools session tag in existing handshake token field. New Student
+  clears obsolete message queue/events and active popup on a changed Teacher tag;
+  same-session reconnect preserves pending messages. File events retained, legacy
+  Teachers without tags accepted. No protobuf/version change, no video changes.
+- Reply now resizes one borderless native window in place and preserves callback/
+  HWND/Cocoa object. Send/OK hides immediately then queues final event and drops
+  popup; no second reply window/leftover parent created. Reply Cancel recenters and
+  collapses the same window. Actual subsequent inbox messages still display normally.
+- Rust126pass/2ignored, including stale-event/current-job isolation and only-new-
+  session cleanup regressions; previous center/copy/reply/progress tests pass.
+  Paired Teacher/Mac Student/Windows x64 Student release build successful,
+  paired-20261006-103941. Windows .94 updater confirms1791258003 version. Teacher
+  target/student-reply-fix-build/Classroom Console.app opened, matching packages.
+- Native Windows Reply probe: count1 before and expanded, same HWND=true, height
+  129→236; after Send visible message windows=0, Teacher status=replied and exact
+  synthetic reply match. Restart test had one pending old message; after Teacher
+  restart count0 and tools ready=true. Evidence target/reply-native-result.json.
+  First immediate LaunchServices open after quit returned -600 (old app finishing
+  shutdown); retry after it exited succeeded, restart verification completed with a
+  separate short native scan. Temporary tasks/scripts/results removed remotely.
+- Mac implementation build/bundle-verified only, not deployed/native-tested this
+  turn; active endpoint was Windows .94. Exact next step: owner tests custom border
+  and normal reply once; no additional prolonged media/LAN benchmark required.

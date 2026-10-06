@@ -38,3 +38,6 @@ The presentation owns the badge's lifetime; it never takes keyboard focus.
 - Round FPS badges use a true native ellipse: Windows transfers an elliptical
   region to the owned HWND; macOS clips the content layer over a clear nonopaque
   window. Click-through, alpha and inactive topmost behavior remain unchanged.
+- Fixed notification resize is now exposed for Windows/macOS: retain the native
+  handle/callbacks and resize without activating. Reply uses this rather than
+  creating/destroying another window. Normal user resize options remain unchanged.

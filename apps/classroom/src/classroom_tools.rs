@@ -14,8 +14,8 @@ use std::{
     net::{Shutdown, SocketAddr, SocketAddrV4, TcpListener, TcpStream},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        Arc, Mutex, OnceLock,
     },
     thread,
     time::{Duration, Instant},
@@ -217,7 +217,7 @@ struct State {
     capabilities: HashMap<String, Value>,
 }
 #[derive(Default)]
-pub struct Hub(Mutex<State>, AtomicBool);
+pub struct Hub(Mutex<State>, AtomicBool, OnceLock<String>);
 impl Hub {
     pub fn set_connection_popup(&self, enabled: bool) {
         self.1.store(enabled, Ordering::Release);
@@ -532,11 +532,12 @@ impl Hub {
     }
     fn event(&self, student: &str, p: &ToolPacket) -> Result<()> {
         let mut s = self.0.lock().unwrap();
-        let j = s
-            .jobs
-            .iter_mut()
-            .find(|j| j.packet.id == p.id)
-            .context("Unknown classroom job")?;
+        let Some(j) = s.jobs.iter_mut().find(|j| j.packet.id == p.id) else {
+            // A Student can finish an old popup after Teacher restart/history
+            // eviction. Acknowledge/discard that event, never poison current jobs.
+            info!(job_id=%p.id, student_id=student, status=%p.status, "Stale classroom tools event discarded");
+            return Ok(());
+        };
         let t = j
             .targets
             .get_mut(student)
@@ -698,6 +699,7 @@ pub fn teacher(
     diagnostics: Arc<super::diagnostics::Service>,
 ) -> Result<Server> {
     let listener = TcpListener::bind(address)?;
+    let _ = hub.2.set(nonce()?);
     listener.set_nonblocking(true)?;
     let stop = Arc::new(AtomicBool::new(false));
     let cancel = Arc::clone(&stop);
@@ -809,6 +811,7 @@ fn serve(
         .is_some_and(|c| hub.confirm_update(&hello.student, c));
     let result = (|| {
         let mut ack = packet("ok");
+        ack.token = hub.2.get().cloned().unwrap_or_default();
         if confirmed {
             ack.status = "update_confirmed".into();
         }
@@ -941,6 +944,8 @@ fn publish_timeout(size: u64) -> Duration {
 #[derive(Default)]
 pub struct Inbox {
     messages: Mutex<VecDeque<ToolPacket>>,
+    message_session: Mutex<String>,
+    message_epoch: AtomicU64,
     events: Mutex<VecDeque<ToolPacket>>,
     transfers: Mutex<VecDeque<Transfer>>,
     pub update_exit: AtomicBool,
@@ -991,6 +996,25 @@ impl Inbox {
             if let Err(error) = result {
                 tracing::warn!(%error,"Connection popup preference could not be saved");
             }
+        }
+    }
+    pub fn message_epoch(&self) -> u64 {
+        self.message_epoch.load(Ordering::Acquire)
+    }
+    fn bind_message_session(&self, session: &str) {
+        if session.is_empty() {
+            return;
+        } // Older Teachers do not send a session tag.
+        let mut current = self.message_session.lock().unwrap();
+        if *current != session {
+            self.messages.lock().unwrap().clear();
+            self.events
+                .lock()
+                .unwrap()
+                .retain(|p| !matches!(p.status.as_str(), "delivered" | "dismissed" | "replied"));
+            session.clone_into(&mut current);
+            self.message_epoch.fetch_add(1, Ordering::AcqRel);
+            info!("Student message session changed; obsolete popups cleared");
         }
     }
     pub fn take(&self) -> Option<ToolPacket> {
@@ -1146,6 +1170,7 @@ pub fn student(
                     if ack.status == "update_confirmed" {
                         super::dev_update::connected();
                     }
+                    inbox.bind_message_session(&ack.token);
                     info!("Student classroom tools ready");
                     while !cancel.load(Ordering::Acquire) {
                         for _ in 0..16 {
@@ -1905,6 +1930,66 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(fs::read_dir(desktop).unwrap().count(), 0);
         assert_eq!(fs::read_dir(staging).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn stale_message_event_does_not_interrupt_current_job_or_peer() {
+        let temp = TestFolder(test_folder());
+        let outbox = temp.0.join("outbox");
+        fs::create_dir_all(&outbox).unwrap();
+        let hub = Arc::new(Hub::default());
+        hub.0.lock().unwrap().peers.insert("student-a".into(), 1);
+        hub.submit(
+            "message",
+            &["student-a".into()],
+            &json!({"text":"Current message","allow_reply":true}),
+            &outbox,
+        )
+        .unwrap();
+        let id = hub.0.lock().unwrap().jobs[0].packet.id.clone();
+        let mut delivered = packet("event");
+        delivered.id = id;
+        delivered.status = "delivered".into();
+        hub.event("student-a", &delivered).unwrap();
+        let mut stale = packet("event");
+        stale.id = "previous-teacher-message".into();
+        stale.status = "replied".into();
+        stale.text = "obsolete reply".into();
+        hub.event("student-a", &stale).unwrap();
+        let snapshot = hub.snapshot();
+        assert_eq!(snapshot["jobs"][0]["targets"][0]["status"], "delivered");
+        assert_eq!(snapshot["jobs"][0]["targets"][0]["reply"], "");
+        assert_eq!(snapshot["ready"][0], "student-a");
+        delivered.status = "replied".into();
+        delivered.text = "current reply".into();
+        hub.event("student-a", &delivered).unwrap();
+        assert_eq!(
+            hub.snapshot()["jobs"][0]["targets"][0]["reply"],
+            "current reply"
+        );
+    }
+
+    #[test]
+    fn only_new_teacher_session_clears_message_windows_and_events() {
+        let inbox = Inbox::default();
+        inbox.bind_message_session("session-a");
+        let epoch = inbox.message_epoch();
+        let mut message = packet("message");
+        message.id = "old".into();
+        inbox.messages.lock().unwrap().push_back(message);
+        inbox.event("old", "replied", "answer", 0);
+        inbox.event("file", "receiving", "", 1);
+        inbox.bind_message_session("session-a");
+        assert_eq!(inbox.message_epoch(), epoch);
+        assert_eq!(inbox.messages.lock().unwrap().len(), 1);
+        inbox.bind_message_session(""); // Legacy handshake must not wipe state.
+        assert_eq!(inbox.message_epoch(), epoch);
+        inbox.bind_message_session("session-b");
+        assert!(inbox.take().is_none());
+        assert_eq!(inbox.message_epoch(), epoch + 1);
+        let events = inbox.events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id, "file");
     }
 
     #[test]

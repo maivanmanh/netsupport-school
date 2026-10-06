@@ -319,3 +319,17 @@ vào clipboard Unicode của Student, không chỉ các dòng đang thấy. Hi�
 trong2s. Vùng nhập Reply và các nút không gây copy. Clipboard busy được thử lại
 trong400ms qua các UI pump (không sleep UI); nếu vẫn lỗi thì hiện nhắc click lại.
 Không ghi nội dung clipboard/message vào log. Cần cập nhật Student để dùng UI này.
+
+### Popup outline và Reply lifecycle (2026-10-06)
+
+Hai popup vẫn bỏ viền/thanh tiêu đề hệ điều hành nhưng có outline riêng1px logic
+màu xám xanh để tách khỏi nền. Reply mở rộng chính cửa sổ message hiện có, không
+tạo cửa sổ con/thay native handle. Gửi reply xong ẩn và đóng message ngay; Teacher
+nhận trạng thái replied. Các message khác thật sự đang chờ vẫn theo thứ tự inbox.
+
+Tools handshake có nhãn phiên Teacher (field token sẵn có, không thay protobuf).
+Student giữ message qua reconnect trong cùng phiên, nhưng khi Teacher mới chạy lại
+thì dọn message/event message cũ và đóng popup cũ. Teacher ACK/discard event của job
+đã hết trong history/thuộc phiên trước, thay vì ngắt toàn bộ tools socket và làm
+các job hiện tại báo lỗi mất kết nối theo. Event sai recipient/status cho job đang
+có vẫn kiểm tra như trước. Handshake không có tag từ bản Teacher cũ vẫn tương thích.
