@@ -1,0 +1,35 @@
+name: Windows release packages
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      CLASSROOM_BUILD_LABEL: v1.1.0
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Install Flutter and Rust
+        shell: pwsh
+        run: |
+          git clone --depth 1 --branch 3.38.6 https://github.com/flutter/flutter.git "$env:RUNNER_TEMP/flutter"
+          if ($LASTEXITCODE -ne 0) { throw 'Flutter checkout failed' }
+          "$env:RUNNER_TEMP/flutter/bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Build fresh paired portable packages
+        shell: pwsh
+        run: |
+          flutter config --enable-windows-desktop
+          ./scripts/build-flutter-windows.ps1
+          ./scripts/build-student-windows.ps1 -RustStudent target/x86_64-pc-windows-msvc/release/ClassroomStudent.exe
+          New-Item -ItemType Directory -Force target/release-assets | Out-Null
+          Compress-Archive -Path target/Classroom-Console-Windows-x64 -DestinationPath target/release-assets/Classroom-Teacher-Windows-x64-v1.1.0.zip
+          Compress-Archive -Path target/Classroom-Student-Windows-x64 -DestinationPath target/release-assets/Classroom-Student-Windows-x64-v1.1.0.zip
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-release-v1.1.0
+          path: target/release-assets/*.zip
+          if-no-files-found: error

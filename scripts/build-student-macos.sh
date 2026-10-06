@@ -32,6 +32,10 @@ cat > "$STAGING/Contents/Info.plist" <<'PLIST'
 <key>NSLocalNetworkUsageDescription</key><string>Connect to the classroom Teacher and receive or publish classroom screens.</string>
 </dict></plist>
 PLIST
+APP_VERSION="$(python3 -c 'import pathlib,tomllib; print(tomllib.loads(pathlib.Path("Cargo.toml").read_text())["workspace"]["package"]["version"])')"
+BUILD_NUMBER="$(sed -n 's/^version: .*+//p' apps/classroom_console/pubspec.yaml)"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" "$STAGING/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$STAGING/Contents/Info.plist"
 python3 scripts/sign-macos-app.py "$STAGING" --identifier com.classroom.student \
   --manifest "$MANIFEST" "${SIGN_OPTIONS[@]}"
 rm -rf "$APP"

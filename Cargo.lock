@@ -75,7 +75,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "app-core"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "serde",
  "thiserror 2.0.20",
@@ -222,7 +222,7 @@ dependencies = [
 
 [[package]]
 name = "capture-macos-sck"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "media-core",
  "objc2",
@@ -234,7 +234,7 @@ dependencies = [
 
 [[package]]
 name = "capture-windows-dxgi"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "media-core",
  "thiserror 2.0.20",
@@ -316,7 +316,7 @@ checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
 name = "classroom-app"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "app-core",
@@ -363,7 +363,7 @@ dependencies = [
 
 [[package]]
 name = "classroom-config"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "serde",
  "thiserror 2.0.20",
@@ -372,7 +372,7 @@ dependencies = [
 
 [[package]]
 name = "codec-macos-vt"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "apple-cf",
  "media-core",
@@ -382,7 +382,7 @@ dependencies = [
 
 [[package]]
 name = "codec-windows-mf"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "media-core",
  "thiserror 2.0.20",
@@ -418,7 +418,7 @@ dependencies = [
 
 [[package]]
 name = "control-transport"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "media-core",
  "prost",
@@ -1311,14 +1311,14 @@ dependencies = [
 
 [[package]]
 name = "media-core"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "thiserror 2.0.20",
 ]
 
 [[package]]
 name = "media-transport"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "media-core",
  "thiserror 2.0.20",
@@ -1657,7 +1657,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "platform"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "netdev",
  "thiserror 2.0.20",
@@ -1773,7 +1773,7 @@ dependencies = [
 
 [[package]]
 name = "protocol"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "prost",
 ]
@@ -1846,7 +1846,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "renderer-macos"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "media-core",
  "minifb",
@@ -1854,7 +1854,7 @@ dependencies = [
 
 [[package]]
 name = "renderer-windows"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "media-core",
  "tracing",
