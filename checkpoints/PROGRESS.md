@@ -3294,3 +3294,27 @@ Status: owner-reported Win+R local dispatch fixed and tested Windows-to-Windows.
   benchmark or physical40PC claim; Mac native round badge only build-verified.
 - Exact next step:owner tests normal slider/Observe/share with the paired bundle
   target/round-fps-thumbnail-build/Classroom Console.app. Existing .94 already new.
+
+## 2026-10-06 — Smooth circular FPS badge
+
+- Owner reported jagged circular badge. Windows binary elliptical region cannot
+  represent partial pixel coverage; replace badge-only paint with premultiplied
+  BGRA per-pixel alpha via UpdateLayeredWindow. Transparent corners, one physical
+  pixel transition, opacity200,56×56/top-left12 retained. Owned GDI resources
+  released after each tiny1Hz paint; layered style reset only on initial switch.
+- Mac native circular layer explicitly enables edge antialiasing. No video-path
+  changes, no additional media frames or high-frequency painting.
+- Rust123pass/2ignored; focused mask test verifies transparent corners, opaque
+  center, fractional edge alpha, symmetry and premultiplied white channels.
+- Paired Mac Teacher/Mac Student/Windows x64 Student release build succeeded at
+  target/smooth-fps-build/Classroom Console.app. Windows .94 updated through
+  Classroom (not SSH binaries), confirms paired-20261006-100422. Mac Student is
+  build/bundle-verified only; no new remote Mac deployment.
+- Short Windows native broadcast probe passed56×56/margins12; layered/click-through/
+  noactivate/topmost flags retained and GetWindowRgn=0 confirms hard clip removed.
+  Alpha now belongs to per-pixel compositor: GetLayeredWindowAttributes alpha is
+  not a valid opacity measurement here; no claims from invalid region point tests.
+  Test-only task/files cleaned. Evidence target/smooth-fps-native-result.txt.
+- Open matching Teacher for owner visual verification. Native probe verifies
+  lifecycle/geometry, not visual smoothness on all DPI settings. Exact next step:
+  owner checks badge edge during normal broadcast; no prolonged benchmark needed.

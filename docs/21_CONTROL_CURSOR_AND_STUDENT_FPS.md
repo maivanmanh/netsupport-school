@@ -55,3 +55,11 @@ Badge Windows đã xác minh56×56, margin trái/trên12px, alpha200, topmost,
 click-through/noactivate, native elliptical region (góc ngoài region, tâm bên trong).
 40 mẫu native có17 mẫu badge hiện và mẫu cuối không còn badge sau Stop.
 Mac Student compiled/bundled, không remote-tested. Không phải nghiệm thu40PC.
+
+### Viền tròn mịn (06-10-2026)
+
+Windows badge thay hard elliptical region bằng `UpdateLayeredWindow` với alpha
+mỗi pixel. Signed-distance coverage tạo vùng chuyển tiếp một pixel vật lý; RGB
+premultiplied tránh viền đen. Giữ opacity200,56×56,margin12,click-through/noactivate
+và cadence1s. Reset layered style một lần khi chuyển compositor, không mỗi paint.
+Mac bật CoreAnimation edge antialiasing cho layer tròn; không đổi renderer video.

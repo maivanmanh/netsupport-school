@@ -503,6 +503,7 @@ pub struct Window {
     clear_brush: windef::HBRUSH,
     is_open: bool,
     close_to_hide: bool,
+    alpha_overlay_ready: bool,
     scale_factor: i32,
     width: i32,
     height: i32,
@@ -671,6 +672,7 @@ impl Window {
                 update_rate: UpdateRate::new(),
                 is_open: true,
                 close_to_hide: false,
+                alpha_overlay_ready: false,
                 scale_factor,
                 width: (width * scale_factor as usize) as i32,
                 height: (height * scale_factor as usize) as i32,
@@ -970,6 +972,55 @@ impl Window {
                 wingdi::DeleteObject(region as _);
             }
         }
+    }
+    pub fn update_alpha_overlay(&mut self, pixels: &[u32], width: usize, height: usize) -> Result<()> {
+        if width == 0 || height == 0 || width > i32::MAX as usize || height > i32::MAX as usize ||
+            width.checked_mul(height) != Some(pixels.len()) {
+            return Err(Error::UpdateFailed("Invalid alpha overlay dimensions".into()));
+        }
+        // SAFETY: UI-thread owned HWND; bounded input copied into an owned top-down
+        // DIB. Restore the selected bitmap before releasing every GDI resource.
+        unsafe {
+            let dc = wingdi::CreateCompatibleDC(std::ptr::null_mut());
+            if dc.is_null() { return Err(Error::UpdateFailed("Overlay DC allocation failed".into())); }
+            let mut info: wingdi::BITMAPINFO = std::mem::zeroed();
+            info.bmiHeader.biSize = std::mem::size_of::<wingdi::BITMAPINFOHEADER>() as u32;
+            info.bmiHeader.biWidth = width as i32;
+            info.bmiHeader.biHeight = -(height as i32);
+            info.bmiHeader.biPlanes = 1;
+            info.bmiHeader.biBitCount = 32;
+            let mut bits = std::ptr::null_mut();
+            let bitmap = wingdi::CreateDIBSection(dc, &info, wingdi::DIB_RGB_COLORS,
+                &mut bits, std::ptr::null_mut(), 0);
+            if bitmap.is_null() || bits.is_null() {
+                if !bitmap.is_null() { wingdi::DeleteObject(bitmap as _); }
+                wingdi::DeleteDC(dc);
+                return Err(Error::UpdateFailed("Overlay bitmap allocation failed".into()));
+            }
+            std::ptr::copy_nonoverlapping(pixels.as_ptr(), bits as *mut u32, pixels.len());
+            let old = wingdi::SelectObject(dc, bitmap as _);
+            // SetLayeredWindowAttributes disables UpdateLayeredWindow until the
+            // layered style is reset. Remove the old binary ellipse as well.
+            if !self.alpha_overlay_ready {
+            winuser::SetWindowRgn(self.hwnd, std::ptr::null_mut(), 0);
+            let style = winuser::GetWindowLongW(self.hwnd, winuser::GWL_EXSTYLE);
+            winuser::SetWindowLongW(self.hwnd, winuser::GWL_EXSTYLE, style & !(winuser::WS_EX_LAYERED as i32));
+            winuser::SetWindowLongW(self.hwnd, winuser::GWL_EXSTYLE, style | winuser::WS_EX_LAYERED as i32);
+                self.alpha_overlay_ready = true;
+            }
+            let mut size = windef::SIZE { cx: width as i32, cy: height as i32 };
+            let mut origin = windef::POINT { x: 0, y: 0 };
+            let mut blend = wingdi::BLENDFUNCTION { BlendOp: wingdi::AC_SRC_OVER,
+                BlendFlags: 0, SourceConstantAlpha: 200, AlphaFormat: wingdi::AC_SRC_ALPHA };
+            let ok = winuser::UpdateLayeredWindow(self.hwnd, std::ptr::null_mut(), std::ptr::null_mut(),
+                &mut size, dc, &mut origin, 0, &mut blend, winuser::ULW_ALPHA);
+            let error = std::io::Error::last_os_error();
+            wingdi::SelectObject(dc, old);
+            wingdi::DeleteObject(bitmap as _);
+            wingdi::DeleteDC(dc);
+            if ok == 0 { return Err(Error::UpdateFailed(format!("Alpha overlay: {error}"))); }
+        }
+        Ok(())
     }
     pub fn set_passive_overlay(&mut self, alpha: u8) {
         // SAFETY: owned HWND, owner UI thread; only presentation attributes change.

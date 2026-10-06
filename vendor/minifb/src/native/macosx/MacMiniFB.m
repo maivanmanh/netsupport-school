@@ -977,4 +977,5 @@ void mfb_round_overlay(void* ptr) {
     [view setWantsLayer:YES];
     view.layer.cornerRadius = MIN(view.bounds.size.width, view.bounds.size.height) / 2.0;
     view.layer.masksToBounds = YES;
+    view.layer.allowsEdgeAntialiasing = YES;
 }

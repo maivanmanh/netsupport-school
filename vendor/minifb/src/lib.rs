@@ -541,6 +541,11 @@ impl Window {
         #[cfg(any(target_os = "windows", target_os = "macos"))]
         self.0.set_round_overlay();
     }
+    /// Paint a small notification with premultiplied BGRA and per-pixel alpha.
+    #[cfg(windows)]
+    pub fn update_alpha_overlay(&mut self, pixels: &[u32], width: usize, height: usize) -> Result<()> {
+        self.0.update_alpha_overlay(pixels, width, height)
+    }
     pub fn set_passive_overlay(&mut self, alpha: u8) {
         #[cfg(any(target_os = "windows", target_os = "macos"))]
         self.0.set_passive_overlay(alpha);
