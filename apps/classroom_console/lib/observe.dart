@@ -153,36 +153,15 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
             as num? ??
         300;
     try {
-      if (items.length > 32) {
-        throw StateError('Drop at most 32 items at a time.');
-      }
-      for (final item in items) {
-        if (closing) break;
-        final bookmark = item.extraAppleBookmark;
-        var access = false;
-        try {
-          if (Platform.isMacOS && bookmark != null) {
-            access = await DesktopDrop.instance
-                .startAccessingSecurityScopedResource(bookmark: bookmark);
-          }
-          final staged = await stageTransfer(
-            item.path,
-            '${widget.agent.endpoint.parent.path}/outbox',
-            limit.toInt() * 1024 * 1024,
-          );
-          if (closing) {
-            await File(staged['path'] as String).delete();
-            break;
-          }
-          await widget.agent.command('tool_file', [widget.studentId], staged);
-        } finally {
-          if (access && bookmark != null) {
-            await DesktopDrop.instance.stopAccessingSecurityScopedResource(
-              bookmark: bookmark,
-            );
-          }
-        }
-      }
+      await sendDroppedFiles(
+        items,
+        outbox: '${widget.agent.endpoint.parent.path}/outbox',
+        limit: limit.toInt() * 1024 * 1024,
+        active: () => !closing,
+        submit: (staged) => widget.agent.commandChecked('tool_file', [
+          widget.studentId,
+        ], staged),
+      );
     } catch (e) {
       if (mounted && !closing) {
         ScaffoldMessenger.of(

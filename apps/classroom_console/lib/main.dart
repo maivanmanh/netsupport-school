@@ -8,6 +8,8 @@ import 'observe.dart';
 import 'observe_startup.dart';
 import 'classroom_tools_ui.dart';
 import 'settings.dart';
+import 'file_transfer.dart';
+import 'student_file_drop.dart';
 
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -801,15 +803,19 @@ class _ConsoleState extends State<Console> with WindowListener {
                               ? GridView.builder(
                                   gridDelegate: gridLayout(c, rows.length),
                                   itemCount: rows.length,
-                                  itemBuilder: (context, i) => card(rows[i]),
+                                  itemBuilder: (context, i) =>
+                                      fileDrop(rows[i], card(rows[i])),
                                 )
                               : ListView.separated(
                                   itemCount: rows.length,
                                   separatorBuilder: (_, i) =>
                                       const SizedBox(height: 8),
-                                  itemBuilder: (context, i) => view == 'compact'
-                                      ? compact(rows[i])
-                                      : card(rows[i], list: true),
+                                  itemBuilder: (context, i) => fileDrop(
+                                    rows[i],
+                                    view == 'compact'
+                                        ? compact(rows[i])
+                                        : card(rows[i], list: true),
+                                  ),
                                 ),
                         ),
                       ),
@@ -1002,6 +1008,47 @@ class _ConsoleState extends State<Console> with WindowListener {
       selected.remove(id);
     }
   });
+
+  bool canDropTo(String id) =>
+      !preparingFile &&
+      agent.connected &&
+      agent.students.any((row) => row['id'] == id && row['online'] == true) &&
+      ((agent.state['tools'] as Map? ?? const {})['ready'] as List? ?? const [])
+          .contains(id);
+
+  Widget fileDrop(Map<String, dynamic> row, Widget child) {
+    final id = row['id'] as String;
+    return StudentFileDrop(
+      key: ValueKey('file-drop-$id'),
+      name: '${row['name']}',
+      ip: '${row['ip']}',
+      canSend: () => canDropTo(id),
+      onSend: (items) async {
+        setState(() => preparingFile = true);
+        try {
+          final limit =
+              (((agent.state['settings'] as Map? ?? {})['tools'] as Map? ??
+                              {})['max_file_mb']
+                          as num? ??
+                      300)
+                  .toInt();
+          await sendDroppedFiles(
+            items,
+            outbox: '${agent.endpoint.parent.path}/outbox',
+            limit: limit * 1024 * 1024,
+            active: () =>
+                mounted &&
+                agent.connected &&
+                agent.students.any((r) => r['id'] == id && r['online'] == true),
+            submit: (staged) => agent.commandChecked('tool_file', [id], staged),
+          );
+        } finally {
+          if (mounted) setState(() => preparingFile = false);
+        }
+      },
+      child: child,
+    );
+  }
 
   Widget compact(Map<String, dynamic> r) {
     final id = r['id'] as String;

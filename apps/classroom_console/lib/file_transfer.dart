@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:isolate';
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:archive/archive_io.dart';
 import 'package:path/path.dart' as p;
 
@@ -94,3 +95,37 @@ Future<Map<String, dynamic>> stageTransfer(
     rethrow;
   }
 });
+
+/// Shared Finder/Explorer drop path for roster items and Observe windows.
+Future<void> sendDroppedFiles(
+  List<DropItem> items, {
+  required String outbox,
+  required int limit,
+  required bool Function() active,
+  required Future<void> Function(Map<String, dynamic>) submit,
+}) async {
+  if (items.length > 32) throw StateError('Drop at most 32 items at a time.');
+  for (final item in items) {
+    if (!active()) throw StateError('Student is no longer available.');
+    final bookmark = item.extraAppleBookmark;
+    var access = false;
+    try {
+      if (Platform.isMacOS && bookmark != null) {
+        access = await DesktopDrop.instance
+            .startAccessingSecurityScopedResource(bookmark: bookmark);
+      }
+      final staged = await stageTransfer(item.path, outbox, limit);
+      if (!active()) {
+        await File(staged['path'] as String).delete();
+        throw StateError('Student is no longer available.');
+      }
+      await submit(staged);
+    } finally {
+      if (access && bookmark != null) {
+        await DesktopDrop.instance.stopAccessingSecurityScopedResource(
+          bookmark: bookmark,
+        );
+      }
+    }
+  }
+}

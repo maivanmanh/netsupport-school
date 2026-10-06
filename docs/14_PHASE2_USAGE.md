@@ -290,3 +290,19 @@ only bilinearly downsamples the cached/latest snapshot before JPEG encoding; no
 capture teardown/start and no clearing of the last snapshot. Received image sizes
 still preserve aspect/even-pixel bounds and never upscale. Capture cost therefore
 stays at the existing maximum; smaller tiers save JPEG/network/decode work.
+
+## Kéo thả lên máy trong danh sách (2026-10-06)
+
+Trong **Grid / List / Compact List**, kéo file hoặc folder từ Finder/Explorer lên
+một máy đang online và sẵn sàng nhận file. Item được tô nhẹ và có viền để chỉ rõ
+người nhận. Thả mở hộp xác nhận **tên máy + IP**, nội dung gửi và đích Desktop;
+chọn Send mới bắt đầu chuẩn bị/gửi. Cancel hoặc đóng hộp thoại không tạo outbox.
+Đích gửi là đúng item đó, không theo các checkbox đang chọn cho trình chiếu.
+
+Luồng dùng chung với drop trong Observe: folder nén ZIP trong isolate, giới hạn
+mặc định300MiB theo Settings, tối đa32 item/lượt, gửi tuần tự qua Rust tools Hub,
+progress/cancel/retry ở khu vực File transfer hiện có. Item có chỉ báo nhỏ khi
+đang chuẩn bị; hoàn tất staging thì tiến trình truyền do Hub theo dõi. Kiểm tra
+lại kết nối sau xác nhận và sau staging; lỗi ACK dừng batch và hiện thông báo.
+Student không cần cập nhật cho tính năng UI này. Teacher vẫn bundle cả Mac và
+Windows Student mới build theo quy tắc paired build của dự án.

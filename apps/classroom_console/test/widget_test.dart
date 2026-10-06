@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:classroom_console/main.dart';
 import 'package:classroom_console/agent.dart';
+import 'package:classroom_console/student_file_drop.dart';
 
 class LiveAgent extends Agent {
   LiveAgent() : super([]);
@@ -54,15 +55,18 @@ void main() {
     };
     await tester.pumpWidget(ClassroomApp(agent: a));
     expect(find.text('Lab PC 01'), findsOneWidget);
+    expect(find.byType(StudentFileDrop), findsOneWidget);
     expect(find.text('Stop sharing'), findsNothing);
     expect(find.textContaining('Share selected'), findsNothing);
     expect(find.text('Ready to teach'), findsNothing);
     for (var i = 0; i < 5; i++) {
       await tester.tap(find.byIcon(Icons.view_list_outlined));
       await tester.pumpAndSettle();
+      expect(find.byType(StudentFileDrop), findsOneWidget);
       await tester.tap(find.byIcon(Icons.format_list_bulleted));
       await tester.pumpAndSettle();
       expect(find.byType(AspectRatio), findsNothing);
+      expect(find.byType(StudentFileDrop), findsOneWidget);
       await tester.tap(find.byIcon(Icons.grid_view));
       await tester.pumpAndSettle();
     }

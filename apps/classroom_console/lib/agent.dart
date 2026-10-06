@@ -503,8 +503,23 @@ class Agent extends ChangeNotifier {
     String action, [
     Iterable<String> selected = const [],
     Map<String, dynamic>? input,
-  ]) async {
+  ]) => _command(action, selected, input, false);
+
+  /// File staging must stop if the Hub rejects a submission or loses its socket.
+  Future<void> commandChecked(
+    String action,
+    Iterable<String> selected,
+    Map<String, dynamic> input,
+  ) => _command(action, selected, input, true);
+
+  Future<void> _command(
+    String action,
+    Iterable<String> selected,
+    Map<String, dynamic>? input,
+    bool throwOnError,
+  ) async {
     if (socket == null) {
+      if (throwOnError) throw StateError('Teacher agent is not connected.');
       return;
     }
     if (action == 'quit') {
@@ -530,6 +545,7 @@ class Agent extends ChangeNotifier {
     } catch (e) {
       error = e.toString();
       notifyListeners();
+      if (throwOnError) rethrow;
     } finally {
       commandBusy = false;
       if (!disposed) notifyListeners();

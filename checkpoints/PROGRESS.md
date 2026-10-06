@@ -3318,3 +3318,31 @@ Status: owner-reported Win+R local dispatch fixed and tested Windows-to-Windows.
 - Open matching Teacher for owner visual verification. Native probe verifies
   lifecycle/geometry, not visual smoothness on all DPI settings. Exact next step:
   owner checks badge edge during normal broadcast; no prolonged benchmark needed.
+
+## 2026-10-06 — Drop files directly onto Student roster items
+
+- Added StudentFileDrop to Grid/List/Compact rows, stable device-ID keys. Subtle
+  teal highlight/upload hint identifies hovered recipient. Drop requires explicit
+  confirmation with machine name/IP and Desktop destination; Cancel/dismiss does
+  not stage or submit. Ignores drops under modal routes; busy item rejects duplicate
+  drops. Target is the dropped item alone, independent of presentation selection.
+- Only online tools-ready receivers accept drops. Recheck after confirmation and
+  staging; shared sendDroppedFiles path preserves security-scoped bookmarks,
+  streamed staging/ZIP isolate,32-item batch and configured max_file_mb(300MiB).
+  Observe reuses same helper. Hub still owns progress/cancel/retry/Desktop delivery.
+- Added Agent.commandChecked while preserving existing command API/behavior.
+  File submission errors/disconnected socket stop the batch and show a message;
+  unacknowledged staged payloads retain existing24h cleanup policy (ACK timeout
+  may mean Hub accepted it, so do not delete a potentially in-flight payload).
+- Flutter analyze clean;31 tests pass. New widget regression covers hover exit,
+  cancel/no send, recipient name/IP, explicit send and disconnect during confirm.
+  Existing grid/list/compact test verifies one drop wrapper in each view;
+  existing real file/ZIP content/size tests pass. No media-engine changes.
+- Paired release build: target/roster-file-drop-build/Classroom Console.app,
+  Mac Student+Windows x64 Student packages paired-20261006-101531 bundled freshly.
+  Teacher restarted via IPC; native runtime confirms idle and Windows .94 online
+  with tools ready. Student unchanged/running: feature needs no Student update.
+- No native Finder/Explorer drag-to-send end-to-end claim this turn; owner can
+  test directly with this opened Teacher. No prolonged LAN/performance tests.
+  Exact next step: drop a file/folder onto .94, confirm destination, check existing
+  transfer progress and Student Desktop. Mac Student not redeployed/tested.
