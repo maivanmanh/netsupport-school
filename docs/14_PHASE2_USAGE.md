@@ -284,3 +284,9 @@ Observe wakes the Teacher monitoring wait. Student reads the next control messag
 immediately after responding; snapshot rate limiting applies before capture, rather
 than sleeping after responses and delaying Observe. An in-progress snapshot can
 still finish before Observe; cold capture/encoder startup remains on-demand.
+
+Thumbnail capture now stays at a maximum480×270 for its session. Changing the tier
+only bilinearly downsamples the cached/latest snapshot before JPEG encoding; no
+capture teardown/start and no clearing of the last snapshot. Received image sizes
+still preserve aspect/even-pixel bounds and never upscale. Capture cost therefore
+stays at the existing maximum; smaller tiers save JPEG/network/decode work.

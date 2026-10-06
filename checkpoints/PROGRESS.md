@@ -3267,3 +3267,30 @@ Status: owner-reported Win+R local dispatch fixed and tested Windows-to-Windows.
   badge validation pending; Mac Student build/bundle only. See docs/21_CONTROL_CURSOR_AND_STUDENT_FPS.md.
 - Exact next step:restart Teacher after owner grant,run one short class broadcast
   to verify badge/alpha/click-through/close; keep apps available for owner's tests.
+
+## 2026-10-06 — round top-left FPS badge; stable thumbnails across tier changes
+
+- Owner requested round compact FPS:56×56,12px top/left margin,centered FPS label,
+  true native elliptical region (Windows)/clear clipped content layer (Mac).
+  Keep alpha200,topmost,click-through/noactivate and1s update cadence.
+- Found tier resize destroys capture+cached frame; restart can emit a transitional
+  black snapshot. Keep a single native capture at max480×270,cache/latest frame,
+  bilinearly downsample before JPEG to requested bounding box. Tier changes never
+  restart capture or clear prior pixels. Small tiers save encoding/network/decode;
+  capture remains max size, avoiding churn. Actual mode/Observe/permission failures
+  still retain existing lifecycle behavior; no masking black intentional content.
+- Rust122pass/2ignored including resize/color/no-upscale regression. Paired Teacher,
+  Mac Student and Windows x64 Student build. Windows .94 Classroom updater confirms
+  paired-20261006-095109. No SSH binary deployment; test-only native probe task/files
+  removed. Student settings/logs preserved.
+- Native badge test using existing owner-authorized Teacher:56×56,left/top12,
+  style94000000,exstyle80800A8,alpha200,region3; corner outside and center inside.
+  40samples,17visible,last absent after Stop. Previously privacy-blocked badge
+  validation now completed after owner grant/restart, not automated TCC modification.
+- Short live tier sequence240→360→480→240 produced216×134,322×202,432×270,216×134;
+  all four JPEG snapshots nonblack (maxchannel255,channel means~93–111).
+  No full-screen black image observed in that short probe. Evidence ignored target/
+  round-fps-native-result.txt and thumbnail-no-black-result.json. Not prolonged
+  benchmark or physical40PC claim; Mac native round badge only build-verified.
+- Exact next step:owner tests normal slider/Observe/share with the paired bundle
+  target/round-fps-thumbnail-build/Classroom Console.app. Existing .94 already new.

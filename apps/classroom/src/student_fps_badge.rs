@@ -3,6 +3,9 @@ use super::dashboard_view::Canvas;
 use minifb::{Window, WindowOptions};
 use std::time::{Duration, Instant};
 
+const SIZE: usize = 56;
+const MARGIN: isize = 12;
+
 pub struct FpsBadge {
     window: Option<Window>,
     canvas: Option<Canvas>,
@@ -45,8 +48,8 @@ impl FpsBadge {
         if self.window.is_none() {
             match Window::new(
                 "Classroom · FPS",
-                88,
-                28,
+                SIZE,
+                SIZE,
                 WindowOptions {
                     visible: false,
                     resize: false,
@@ -58,7 +61,8 @@ impl FpsBadge {
                 Ok(mut window) => {
                     window.set_target_fps(0);
                     window.set_passive_overlay(200);
-                    self.canvas = Some(Canvas::new(88, 28));
+                    window.set_round_overlay();
+                    self.canvas = Some(Canvas::new(SIZE, SIZE));
                     self.window = Some(window);
                 }
                 Err(error) => {
@@ -72,13 +76,17 @@ impl FpsBadge {
         let canvas = self.canvas.as_mut().unwrap();
         canvas.set_density(window.backing_scale());
         canvas.pixels.fill(0x001b2635);
-        canvas.text(10, 6, &format!("{fps:.0} FPS"), 0x00eff7ff, 1);
-        let [x, y, w, h] = window.work_area();
-        let frame = window.outer_frame();
-        window.set_outer_origin(
-            x + (w - frame[2] - 16).max(0),
-            y + (h - frame[3] - 16).max(0),
+        let text = format!("{fps:.0} FPS");
+        let text_width = canvas.text_width(&text, 1);
+        canvas.text(
+            SIZE.saturating_sub(text_width) / 2,
+            SIZE / 2 - 8,
+            &text,
+            0x00eff7ff,
+            1,
         );
+        let [x, y, _, _] = window.work_area();
+        window.set_outer_origin(x + MARGIN, y + MARGIN);
         if let Err(error) =
             window.update_with_buffer(&canvas.pixels, canvas.pixel_width(), canvas.pixel_height())
         {

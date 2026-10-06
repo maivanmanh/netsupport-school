@@ -35,3 +35,6 @@ visible before its first paint or steal foreground keyboard focus.
 click-through. Windows uses LAYERED/TRANSPARENT/NOACTIVATE/TOOLWINDOW and constant
 alpha; macOS sets window alpha/ignoresMouseEvents and excludes window cycling.
 The presentation owns the badge's lifetime; it never takes keyboard focus.
+- Round FPS badges use a true native ellipse: Windows transfers an elliptical
+  region to the owned HWND; macOS clips the content layer over a clear nonopaque
+  window. Click-through, alpha and inactive topmost behavior remain unchanged.

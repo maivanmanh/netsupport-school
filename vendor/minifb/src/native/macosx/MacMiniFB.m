@@ -967,3 +967,14 @@ void mfb_passive_overlay(void* ptr, unsigned char alpha) {
     [window setIgnoresMouseEvents:YES];
     [window setCollectionBehavior:NSWindowCollectionBehaviorTransient | NSWindowCollectionBehaviorIgnoresCycle | NSWindowCollectionBehaviorFullScreenAuxiliary];
 }
+
+void mfb_round_overlay(void* ptr) {
+    NSWindow* window = (NSWindow*)ptr;
+    [window setOpaque:NO];
+    [window setBackgroundColor:[NSColor clearColor]];
+    [window setHasShadow:NO];
+    NSView* view = [window contentView];
+    [view setWantsLayer:YES];
+    view.layer.cornerRadius = MIN(view.bounds.size.width, view.bounds.size.height) / 2.0;
+    view.layer.masksToBounds = YES;
+}

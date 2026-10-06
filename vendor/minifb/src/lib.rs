@@ -536,6 +536,11 @@ impl Window {
     }
     /// Notification surface: raise above ordinary windows without taking focus.
     /// Semi-transparent diagnostic overlay: never activates or intercepts input.
+    /// Clip a passive diagnostic window to an ellipse on Windows/macOS.
+    pub fn set_round_overlay(&mut self) {
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        self.0.set_round_overlay();
+    }
     pub fn set_passive_overlay(&mut self, alpha: u8) {
         #[cfg(any(target_os = "windows", target_os = "macos"))]
         self.0.set_passive_overlay(alpha);

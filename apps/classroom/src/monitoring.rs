@@ -469,7 +469,6 @@ fn capture_requests(
     let mut publisher: Option<super::observation::Publisher> = None;
     let mut capture: Option<PlatformCapture> = None;
     let mut retiring = CaptureRetirement::default();
-    let mut dimensions = None;
     let mut sequence = 0_u64;
     let mut retry_at = Instant::now();
     let mut previous: Option<VideoFrame> = None;
@@ -485,7 +484,6 @@ fn capture_requests(
                     retiring.retire(old)?;
                 }
                 previous = None;
-                dimensions = None;
                 let SocketAddr::V4(local) = socket.local_addr()? else {
                     anyhow::bail!("IPv4 required")
                 };
@@ -554,30 +552,22 @@ fn capture_requests(
             publisher.take();
             capture = None;
             previous = None;
-            dimensions = None;
             frame.state = "paused".into();
         } else if publisher.is_some() {
             frame.state = "observing".into();
             capture = None;
             previous = None;
-            dimensions = None;
         } else {
-            let requested = (request.width, request.height);
-            if dimensions != Some(requested) {
-                capture = None;
-                previous = None;
-            }
             if capture.is_none() && Instant::now() >= retry_at {
                 let mut source = PlatformCapture::new();
                 match source.start_thumbnail(CaptureConfig {
                     display_index: 0,
-                    width: request.width,
-                    height: request.height,
+                    width: 480,
+                    height: 270,
                     max_fps: 1,
                 }) {
                     Ok(()) => {
                         capture = Some(source);
-                        dimensions = Some(requested);
                     }
                     Err(error) => {
                         warn!(%error,"student thumbnail capture unavailable");
@@ -602,7 +592,12 @@ fn capture_requests(
             }
             if let Some(pixels) = previous.as_ref() {
                 let jpg_at = Instant::now();
-                frame = encode(pixels, u8::try_from(request.quality)?, sequence)?;
+                frame = encode(
+                    pixels,
+                    u8::try_from(request.quality)?,
+                    sequence,
+                    (request.width, request.height),
+                )?;
                 info!(
                     sequence,
                     width = frame.width,
@@ -629,7 +624,45 @@ fn capture_requests(
     }
     Ok(())
 }
-fn encode(pixels: &VideoFrame, quality: u8, sequence: u64) -> Result<ThumbnailFrame> {
+// One stable native capture per thumbnail session. Tier changes only resample a
+// bounded480×270 snapshot; no teardown/startup or blank initial capture frame.
+fn resize_thumbnail(source: Vec<u8>, sw: u32, sh: u32, limit: (u32, u32)) -> (Vec<u8>, u32, u32) {
+    let scale = (f64::from(limit.0) / f64::from(sw))
+        .min(f64::from(limit.1) / f64::from(sh))
+        .min(1.0);
+    let w = ((f64::from(sw) * scale).floor() as u32 & !1).max(2).min(sw);
+    let h = ((f64::from(sh) * scale).floor() as u32 & !1).max(2).min(sh);
+    if w == sw && h == sh {
+        return (source, w, h);
+    }
+    let mut out = vec![0; w as usize * h as usize * 4];
+    for y in 0..h {
+        let sy = ((f64::from(y) + 0.5) * f64::from(sh) / f64::from(h) - 0.5).max(0.0);
+        let y0 = sy.floor() as u32;
+        let y1 = (y0 + 1).min(sh - 1);
+        let fy = sy - f64::from(y0);
+        for x in 0..w {
+            let sx = ((f64::from(x) + 0.5) * f64::from(sw) / f64::from(w) - 0.5).max(0.0);
+            let x0 = sx.floor() as u32;
+            let x1 = (x0 + 1).min(sw - 1);
+            let fx = sx - f64::from(x0);
+            for c in 0..4usize {
+                let p = |x: u32, y: u32| f64::from(source[(y * sw + x) as usize * 4 + c]);
+                out[(y * w + x) as usize * 4 + c] = ((p(x0, y0) * (1.0 - fx) + p(x1, y0) * fx)
+                    * (1.0 - fy)
+                    + (p(x0, y1) * (1.0 - fx) + p(x1, y1) * fx) * fy)
+                    .round() as u8;
+            }
+        }
+    }
+    (out, w, h)
+}
+fn encode(
+    pixels: &VideoFrame,
+    quality: u8,
+    sequence: u64,
+    limits: (u32, u32),
+) -> Result<ThumbnailFrame> {
     anyhow::ensure!(
         pixels.width > 0 && pixels.width <= 480 && pixels.height > 0 && pixels.height <= 270,
         "capture thumbnail bounds invalid"
@@ -646,26 +679,27 @@ fn encode(pixels: &VideoFrame, quality: u8, sequence: u64) -> Result<ThumbnailFr
         .take(usize::try_from(pixels.height)?)
         .flat_map(|r| r[..row].iter().copied())
         .collect();
+    let (packed, width, height) = resize_thumbnail(packed, pixels.width, pixels.height, limits);
     let mut jpeg = Vec::new();
     jpeg_encoder::Encoder::new(&mut jpeg, quality).encode(
         &packed,
-        u16::try_from(pixels.width)?,
-        u16::try_from(pixels.height)?,
+        u16::try_from(width)?,
+        u16::try_from(height)?,
         jpeg_encoder::ColorType::Bgra,
     )?;
     if jpeg.len() > MAX_JPEG {
         jpeg.clear();
         jpeg_encoder::Encoder::new(&mut jpeg, 30).encode(
             &packed,
-            u16::try_from(pixels.width)?,
-            u16::try_from(pixels.height)?,
+            u16::try_from(width)?,
+            u16::try_from(height)?,
             jpeg_encoder::ColorType::Bgra,
         )?;
     }
     anyhow::ensure!(jpeg.len() <= MAX_JPEG, "thumbnail JPEG exceeds byte budget");
     Ok(ThumbnailFrame {
-        width: pixels.width,
-        height: pixels.height,
+        width,
+        height,
         jpeg,
         state: "ready".into(),
         sequence,
@@ -807,6 +841,21 @@ mod tests {
         assert!(read(&mut rx).is_err());
     }
     #[test]
+    fn thumbnail_tiers_preserve_pixels_and_do_not_upscale() {
+        let original = [24, 48, 192, 255].repeat(432 * 270);
+        for (limit, expected) in [
+            ((240, 135), (216, 134)),
+            ((360, 202), (322, 202)),
+            ((480, 270), (432, 270)),
+        ] {
+            let (pixels, w, h) = resize_thumbnail(original.clone(), 432, 270, limit);
+            assert_eq!((w, h), expected);
+            assert!(pixels.chunks_exact(4).all(|p| p == [24, 48, 192, 255]));
+        }
+        let (_, w, h) = resize_thumbnail(vec![255; 64 * 32 * 4], 64, 32, (480, 270));
+        assert_eq!((w, h), (64, 32));
+    }
+    #[test]
     fn jpeg_roundtrip_respects_bgra_dimensions_and_rejects_mismatched_header() {
         let pixels = VideoFrame {
             bytes: [0_u8, 0, 240, 255].repeat(64 * 32),
@@ -821,7 +870,7 @@ mod tests {
             protected_content_masked_out: false,
             capture_latency: Duration::ZERO,
         };
-        let mut frame = encode(&pixels, 65, 1).unwrap();
+        let mut frame = encode(&pixels, 65, 1, (480, 270)).unwrap();
         let decoded = decode(&frame).unwrap();
         assert_eq!((decoded.width, decoded.height), (64, 32));
         assert!(decoded.pixels[0] >> 16 > 220);

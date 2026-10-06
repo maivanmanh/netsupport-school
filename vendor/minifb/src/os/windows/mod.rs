@@ -960,6 +960,17 @@ impl Window {
         if visible { unsafe {winuser::SetForegroundWindow(self.hwnd);} }
     }
     // Keep notification painting out of the foreground/key-focus path.
+    pub fn set_round_overlay(&mut self) {
+        // SAFETY: owned HWND; Windows owns the region on success, otherwise release it.
+        unsafe {
+            let mut rect: windef::RECT = std::mem::zeroed();
+            if winuser::GetClientRect(self.hwnd, &mut rect) == 0 { return; }
+            let region = wingdi::CreateEllipticRgn(0, 0, rect.right, rect.bottom);
+            if !region.is_null() && winuser::SetWindowRgn(self.hwnd, region, 1) == 0 {
+                wingdi::DeleteObject(region as _);
+            }
+        }
+    }
     pub fn set_passive_overlay(&mut self, alpha: u8) {
         // SAFETY: owned HWND, owner UI thread; only presentation attributes change.
         unsafe {

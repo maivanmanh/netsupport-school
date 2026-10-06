@@ -23,7 +23,7 @@ chuột chờ frame video. Mac dùng sampler NSCursor hiện có, Windows dùng 
 
 ## Badge FPS
 
-Khi Student nhận chiếu lớp, badge native88×28, alpha200/255, cách góc dưới phải16px,
+Khi Student nhận chiếu lớp, badge native hình tròn56×56, alpha200/255, cách góc trên trái12px,
 không viền/title/control buttons, topmost, click-through và không lấy focus.
 Đếm các frame video thực sự renderer.render thành công; pointer-only redraw không
 được tính. Cập nhật nhãn mỗi1s, bơm sự kiện native tối đa10Hz. Không copy frame,
@@ -39,7 +39,7 @@ student_fps_badge = false
 
 Không tuyên bố chi phí bằng0: thêm một surface nhỏ do desktop compositor quản lý.
 Số FPS là render throughput theo cửa sổ1s, không phải capture FPS, refresh-rate hay
-độ trễ quang học. Nền bán trong suốt, không phải cắt alpha theo hình chữ.
+độ trễ quang học. Nền hình tròn bán trong suốt; phần ngoài hình tròn không che nội dung.
 
 ## Verification
 
@@ -50,7 +50,8 @@ Windows x64 Student build; Windows .94 updated through Classroom and confirms
 paired-20261006-093510. Live .94 nhận bitmap32×32 với hai serial/hash/hotspot khác
 nhau. Đây là kiểm tra luồng shape, chưa phải đo độ trễ thao tác hoặc mọi CSS cursor.
 
-Teacher share test bị macOS TCC Screen Recording từ chối sau build mới; cần owner
-cấp quyền cho target/cursor-fps-build/Classroom Console.app và restart trước khi
-xác minh badge trên video. Không tự sửa privacy grant. Mac Student compiled/bundled,
-không remote-tested ở milestone này. Không phải nghiệm thu Windows vật lý40PC.
+Kiểm tra tiếp theo ngày06-10 sau owner cấp quyền: class broadcast chạy được.
+Badge Windows đã xác minh56×56, margin trái/trên12px, alpha200, topmost,
+click-through/noactivate, native elliptical region (góc ngoài region, tâm bên trong).
+40 mẫu native có17 mẫu badge hiện và mẫu cuối không còn badge sau Stop.
+Mac Student compiled/bundled, không remote-tested. Không phải nghiệm thu40PC.
