@@ -20,6 +20,40 @@ Map<String, dynamic> pc(String id, String ip, bool online) => {
 };
 void main() {
   test(
+    'Reconnect retires matching offline identity, persists migration, preserves live peers',
+    () async {
+      final dir = await Directory.systemTemp.createTemp(
+        'classroom-roster-alias',
+      );
+      final a = LiveAgent()..dataDirectory = dir;
+      a.ingestState(room([pc('old', '10.0.55.2', true)]));
+      a.ingestState(
+        room([pc('old', '10.0.55.2', false), pc('new', '10.0.55.2', true)]),
+      );
+      expect(a.students.map((r) => r['id']), ['new']);
+      expect(a.seenOnlineIds, {'new'});
+      await a.writes;
+      final b = LiveAgent()..dataDirectory = dir;
+      await b.loadKnown();
+      expect(b.students.map((r) => r['id']), ['new']);
+      a.ingestState(
+        room([pc('new', '10.0.55.2', true), pc('other', '10.0.55.2', true)]),
+      );
+      expect(a.students.length, 2);
+      a.ingestState(
+        room([
+          pc('new', '10.0.55.2', true),
+          pc('different-ip', '10.0.55.3', false),
+        ]),
+      );
+      expect(a.students.any((r) => r['id'] == 'different-ip'), true);
+      await a.writes;
+      a.dispose();
+      b.dispose();
+      await dir.delete(recursive: true);
+    },
+  );
+  test(
     'Roster survives restart offline, sorts online then numeric IP, isolates room',
     () async {
       final dir = await Directory.systemTemp.createTemp('classroom-roster');

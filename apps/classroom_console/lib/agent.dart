@@ -68,7 +68,44 @@ class Agent extends ChangeNotifier {
     }
     state = value;
     var dirty = false;
-    for (final row in (value['students'] as List? ?? [])) {
+    final rows = (value['students'] as List? ?? [])
+        .map((r) => Map<String, dynamic>.from(r as Map))
+        .toList();
+    final liveIds = rows
+        .where((r) => r['online'] == true)
+        .map((r) => r['id'])
+        .toSet();
+    final retired = <String>{};
+    for (final live in rows.where((r) => r['online'] == true)) {
+      final name = '${live['name'] ?? ''}'.trim().toLowerCase();
+      final ip = '${live['ip'] ?? ''}'.trim();
+      if (name.isEmpty ||
+          name == 'unknown-host' ||
+          ip.isEmpty ||
+          name.startsWith('sim-')) {
+        continue;
+      }
+      for (final old in [...known.values, ...rows]) {
+        final oldId = old['id'] as String;
+        if (oldId != live['id'] &&
+            !liveIds.contains(oldId) &&
+            '${old['name'] ?? ''}'.trim().toLowerCase() == name &&
+            '${old['ip'] ?? ''}'.trim() == ip) {
+          retired.add(oldId);
+        }
+      }
+    }
+    for (final id in retired) {
+      dirty = known.remove(id) != null || dirty;
+      images.remove(id);
+      seenOnlineIds.remove(id);
+    }
+    // Only retire offline aliases; distinct concurrently connected endpoints remain.
+    state = {
+      ...value,
+      'students': rows.where((r) => !retired.contains(r['id'])).toList(),
+    };
+    for (final row in (state['students'] as List? ?? [])) {
       final r = Map<String, dynamic>.from(row as Map);
       final id = r['id'] as String;
       if (r['online'] == true) {

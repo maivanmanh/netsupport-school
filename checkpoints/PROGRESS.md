@@ -3194,3 +3194,23 @@ Status: owner-reported Win+R local dispatch fixed and tested Windows-to-Windows.
   exstyle8 TOPMOST;300×78,16px margins. Updater complete paired-20261006-082848.
   Running Teacher:target/popup-final-build/Classroom Console.app. Matching fresh
   Mac Student:target/popup-final-build/Classroom Student.app; Windows updated .94.
+
+## 2026-10-06 — retire duplicate offline roster identity after reconnect
+
+- Actual Teacher cache contained two IDs for MAIVANMANHED30/192.168.50.94,
+  one historical offline and one connected. Student identity persists per profile;
+  bootstrap/profile changes can leave a historical roster entry under another ID.
+- Agent roster migration: current online entry supersedes offline cached/current
+  aliases only when BOTH normalized hostname and IP match. Remove stale thumbnail
+  and seen-online state; persist migrated cache. Never merge concurrent live peers,
+  unknown-host or simulated identities; preserve unrelated/different-IP machines.
+- Flutter regression covers offline alias→live replacement, restart persistence,
+  concurrent peers and distinct IP. Flutter29passed; analyze clean.
+- Build paired Mac Teacher+Mac Student+Windows x64 Student per PROJECT_NOTES.md.
+  Teacher-only fix: existing Students need no redeploy. New isolated Teacher bundle:
+  target/roster-fixed-build/Classroom Console.app, matching packages bundled.
+- Exact next step: use current Teacher roster and observe/control as before;
+  no extended media/performance retest needed for this roster-only correction.
+- Runtime verified after new Teacher launch: actual known-students.json now contains
+  exactly1 MAIVANMANHED30/192.168.50.94 record, retaining current Student ID
+  1791248125994874600-5256-47810. Both bundled Student ZIPs byte-match fresh packages.
