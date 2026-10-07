@@ -36,7 +36,12 @@ pub struct PointerBroadcaster {
 }
 
 impl PointerBroadcaster {
-    pub fn start(socket: UdpSocket, mut source: Box<dyn PointerSource>, ssrc: u32) -> Self {
+    pub fn start(
+        socket: UdpSocket,
+        mut source: Box<dyn PointerSource>,
+        ssrc: u32,
+        pacer: Arc<crate::udp_sender::AggregatePacer>,
+    ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let endpoints = Arc::new(Mutex::new((Vec::<SocketAddrV4>::new(), false)));
         let stats = Arc::new(PointerStats::default());
@@ -64,9 +69,13 @@ impl PointerBroadcaster {
                 if let (false, Some(sample)) = (list.is_empty(), source.sample()) {
                     let timestamp = u32::try_from(started.elapsed().as_millis() & 0xffff_ffff)
                         .unwrap_or_default();
+                    let deadline = tick + Duration::from_millis(120);
                     let mut send = |bytes: &[u8]| {
                         for endpoint in &list {
-                            if let Err(error) = socket.send_to(bytes, endpoint) {
+                            if let Err(error) = pacer
+                                .wait(bytes.len(), deadline)
+                                .and_then(|_| socket.send_to(bytes, endpoint))
+                            {
                                 counters.send_errors.fetch_add(1, Ordering::Relaxed);
                                 if !warned {
                                     warn!(%error, %endpoint, "pointer channel send failed");
@@ -188,7 +197,12 @@ mod tests {
             unreachable!()
         };
         let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
-        let broadcaster = PointerBroadcaster::start(sender, Box::new(Fake(0.0)), 9);
+        let broadcaster = PointerBroadcaster::start(
+            sender,
+            Box::new(Fake(0.0)),
+            9,
+            Arc::new(crate::udp_sender::AggregatePacer::new(0)),
+        );
         broadcaster.set_endpoints(vec![target]);
         let mut rx = PointerReceiver::default();
         let deadline = Instant::now() + Duration::from_secs(2);

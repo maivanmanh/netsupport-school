@@ -51,6 +51,10 @@ impl ActivitySampler {
 
 #[derive(Clone, Copy, Debug)]
 pub struct QualityUpdate {
+    pub encode_pressure: bool,
+    pub cpu_pressure: bool,
+    pub pressure_ceiling_fps: u32,
+    pub bitrate_reason: Option<&'static str>,
     pub target_fps: u32,
     pub bitrate_change_bps: Option<u32>,
     pub receiver_loss_percent: Option<f64>,
@@ -117,6 +121,8 @@ pub struct QualityController {
     bitrate_bps: u32,
     last_bitrate_change: Instant,
     bitrate_supported: bool,
+    sender_pressure: bool,
+    sender_ceiling_bps: u32,
     degraded_streak: u8,
     low_loss_streak: u8,
     receivers: HashMap<u64, ReceiverFeedback>,
@@ -137,6 +143,8 @@ impl QualityController {
             bitrate_bps: config.target_bitrate_kbps.saturating_mul(1_000),
             last_bitrate_change: now,
             bitrate_supported: true,
+            sender_pressure: false,
+            sender_ceiling_bps: u32::MAX,
             degraded_streak: 0,
             low_loss_streak: 0,
             receivers: HashMap::new(),
@@ -191,6 +199,16 @@ impl QualityController {
 
     pub fn bitrate_bps(&self) -> u32 {
         self.bitrate_bps
+    }
+
+    pub fn observe_sender(&mut self, overloaded: bool, ceiling_bps: u32) {
+        self.sender_ceiling_bps =
+            ceiling_bps.max(self.config.min_bitrate_kbps.saturating_mul(1_000));
+        self.sender_pressure = overloaded || self.bitrate_bps > self.sender_ceiling_bps;
+    }
+
+    pub fn refinement_allowed(&self) -> bool {
+        !self.sender_pressure && self.pressure_streak == 0 && self.degraded_streak == 0
     }
 
     pub fn register_receiver(&mut self, id: u64) {
@@ -273,27 +291,35 @@ impl QualityController {
         let minimum_receiver_fps = f64::from(expected_fps)
             * f64::from(self.config.adaptive_receiver_min_fps_percent)
             / 100.0;
-        for receiver in self.receivers.values_mut() {
+        for (id, receiver) in &mut self.receivers {
             if receiver.interval_received > 0 {
                 receiver_reporting_students += 1;
                 interval_received = interval_received.saturating_add(receiver.interval_received);
                 interval_missing = interval_missing.saturating_add(receiver.interval_missing);
                 let loss =
                     100.0 * receiver.interval_missing as f64 / receiver.interval_received as f64;
+                let decode_fps = (!receiver.interval_media_duration.is_zero()).then(|| {
+                    receiver.interval_decoded as f64
+                        / receiver.interval_media_duration.as_secs_f64()
+                });
+                let render_fps = (!receiver.interval_render_duration.is_zero()).then(|| {
+                    receiver.interval_rendered as f64
+                        / receiver.interval_render_duration.as_secs_f64()
+                });
+                tracing::info!(target: "telemetry", client_id = *id,
+                    decode_fps = ?decode_fps, render_fps = ?render_fps,
+                    received_packets = receiver.interval_received,
+                    missing_packets = receiver.interval_missing,
+                    decode_report_window_ms = receiver.interval_media_duration.as_millis(),
+                    render_report_window_ms = receiver.interval_render_duration.as_millis(),
+                    render_latency_p95_us = receiver.interval_render_latency_p95_us,
+                    "teacher receiver cadence interval");
                 let high_loss = loss >= threshold;
-                let slow_decode = if receiver.interval_media_duration.is_zero() {
-                    false
-                } else {
-                    let seconds = receiver.interval_media_duration.as_secs_f64();
-                    receiver.interval_decoded as f64 / seconds < minimum_receiver_fps
-                };
+                let slow_decode = decode_fps.is_some_and(|fps| fps < minimum_receiver_fps);
                 let slow_render = receiver.rendering_enabled
                     && receiver.interval_render_latency_p95_us
                         <= u64::from(self.config.adaptive_receiver_render_latency_max_ms) * 1_000
-                    && !receiver.interval_render_duration.is_zero()
-                    && (receiver.interval_rendered as f64
-                        / receiver.interval_render_duration.as_secs_f64())
-                        < minimum_receiver_fps;
+                    && render_fps.is_some_and(|fps| fps < minimum_receiver_fps);
                 // Render cadence stays diagnostic. Lower bitrate cannot fix GPU/GDI
                 // presentation scheduling when decode keeps up with the source.
                 let slow = slow_decode;
@@ -351,13 +377,17 @@ impl QualityController {
     pub fn evaluate_interval(
         &mut self,
         encode_p95: Duration,
-        cpu_percent: f32,
+        cpu_capacity_percent: f32,
         now: Instant,
     ) -> QualityUpdate {
         self.refresh_fps(now);
         let interval = self.take_receiver_interval(self.target_fps);
         if !self.config.adaptive {
             return QualityUpdate {
+                encode_pressure: false,
+                cpu_pressure: false,
+                pressure_ceiling_fps: self.config.max_fps,
+                bitrate_reason: None,
                 target_fps: self.config.max_fps,
                 bitrate_change_bps: None,
                 receiver_loss_percent: interval.loss_percent,
@@ -370,9 +400,12 @@ impl QualityController {
             };
         }
 
-        let pressure = encode_p95
-            >= Duration::from_millis(u64::from(self.config.adaptive_pressure_encode_ms))
-            || cpu_percent >= self.config.adaptive_pressure_cpu_percent;
+        // CPU input is host-capacity percent, not sysinfo's summed core usage.
+        // A saturated serial encoder is still detected independently by latency.
+        let encode_pressure =
+            encode_p95 >= Duration::from_millis(u64::from(self.config.adaptive_pressure_encode_ms));
+        let cpu_pressure = cpu_capacity_percent >= self.config.adaptive_pressure_cpu_percent;
+        let pressure = encode_pressure || cpu_pressure || self.sender_pressure;
         let minimum_bitrate = self.config.min_bitrate_kbps.saturating_mul(1_000);
         if pressure {
             self.pressure_streak = self.pressure_streak.saturating_add(1);
@@ -394,13 +427,24 @@ impl QualityController {
         }
 
         self.update_receiver_streaks(interval);
-        let bitrate_change_bps = self.propose_bitrate(
+        if pressure {
+            // Healthy receivers must not raise bitrate during local pressure.
+            self.low_loss_streak = 0;
+        }
+        let (bitrate_change_bps, mut bitrate_reason) = self.propose_bitrate(
             now,
             interval.feedback_eligible,
             pressure && self.pressure_streak >= 3,
         );
+        if self.sender_pressure && bitrate_reason == Some("local_pressure") {
+            bitrate_reason = Some("sender_pressure");
+        }
         self.refresh_fps(now);
         QualityUpdate {
+            encode_pressure,
+            cpu_pressure,
+            pressure_ceiling_fps: self.pressure_ceiling_fps,
+            bitrate_reason,
             target_fps: self.target_fps,
             bitrate_change_bps,
             receiver_loss_percent: interval.loss_percent,
@@ -448,32 +492,45 @@ impl QualityController {
         now: Instant,
         feedback_eligible: bool,
         encode_pressure: bool,
-    ) -> Option<u32> {
+    ) -> (Option<u32>, Option<&'static str>) {
         let cooldown = Duration::from_millis(u64::from(self.config.adaptive_bitrate_cooldown_ms));
         if !self.bitrate_supported
             || (!feedback_eligible && !encode_pressure)
             || now.saturating_duration_since(self.last_bitrate_change) < cooldown
         {
-            return None;
+            return (None, None);
         }
+        let reason;
         let candidate = if encode_pressure || self.degraded_streak >= 3 {
+            reason = if encode_pressure {
+                "local_pressure"
+            } else {
+                "receiver_degradation"
+            };
             self.degraded_streak = 0;
             (self
                 .bitrate_bps
                 .saturating_mul(100 - self.config.adaptive_bitrate_step_down_percent)
                 / 100)
+                .min(self.sender_ceiling_bps)
                 .max(self.config.min_bitrate_kbps.saturating_mul(1_000))
         } else if self.low_loss_streak >= 10 {
+            reason = "receiver_recovery";
             self.low_loss_streak = 0;
             (self
                 .bitrate_bps
                 .saturating_mul(100 + self.config.adaptive_bitrate_step_up_percent)
                 / 100)
                 .min(self.config.target_bitrate_kbps.saturating_mul(1_000))
+                .min(self.sender_ceiling_bps)
         } else {
-            return None;
+            return (None, None);
         };
-        (candidate != self.bitrate_bps).then_some(candidate)
+        if candidate == self.bitrate_bps {
+            (None, None)
+        } else {
+            (Some(candidate), Some(reason))
+        }
     }
 
     pub fn bitrate_applied(&mut self, bitrate_bps: u32, now: Instant) {
@@ -626,6 +683,67 @@ mod tests {
         assert_eq!(policy.target_fps(start + Duration::from_millis(1_300)), 5);
         assert!(policy.observe_frame(&frame(2), start + Duration::from_millis(1_301)));
         assert_eq!(policy.target_fps(start + Duration::from_millis(1_301)), 30);
+    }
+
+    #[test]
+    fn many_core_teacher_does_not_downshift_on_one_core_of_work() {
+        let start = Instant::now();
+        let mut policy = QualityController::new(&config(), start);
+        for second in 1..=20 {
+            let now = start + Duration::from_secs(second);
+            policy.observe_frame(&frame(u8::try_from(second).unwrap()), now);
+            let update = policy.evaluate_interval(
+                Duration::from_millis(18),
+                crate::process_metrics::cpu_capacity_percent(155.0, 28),
+                now,
+            );
+            assert_eq!(update.target_fps, 30);
+            assert!(!update.cpu_pressure);
+            assert!(!update.encode_pressure);
+            assert!(update.bitrate_change_bps.is_none());
+        }
+    }
+
+    #[test]
+    fn saturated_small_host_and_slow_encoder_report_independent_pressure() {
+        for (encode_ms, core_cpu, cpus, expected_cpu, expected_encode) in [
+            (18, 90.0, 1, true, false),
+            (18, 180.0, 2, true, false),
+            (29, 88.0, 28, false, true),
+        ] {
+            let start = Instant::now();
+            let mut policy = QualityController::new(&config(), start);
+            for second in 5..=7 {
+                let now = start + Duration::from_secs(second);
+                let update = policy.evaluate_interval(
+                    Duration::from_millis(encode_ms),
+                    crate::process_metrics::cpu_capacity_percent(core_cpu, cpus),
+                    now,
+                );
+                assert_eq!(update.cpu_pressure, expected_cpu);
+                assert_eq!(update.encode_pressure, expected_encode);
+                if second == 7 {
+                    assert_eq!(update.bitrate_change_bps, Some(4_800_000));
+                    assert_eq!(update.bitrate_reason, Some("local_pressure"));
+                }
+            }
+        }
+        let mut policy = QualityController::new(&config(), Instant::now());
+        let start = Instant::now();
+        policy.observe_sender(true, 3_000_000);
+        assert!(!policy.refinement_allowed());
+        for second in 1..=3 {
+            let update = policy.evaluate_interval(
+                Duration::from_millis(10),
+                3.0,
+                start + Duration::from_secs(10 + second),
+            );
+            assert!(!update.cpu_pressure && !update.encode_pressure);
+            if second == 3 {
+                assert_eq!(update.bitrate_reason, Some("sender_pressure"));
+                assert_eq!(update.bitrate_change_bps, Some(3_000_000));
+            }
+        }
     }
 
     #[test]
@@ -960,6 +1078,10 @@ mod tests {
                 .apply_bitrate(&mut encoder, update.bitrate_change_bps, now)
                 .unwrap();
             assert_eq!(applied, (second == 3).then_some(4_800_000));
+            assert_eq!(
+                update.bitrate_reason,
+                (second == 3).then_some("receiver_degradation")
+            );
         }
         assert_eq!(encoder.bitrates, [4_800_000]);
         assert_eq!(policy.bitrate_bps(), 4_800_000);
@@ -989,6 +1111,10 @@ mod tests {
                 .apply_bitrate(&mut encoder, update.bitrate_change_bps, now)
                 .unwrap();
             assert_eq!(applied, (second == 13).then_some(5_280_000));
+            assert_eq!(
+                update.bitrate_reason,
+                (second == 13).then_some("receiver_recovery")
+            );
         }
         assert_eq!(encoder.bitrates, [4_800_000, 5_280_000]);
         assert_eq!(policy.bitrate_bps(), 5_280_000);

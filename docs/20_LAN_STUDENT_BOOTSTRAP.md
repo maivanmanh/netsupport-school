@@ -29,15 +29,17 @@ qua x64 emulation trên Windows ARM64. Chưa có nghiệm thu lab 40 PC vật l�
 ## Popup và tray
 
 **Student connection popup** trên Teacher có hiệu lực ngay qua tools TCP hiện có
-cho Student có capability `connection_popup: 1`. Connecting hiển thị trong lúc
-chưa nối; Connected tự ẩn sau ba giây. Popup nonmodal, không lấy focus; tắt popup
+cho Student có capability `connection_popup: 1`. Student chỉ hiện Connected,
+tự ẩn sau ba giây. Connecting/reconnecting và mất kết nối luôn im lặng,
+kể cả khi bật tùy chọn popup; Teacher vẫn ghi nhận offline và cảnh báo khi bật
+activity monitoring. Popup nonmodal, không lấy focus; tắt popup
 không đổi tray hay kết nối. Popup không che phiên Teacher presentation. Người dùng
 có thể đóng riêng popup; trạng thái thay đổi mới làm nó hiện lại.
 
-Preference được Student ghi theo profile để có Connecting khi mở lần sau trước
-khi nối được Teacher; lúc nối tools, Teacher gửi lại giá trị hiện tại. Teacher
+Preference được Student ghi theo profile cho thông báo Connected lần sau;
+lúc nối tools, Teacher gửi lại giá trị hiện tại. Teacher
 **Save & reconnect** lưu công tắc qua restart. ZIP ghi giá trị tại lúc bắt đầu Share;
-nếu cần bootstrap Connecting ngay, bật popup trước khi tạo ZIP/chia sẻ.
+nếu cần thông báo Connected, bật popup trước khi tạo ZIP/chia sẻ.
 Student cũ không có capability không nhận action mới; cập nhật qua Classroom trước.
 
 Windows Student không có menu **Exit Classroom** hoặc **Restart Classroom**; tray

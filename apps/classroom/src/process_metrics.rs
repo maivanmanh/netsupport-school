@@ -7,6 +7,7 @@ pub struct ProcessMetrics {
     system: System,
     pid: Pid,
     available: bool,
+    logical_cpus: usize,
     #[cfg(target_os = "macos")]
     mac_previous: Option<MacTaskSample>,
     #[cfg(target_os = "macos")]
@@ -17,6 +18,8 @@ pub struct ProcessSample {
     /// A fully busy logical CPU is 100%; a multi-threaded process may exceed 100%.
     pub available: bool,
     pub cpu_percent: f32,
+    /// Process share of host logical-CPU capacity (0..100), used by adaptation.
+    pub cpu_capacity_percent: f32,
     pub working_set_bytes: u64,
 }
 
@@ -29,6 +32,7 @@ impl ProcessMetrics {
             system: System::new(),
             pid,
             available: false,
+            logical_cpus: 1,
             #[cfg(target_os = "macos")]
             mac_previous,
             #[cfg(target_os = "macos")]
@@ -49,6 +53,7 @@ impl ProcessMetrics {
             metrics.available = true;
         }
         metrics.system.refresh_cpu_list(CpuRefreshKind::nothing());
+        metrics.logical_cpus = metrics.system.cpus().len().max(1);
         metrics.system.refresh_memory();
         tracing::info!(
             os_name = ?System::name(),
@@ -84,6 +89,7 @@ impl ProcessMetrics {
             return Ok(ProcessSample {
                 available: true,
                 cpu_percent,
+                cpu_capacity_percent: cpu_capacity_percent(cpu_percent, self.logical_cpus),
                 working_set_bytes: current.resident_bytes,
             });
         }
@@ -93,6 +99,7 @@ impl ProcessMetrics {
             return Ok(ProcessSample {
                 available: false,
                 cpu_percent: 0.0,
+                cpu_capacity_percent: 0.0,
                 working_set_bytes: 0,
             });
         }
@@ -103,6 +110,7 @@ impl ProcessMetrics {
         Ok(ProcessSample {
             available: true,
             cpu_percent: process.cpu_usage(),
+            cpu_capacity_percent: cpu_capacity_percent(process.cpu_usage(), self.logical_cpus),
             working_set_bytes: process.memory(),
         })
     }
@@ -117,6 +125,30 @@ impl ProcessMetrics {
             return Err(anyhow!("could not sample current process telemetry"));
         }
         Ok(())
+    }
+}
+
+#[allow(clippy::cast_precision_loss)] // Host CPU count is small.
+pub(crate) fn cpu_capacity_percent(core_percent: f32, logical_cpus: usize) -> f32 {
+    if !core_percent.is_finite() {
+        return 0.0;
+    }
+    (core_percent / logical_cpus.max(1) as f32).clamp(0.0, 100.0)
+}
+
+#[cfg(test)]
+mod capacity_tests {
+    use super::cpu_capacity_percent;
+
+    #[test]
+    fn summed_core_usage_is_normalized_without_hiding_small_host_pressure() {
+        assert!((cpu_capacity_percent(88.0, 28) - 3.142_857).abs() < 0.001);
+        assert!((cpu_capacity_percent(2240.0, 28) - 80.0).abs() < 0.001);
+        assert!((cpu_capacity_percent(85.0, 1) - 85.0).abs() < 0.001);
+        assert!((cpu_capacity_percent(180.0, 2) - 90.0).abs() < 0.001);
+        assert!((cpu_capacity_percent(100.0, 0) - 100.0).abs() < 0.001);
+        assert_eq!(cpu_capacity_percent(f32::NAN, 4), 0.0);
+        assert_eq!(cpu_capacity_percent(-1.0, 4), 0.0);
     }
 }
 

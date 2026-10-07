@@ -1,4 +1,4 @@
-param([string]$RustAgent, [string]$RuntimeDirectory)
+param([string]$RustAgent, [string]$RuntimeDirectory, [string]$OutputDirectory)
 $ErrorActionPreference='Stop'
 . "$PSScriptRoot/windows-portable-runtime.ps1"
 $root=Split-Path $PSScriptRoot -Parent
@@ -21,7 +21,7 @@ try {
  if($LASTEXITCODE -ne 0){throw 'flutter pub get failed'}
  flutter build windows --release
  if($LASTEXITCODE -ne 0){throw 'flutter Windows build failed'}
- $destination="$root/target/Classroom-Console-Windows-x64"
+ $destination=if($OutputDirectory){$OutputDirectory}else{"$root/target/Classroom-Console-Windows-x64"}
  New-Item -ItemType Directory -Force $destination | Out-Null
  Copy-Item 'build/windows/x64/runner/Release/*' $destination -Recurse -Force
  Copy-ClassroomWindowsRuntime 'x64' $destination $RuntimeDirectory

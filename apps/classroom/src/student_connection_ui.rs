@@ -1,4 +1,5 @@
-//! Optional, nonmodal connection diagnostic, owned by the existing Student UI pump.
+//! Optional connected confirmation, owned by the existing Student UI pump.
+//! Connecting/reconnecting is silent on Student; Teacher owns disconnect alerts.
 use super::dashboard_view::Canvas;
 use minifb::{Window, WindowOptions};
 use std::time::{Duration, Instant};
@@ -25,13 +26,18 @@ pub struct ConnectionStatus {
 impl ConnectionStatus {
     #[allow(clippy::too_many_lines)] // One bounded native popup paint/pump pass.
     pub fn pump(&mut self, enabled: bool, status: &str, presenting: bool) {
-        if !enabled || presenting {
+        let connected = status.starts_with("Connected to Teacher");
+        // Never expose startup retries or a lost Teacher connection via a popup,
+        // even when the persisted/Teacher-supplied popup preference is enabled.
+        if !enabled || presenting || !connected {
             self.window = None;
             self.canvas = None;
             self.last.clear();
+            self.connected_since = None;
+            self.dismissed = false;
+            self.last_draw = None;
             return;
         }
-        let connected = status.starts_with("Connected to Teacher");
         if status != self.last {
             status.clone_into(&mut self.last);
             self.connected_since = connected.then(Instant::now);
@@ -144,6 +150,43 @@ impl ConnectionStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn disconnected_and_retry_statuses_are_silent_even_when_enabled() {
+        let mut ui = ConnectionStatus::default();
+        for status in [
+            "Connecting to Teacher 10.0.55.10",
+            "Disconnected from Teacher",
+            "Connection lost",
+            "",
+        ] {
+            ui.pump(true, status, false);
+            assert!(ui.window.is_none());
+            assert!(ui.canvas.is_none());
+            assert!(ui.last.is_empty());
+            assert!(ui.connected_since.is_none());
+            // A native-window attempt would set dismissed on failure.
+            assert!(!ui.dismissed);
+        }
+    }
+
+    #[test]
+    fn connection_loss_clears_connected_confirmation_state() {
+        let mut ui = ConnectionStatus {
+            last: "Connected to Teacher 10.0.55.10".into(),
+            connected_since: Some(Instant::now()),
+            dismissed: true,
+            last_draw: Some(Instant::now()),
+            ..Default::default()
+        };
+        ui.pump(true, "Connecting to Teacher 10.0.55.10", false);
+        assert!(ui.window.is_none());
+        assert!(ui.canvas.is_none());
+        assert!(ui.last.is_empty());
+        assert!(ui.connected_since.is_none());
+        assert!(ui.last_draw.is_none());
+        assert!(!ui.dismissed);
+    }
+
     #[test]
     fn notification_respects_work_area_margin_negative_origins_and_small_screens() {
         assert_eq!(

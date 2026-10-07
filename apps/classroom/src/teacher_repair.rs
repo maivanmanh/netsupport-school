@@ -14,15 +14,26 @@ use std::{
 #[derive(Default)]
 struct State {
     packets: VecDeque<(Instant, u16, Arc<Vec<u8>>)>,
+    evicted: VecDeque<(Instant, u16, bool)>,
     endpoints: HashMap<u64, SocketAddrV4>,
 }
 #[derive(Default)]
 pub struct Stats {
     pub requested: AtomicU64,
     pub misses: AtomicU64,
+    pub expired_misses: AtomicU64,
+    pub capacity_misses: AtomicU64,
+    pub invalid_misses: AtomicU64,
+    pub unknown_misses: AtomicU64,
+    pub expired_packets: AtomicU64,
+    pub capacity_evictions: AtomicU64,
+    pub stale_repairs: AtomicU64,
     pub resent: AtomicU64,
     pub bytes: AtomicU64,
     pub errors: AtomicU64,
+    pub would_block: AtomicU64,
+    pub deadline_exhausted: AtomicU64,
+    pub retry_budget_exhausted: AtomicU64,
     pub reports_dropped: AtomicU64,
     pub router_overflow: AtomicBool,
     pub keyframe_pending: AtomicBool,
@@ -32,6 +43,7 @@ pub struct RepairService {
     socket: UdpSocket,
     ttl: Duration,
     state: Mutex<State>,
+    pub pacer: Arc<crate::udp_sender::AggregatePacer>,
     pub stats: Stats,
     timings: Mutex<media_core::diagnostics::StageMetrics>,
 }
@@ -40,12 +52,27 @@ impl RepairService {
     pub fn new(socket: UdpSocket, ttl: Duration) -> std::io::Result<Self> {
         Self::for_stream(1, socket, ttl)
     }
+    #[cfg(test)]
     pub fn for_stream(stream_id: u64, socket: UdpSocket, ttl: Duration) -> std::io::Result<Self> {
+        Self::for_stream_paced(
+            stream_id,
+            socket,
+            ttl,
+            Arc::new(crate::udp_sender::AggregatePacer::new(0)),
+        )
+    }
+    pub fn for_stream_paced(
+        stream_id: u64,
+        socket: UdpSocket,
+        ttl: Duration,
+        pacer: Arc<crate::udp_sender::AggregatePacer>,
+    ) -> std::io::Result<Self> {
         socket.set_nonblocking(true)?;
         Ok(Self {
             stream_id,
             socket,
             ttl,
+            pacer,
             state: Mutex::new(State::default()),
             stats: Stats::default(),
             timings: Mutex::new(media_core::diagnostics::StageMetrics::default()),
@@ -61,7 +88,12 @@ impl RepairService {
         let mut state = self.state.lock().unwrap();
         self.prune(&mut state, now);
         if state.packets.len() == 4096 {
-            state.packets.pop_front();
+            if let Some((_, sequence, _)) = state.packets.pop_front() {
+                Self::remember_eviction(&mut state, now, sequence, false);
+                self.stats
+                    .capacity_evictions
+                    .fetch_add(1, Ordering::Relaxed);
+            }
         }
         state
             .packets
@@ -73,8 +105,24 @@ impl RepairService {
             .front()
             .is_some_and(|(at, _, _)| now.saturating_duration_since(*at) > self.ttl)
         {
-            state.packets.pop_front();
+            if let Some((_, sequence, _)) = state.packets.pop_front() {
+                Self::remember_eviction(state, now, sequence, true);
+                self.stats.expired_packets.fetch_add(1, Ordering::Relaxed);
+            }
         }
+        while state
+            .evicted
+            .front()
+            .is_some_and(|(at, _, _)| now.saturating_duration_since(*at) > self.ttl * 2)
+        {
+            state.evicted.pop_front();
+        }
+    }
+    fn remember_eviction(state: &mut State, now: Instant, sequence: u16, expired: bool) {
+        if state.evicted.len() == 4096 {
+            state.evicted.pop_front();
+        }
+        state.evicted.push_back((now, sequence, expired));
     }
     fn respond(&self, client: u64, message: &protocol::Nack) {
         if message.stream_id != self.stream_id {
@@ -102,9 +150,26 @@ impl RepairService {
                                 .rev()
                                 .find(|(_, number, _)| *number == seq)
                         })
-                        .map(|(_, _, bytes)| Arc::clone(bytes));
+                        .map(|(at, _, bytes)| (Arc::clone(bytes), *at));
                     if found.is_none() {
                         self.stats.misses.fetch_add(1, Ordering::Relaxed);
+                        let counter = match u16::try_from(*sequence) {
+                            Err(_) => &self.stats.invalid_misses,
+                            Ok(seq) => match state
+                                .evicted
+                                .iter()
+                                .rev()
+                                .find(|(_, number, _)| *number == seq)
+                            {
+                                Some((_, _, true)) => &self.stats.expired_misses,
+                                Some((_, _, false)) => &self.stats.capacity_misses,
+                                None => &self.stats.unknown_misses,
+                            },
+                        };
+                        counter.fetch_add(1, Ordering::Relaxed);
+                        if u16::try_from(*sequence).is_ok() {
+                            self.stats.keyframe_pending.store(true, Ordering::Release);
+                        }
                     }
                     found
                 })
@@ -113,19 +178,39 @@ impl RepairService {
         };
         // Do not hold the cache lock during socket I/O; retry budget is shared.
         let mut budget = crate::udp_sender::SendBudget::new(started, Duration::from_millis(5));
-        for packet in packets {
-            match budget.send(&self.socket, &packet, endpoint) {
-                Ok(_) => {
-                    self.stats.resent.fetch_add(1, Ordering::Relaxed);
-                    self.stats
-                        .bytes
-                        .fetch_add(packet.len() as u64, Ordering::Relaxed);
-                }
-                _ => {
-                    self.stats.errors.fetch_add(1, Ordering::Relaxed);
-                }
+        for (packet, cached_at) in packets {
+            self.timings
+                .lock()
+                .unwrap()
+                .record("nack_packet_age", cached_at.elapsed());
+            let deadline = (cached_at + self.ttl).min(started + Duration::from_millis(5));
+            if Instant::now() >= deadline {
+                self.stats.stale_repairs.fetch_add(1, Ordering::Relaxed);
+                self.stats.keyframe_pending.store(true, Ordering::Release);
+                continue;
+            }
+            if budget
+                .send_to_paced(&self.socket, &packet, endpoint, &self.pacer, deadline)
+                .is_ok()
+            {
+                self.stats.resent.fetch_add(1, Ordering::Relaxed);
+                self.stats
+                    .bytes
+                    .fetch_add(packet.len() as u64, Ordering::Relaxed);
+            } else {
+                self.stats.errors.fetch_add(1, Ordering::Relaxed);
+                self.stats.keyframe_pending.store(true, Ordering::Release);
             }
         }
+        self.stats
+            .would_block
+            .fetch_add(budget.would_block, Ordering::Relaxed);
+        self.stats
+            .deadline_exhausted
+            .fetch_add(budget.deadline_exhausted, Ordering::Relaxed);
+        self.stats
+            .retry_budget_exhausted
+            .fetch_add(budget.retry_budget_exhausted, Ordering::Relaxed);
         self.timings
             .lock()
             .unwrap()
@@ -282,6 +367,8 @@ mod tests {
             },
         );
         assert_eq!(service.stats.misses.load(Ordering::Relaxed), 2);
+        assert_eq!(service.stats.expired_misses.load(Ordering::Relaxed), 1);
+        assert_eq!(service.stats.invalid_misses.load(Ordering::Relaxed), 1);
         assert_eq!(service.stats.resent.load(Ordering::Relaxed), 0);
     }
 }

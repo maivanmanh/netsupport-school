@@ -45,6 +45,8 @@ mod dev_update;
 mod diagnostics;
 mod encode_pacer;
 mod fanout;
+mod guard;
+mod guard_service;
 mod keyframe_gate;
 mod launcher;
 mod media_activity;
@@ -64,10 +66,8 @@ mod stream_profile;
 mod student_bootstrap;
 mod student_connection_ui;
 mod student_file_ui;
-mod guard;
-mod guard_service;
-mod student_lock;
 mod student_fps_badge;
+mod student_lock;
 mod student_presentation;
 mod student_settings;
 mod student_tools_ui;
@@ -1122,10 +1122,13 @@ fn run_teacher_media_session(
     cancelled: &AtomicBool,
 ) -> Result<TeacherMediaSummary> {
     let _activity = media_activity::MediaActivity::begin();
-    let repair = teacher_repair::RepairService::for_stream(
+    let repair = teacher_repair::RepairService::for_stream_paced(
         stream_id,
         socket.try_clone()?,
         Duration::from_millis(u64::from(config.network.retransmission_cache_ms)),
+        std::sync::Arc::new(udp_sender::AggregatePacer::new(
+            config.network.send_pacing_mbps,
+        )),
     )?;
     let stop = AtomicBool::new(false);
     let (forward, receiver) = std::sync::mpsc::sync_channel(256);
@@ -1152,9 +1155,20 @@ fn run_teacher_media_session(
         info!(
             requested = repair.stats.requested.load(Ordering::Relaxed),
             cache_misses = repair.stats.misses.load(Ordering::Relaxed),
+            cache_expired_misses = repair.stats.expired_misses.load(Ordering::Relaxed),
+            cache_capacity_misses = repair.stats.capacity_misses.load(Ordering::Relaxed),
+            cache_invalid_misses = repair.stats.invalid_misses.load(Ordering::Relaxed),
+            cache_unknown_misses = repair.stats.unknown_misses.load(Ordering::Relaxed),
+            cache_expired_packets = repair.stats.expired_packets.load(Ordering::Relaxed),
+            cache_capacity_evictions = repair.stats.capacity_evictions.load(Ordering::Relaxed),
+            stale_repairs = repair.stats.stale_repairs.load(Ordering::Relaxed),
             resent_packets = repair.stats.resent.load(Ordering::Relaxed),
             repair_send_bytes = repair.stats.bytes.load(Ordering::Relaxed),
             repair_send_errors = repair.stats.errors.load(Ordering::Relaxed),
+            repair_send_would_block = repair.stats.would_block.load(Ordering::Relaxed),
+            repair_deadline_exhausted = repair.stats.deadline_exhausted.load(Ordering::Relaxed),
+            repair_retry_budget_exhausted =
+                repair.stats.retry_budget_exhausted.load(Ordering::Relaxed),
             reports_dropped = repair.stats.reports_dropped.load(Ordering::Relaxed),
             "teacher repair service complete"
         );
@@ -1212,6 +1226,7 @@ fn run_teacher_media_inner(
                     pointer_socket,
                     source,
                     protocol::presentation_ssrc(stream_id) ^ 0x504f_494e,
+                    std::sync::Arc::clone(&repair.pacer),
                 ))
             }
             (_, Err(error)) => {
@@ -1273,16 +1288,19 @@ fn run_teacher_media_inner(
     let mut encoded_keyframes = 0_u64;
     // Fan-out runs on worker threads so a forty-Student IDR burst does not
     // stall the next capture/encode (docs/17 §9).
-    let fanout = fanout::Fanout::start(
+    let fanout = fanout::Fanout::start_paced(
         socket,
         fanout::FanoutConfig {
             workers: config.network.fanout_threads as usize,
             connected: config.network.connected_fanout,
             pacing_mbps: config.network.send_pacing_mbps,
-            max_pacing_span: Duration::from_millis(8)
-                .min(Duration::from_secs_f64(1.0 / f64::from(config.video.max_fps.max(1))) / 3),
+            max_au_age: Duration::from_millis(u64::from(config.network.send_au_deadline_ms)),
+            max_keyframe_age: Duration::from_millis(u64::from(
+                config.network.send_keyframe_deadline_ms,
+            )),
             send_buffer_bytes: MEDIA_SOCKET_SEND_BUFFER_BYTES,
         },
+        &repair.pacer,
     )?;
     let mut previous_fanout = FanoutSnapshot::default();
     let mut encode_latencies = Vec::new();
@@ -1425,6 +1443,11 @@ fn run_teacher_media_inner(
                 pointer_endpoints = ready;
             }
         }
+        // Acquire the latest capture only after the previous encoded AU has drained.
+        // Large IDRs cannot accumulate a second encoded reference chain behind them.
+        if !fanout.wait_idle(cancelled) {
+            break;
+        }
         let deadline = (Instant::now() + Duration::from_millis(2))
             .min(ends.unwrap_or_else(|| Instant::now() + Duration::from_millis(2)));
         let capture_poll_started = Instant::now();
@@ -1450,11 +1473,28 @@ fn run_teacher_media_inner(
             now.saturating_duration_since(next_tick),
         );
         let target_fps = quality.target_fps(now);
-        if let Some(action) = refine.tick(
-            target_fps <= config.video.adaptive_idle_fps,
-            quality.bitrate_bps(),
-            now,
+        let refinement_allowed = quality.refinement_allowed()
+            && !fanout.stats.recovery_requested.load(Ordering::Acquire)
+            && !keyframes.pending();
+        if let Some(action) = refine.constrain(
+            refinement_allowed,
+            repair
+                .pacer
+                .bitrate_ceiling(endpoints.len())
+                .min(config.video.max_bitrate_kbps.saturating_mul(1_000)),
         ) {
+            apply_refinement(&mut encoder, action, &mut refine_qp_supported);
+        }
+        let refine_action = if refinement_allowed {
+            refine.tick(
+                target_fps <= config.video.adaptive_idle_fps,
+                quality.bitrate_bps(),
+                now,
+            )
+        } else {
+            None
+        };
+        if let Some(action) = refine_action {
             apply_refinement(&mut encoder, action, &mut refine_qp_supported);
             if refine.refining() {
                 next_tick = now; // start the refinement burst right away
@@ -1537,8 +1577,19 @@ fn run_teacher_media_inner(
             let process = process_metrics.sample()?;
             interval_encode_latencies.sort_unstable();
             let encode_p95 = percentile(&interval_encode_latencies, 95);
+            let fan = FanoutSnapshot::take(&fanout.stats);
+            let sender_ceiling_bps = repair.pacer.bitrate_ceiling(endpoints.len());
+            let sender_pressure = fan.abandoned_packets > previous_fanout.abandoned_packets
+                || (interval_encoded_bytes as f64 * 8.0 / interval_seconds)
+                    > f64::from(sender_ceiling_bps);
+            quality.observe_sender(sender_pressure, sender_ceiling_bps);
+            if sender_pressure {
+                if let Some(action) = refine.constrain(false, sender_ceiling_bps) {
+                    apply_refinement(&mut encoder, action, &mut refine_qp_supported);
+                }
+            }
             let quality_update =
-                quality.evaluate_interval(encode_p95, process.cpu_percent, Instant::now());
+                quality.evaluate_interval(encode_p95, process.cpu_capacity_percent, Instant::now());
             // Adaptive bitrate waits while a refinement burst owns the encoder rate.
             match quality.apply_bitrate(
                 &mut encoder,
@@ -1550,7 +1601,11 @@ fn run_teacher_media_inner(
                 Ok(Some(bitrate_bps)) => {
                     bitrate_changes += 1;
                     awaiting_bitrate_change_access_unit = true;
-                    info!(bitrate_bps, "teacher adaptive bitrate changed");
+                    info!(bitrate_bps, reason = ?quality_update.bitrate_reason,
+                        encode_pressure = quality_update.encode_pressure,
+                        cpu_pressure = quality_update.cpu_pressure,
+                        process_cpu_capacity_percent = process.cpu_capacity_percent,
+                        "teacher adaptive bitrate changed");
                 }
                 Ok(None) => {}
                 Err(error) => {
@@ -1564,7 +1619,6 @@ fn run_teacher_media_inner(
             let repair_interval_bytes = repair_bytes.saturating_sub(previous_repair_bytes);
             previous_repair_bytes = repair_bytes;
             log_stages("teacher", repair.diagnostics());
-            let fan = FanoutSnapshot::take(&fanout.stats);
             let interval_packets = fan.sent_packets - previous_fanout.sent_packets;
             let interval_bytes = fan.sent_bytes - previous_fanout.sent_bytes;
             info!(
@@ -1584,9 +1638,27 @@ fn run_teacher_media_inner(
                 encode_fps = interval_encoded_frames as f64 / interval_seconds,
                 encoded_stream_mbps = interval_encoded_bytes as f64 * 8.0 / interval_seconds / 1_000_000.0,
                 interval_max_access_unit_bytes, encoded_keyframes, nack_requested_sequences, nack_cache_misses, retransmitted_packets,
+                nack_expired_misses = repair.stats.expired_misses.load(Ordering::Relaxed),
+                nack_capacity_misses = repair.stats.capacity_misses.load(Ordering::Relaxed),
+                nack_invalid_misses = repair.stats.invalid_misses.load(Ordering::Relaxed),
+                nack_unknown_misses = repair.stats.unknown_misses.load(Ordering::Relaxed),
+                stale_repairs = repair.stats.stale_repairs.load(Ordering::Relaxed),
                 encode_latency_p95_ms = encode_p95.as_secs_f64() * 1_000.0,
                 target_fps = quality_update.target_fps,
                 target_bitrate_bps = quality.bitrate_bps(),
+                adaptive_bitrate_reason = ?quality_update.bitrate_reason,
+                adaptive_bitrate_proposal_bps = ?quality_update.bitrate_change_bps,
+                adaptive_bitrate_deferred = refine.refining() && quality_update.bitrate_change_bps.is_some(),
+                adaptive_encode_pressure = quality_update.encode_pressure,
+                adaptive_cpu_pressure = quality_update.cpu_pressure,
+                adaptive_pressure_ceiling_fps = quality_update.pressure_ceiling_fps,
+                refinement_active = refine.refining(),
+                sender_pressure,
+                sender_ceiling_bps,
+                send_au_deadline_drops = fanout.stats.au_deadline_drops.load(Ordering::Relaxed),
+                send_dependency_skipped_packets = fanout.stats.dependency_skipped_packets.load(Ordering::Relaxed),
+                aggregate_pacer_denied = repair.pacer.denied.load(Ordering::Relaxed),
+                aggregate_pacer_wait_us = repair.pacer.wait_us.load(Ordering::Relaxed),
                 activity_ratio = quality.activity_ratio(),
                 receiver_loss_percent = ?quality_update.receiver_loss_percent,
                 receiver_reporting_students = quality_update.receiver_reporting_students,
@@ -1597,12 +1669,15 @@ fn run_teacher_media_inner(
                 receiver_recovery_eligible = quality_update.receiver_recovery_eligible,
                 process_metrics_available = process.available,
                 process_cpu_percent = process.cpu_percent,
+                process_cpu_capacity_percent = process.cpu_capacity_percent,
                 process_working_set_bytes = process.working_set_bytes,
                 sent_packets = interval_packets,
                 send_errors = fan.send_errors,
                 send_would_block = fan.would_block,
                 send_resource_backpressure = fan.resource_backpressure,
                 send_retry_recovered = fan.retry_recovered,
+                send_deadline_exhausted = fan.deadline_exhausted,
+                send_retry_budget_exhausted = fan.retry_budget_exhausted,
                 send_abandoned_packets = fan.abandoned_packets,
                 send_retry_wait_interval_ms = (fan.retry_wait_us - previous_fanout.retry_wait_us) as f64 / 1_000.0,
                 send_pacing_wait_interval_ms = (fan.pacing_wait_us - previous_fanout.pacing_wait_us) as f64 / 1_000.0,
@@ -1611,6 +1686,9 @@ fn run_teacher_media_inner(
                 fanout_connected_sockets = fanout.stats.connected_sockets.load(Ordering::Relaxed),
                 fanout_connect_failures = fanout.stats.connect_failures.load(Ordering::Relaxed),
                 repair_send_errors = repair.stats.errors.load(Ordering::Relaxed),
+                repair_send_would_block = repair.stats.would_block.load(Ordering::Relaxed),
+                repair_deadline_exhausted = repair.stats.deadline_exhausted.load(Ordering::Relaxed),
+                repair_retry_budget_exhausted = repair.stats.retry_budget_exhausted.load(Ordering::Relaxed),
                 control_reports_dropped = repair.stats.reports_dropped.load(Ordering::Relaxed),
                 repair_send_mbps = repair_interval_bytes as f64 * 8.0 / interval_seconds / 1_000_000.0,
                 send_mbps = (interval_bytes + repair_interval_bytes) as f64 * 8.0 / interval_seconds / 1_000_000.0,
@@ -1699,7 +1777,12 @@ fn run_teacher_media_inner(
         fresh_frame_pending = false;
         // The dispatcher coalesces recovery requests independently of the media
         // event queue. Only this thread owns/calls the codec.
-        if repair.stats.keyframe_pending.swap(false, Ordering::AcqRel) {
+        if repair.stats.keyframe_pending.swap(false, Ordering::AcqRel)
+            | fanout
+                .stats
+                .recovery_requested
+                .swap(false, Ordering::AcqRel)
+        {
             keyframes.request(Instant::now());
         }
         if keyframes.poll(Instant::now()) {
@@ -1784,6 +1867,7 @@ fn run_teacher_media_inner(
                 outgoing.push(packet);
             }
             fanout.send(fanout::FanoutJob {
+                is_keyframe: access_unit.is_keyframe,
                 packets: outgoing,
                 targets: endpoints
                     .iter()
@@ -1800,6 +1884,7 @@ fn run_teacher_media_inner(
     }
     // Join the workers so the totals include the last AU.
     let fanout_stats = std::sync::Arc::clone(&fanout.stats);
+    fanout.wait_idle(&AtomicBool::new(false));
     log_stages("teacher", fanout.take_stages());
     drop(fanout);
     let fan = FanoutSnapshot::take(&fanout_stats);
@@ -1844,6 +1929,8 @@ fn run_teacher_media_inner(
         nack_requested_sequences,
         nack_cache_misses,
         send_errors = fan.send_errors,
+        send_deadline_exhausted = fan.deadline_exhausted,
+        send_retry_budget_exhausted = fan.retry_budget_exhausted,
         send_would_block = fan.would_block,
         send_resource_backpressure = fan.resource_backpressure,
         send_retry_recovered = fan.retry_recovered,
@@ -1853,6 +1940,7 @@ fn run_teacher_media_inner(
         encoder_instances = 1,
         process_metrics_available = process.available,
         process_cpu_percent = process.cpu_percent,
+        process_cpu_capacity_percent = process.cpu_capacity_percent,
         process_working_set_bytes = process.working_set_bytes,
         aggregate_send_mbps = (fan.sent_bytes + repair.stats.bytes.load(Ordering::Relaxed)) as f64
             * 8.0
@@ -2102,6 +2190,8 @@ struct FanoutSnapshot {
     resource_backpressure: u64,
     retry_recovered: u64,
     retry_wait_us: u64,
+    deadline_exhausted: u64,
+    retry_budget_exhausted: u64,
     pacing_wait_us: u64,
     handoff_wait_us: u64,
 }
@@ -2118,6 +2208,8 @@ impl FanoutSnapshot {
             resource_backpressure: load(&stats.resource_backpressure),
             retry_recovered: load(&stats.retry_recovered),
             retry_wait_us: load(&stats.retry_wait_us),
+            deadline_exhausted: load(&stats.deadline_exhausted),
+            retry_budget_exhausted: load(&stats.retry_budget_exhausted),
             pacing_wait_us: load(&stats.pacing_wait_us),
             handoff_wait_us: load(&stats.handoff_wait_us),
         }
@@ -2462,6 +2554,9 @@ fn run_student_receiver(
     let mut keyframe_requests = 0_u64;
     let mut last_keyframe_request = None;
     let mut waiting_for_keyframe = true;
+    let mut recovery_timestamp = None;
+    let mut recovery_packets_discarded = 0_u64;
+    let mut unrepaired_gap_resets = 0_u64;
     let mut waiting_for_keyframe_since = started;
     let mut udp_route_probes_sent = 0_u64;
     let mut last_udp_route_probe = None;
@@ -2539,6 +2634,7 @@ fn run_student_receiver(
                     waiting_for_keyframe_since = Instant::now();
                 }
                 waiting_for_keyframe = true;
+                recovery_timestamp = None;
                 shared.lock().unwrap().clear();
                 if !request_recovery_keyframe(
                     control,
@@ -2580,6 +2676,18 @@ fn run_student_receiver(
                     }
                 }
             }
+            if waiting_for_keyframe && recovery_timestamp != Some(packet.timestamp) {
+                if !recovery_packet_starts_au(&packet, video_codec) {
+                    recovery_packets_discarded += 1;
+                    continue;
+                }
+                stale_backlog_packets += reset_receiver_reference_chain(
+                    &mut jitter,
+                    &mut depacketizer,
+                    &mut frame_timings,
+                ) as u64;
+                recovery_timestamp = Some(packet.timestamp);
+            }
             jitter.push(packet, packet_received_at);
         }
         if !drained {
@@ -2595,6 +2703,7 @@ fn run_student_receiver(
                 waiting_for_keyframe_since = Instant::now();
             }
             waiting_for_keyframe = true;
+            recovery_timestamp = None;
             shared.lock().unwrap().clear();
             if !request_recovery_keyframe(
                 control,
@@ -2607,7 +2716,32 @@ fn run_student_receiver(
             }
         }
         loop {
+            let missing_before = jitter.statistics().missing_sequences;
             let packet = jitter.pop_ready(Instant::now());
+            if jitter.statistics().missing_sequences > missing_before {
+                unrepaired_gap_resets += 1;
+                stale_backlog_packets += reset_receiver_reference_chain(
+                    &mut jitter,
+                    &mut depacketizer,
+                    &mut frame_timings,
+                ) as u64;
+                if !waiting_for_keyframe {
+                    waiting_for_keyframe_since = Instant::now();
+                }
+                waiting_for_keyframe = true;
+                recovery_timestamp = None;
+                shared.lock().unwrap().clear();
+                if !request_recovery_keyframe(
+                    control,
+                    presentation.stream_id,
+                    &mut last_keyframe_request,
+                    &mut keyframe_requests,
+                ) {
+                    reconnect = true;
+                    break 'session;
+                }
+                break;
+            }
             let missing_sequences = jitter.take_missing_sequences();
             if !missing_sequences.is_empty() {
                 nacks_sent += 1;
@@ -2648,6 +2782,7 @@ fn run_student_receiver(
                         recovery_episodes += 1;
                     }
                     waiting_for_keyframe = false;
+                    recovery_timestamp = None;
                     if let Some(timing) = access_unit.timing {
                         if frame_timings.len() == 128 {
                             frame_timings.pop_front();
@@ -2711,6 +2846,12 @@ fn run_student_receiver(
                                 waiting_for_keyframe_since = Instant::now();
                             }
                             waiting_for_keyframe = true;
+                            recovery_timestamp = None;
+                            stale_backlog_packets += reset_receiver_reference_chain(
+                                &mut jitter,
+                                &mut depacketizer,
+                                &mut frame_timings,
+                            ) as u64;
                             shared.lock().unwrap().clear();
                             warn!(%error, "student discarded unrecoverable access unit");
                             if !request_recovery_keyframe(
@@ -2733,6 +2874,12 @@ fn run_student_receiver(
                         waiting_for_keyframe_since = Instant::now();
                     }
                     waiting_for_keyframe = true;
+                    recovery_timestamp = None;
+                    stale_backlog_packets += reset_receiver_reference_chain(
+                        &mut jitter,
+                        &mut depacketizer,
+                        &mut frame_timings,
+                    ) as u64;
                     shared.lock().unwrap().clear();
                     warn!(%error, "student depacketizer lost an access unit");
                     if !request_recovery_keyframe(
@@ -2789,6 +2936,8 @@ fn run_student_receiver(
                 jitter_queue_depth = jitter.queued_packets(), repaired_gaps = jitter.statistics().repaired_gaps, nack_retries = jitter.statistics().nack_retries, repair_budget_ms = jitter.repair_budget().as_millis(), fast_released_frames = jitter.statistics().fast_released_frames, nack_repair_ms = config.video.nack_repair_ms, late_packets = jitter.statistics().late_packets,
                 missing_sequences = jitter.statistics().missing_sequences, duplicate_packets = jitter.statistics().duplicate_packets,
                 reordered_packets = jitter.statistics().reordered_packets, jitter_overflow_packets = jitter.statistics().overflow_packets,
+                recovery_packets_discarded, unrepaired_gap_resets,
+                waiting_for_keyframe, waiting_for_keyframe_ms = if waiting_for_keyframe { waiting_for_keyframe_since.elapsed().as_millis() } else { 0 },
                 recovery_episodes, recovery_peak_ms, stale_backlog_packets, ingress_reference_loss_events, repeated_source_frames, unmapped_decoded_frames,
                 "student freshness recovery interval");
             {
@@ -3105,6 +3254,29 @@ fn h264_config(video: &classroom_config::VideoConfig) -> H264Config {
     }
 }
 
+/// Re-anchor only at a decodable recovery AU boundary. Continuation FU packets
+/// and ordinary P frames must not restart NACK work for an obsolete reference chain.
+fn recovery_packet_starts_au(packet: &RtpPacket, codec: media_core::VideoCodec) -> bool {
+    let p = &packet.payload;
+    if packet.payload_type != codec.rtp_payload_type() {
+        return false;
+    }
+    match codec {
+        media_core::VideoCodec::H264 => match p.first().map(|b| b & 0x1f) {
+            Some(5 | 7 | 8) => true,
+            Some(28) if p.len() >= 3 => p[1] & 0x80 != 0 && matches!(p[1] & 0x1f, 5 | 7 | 8),
+            _ => false,
+        },
+        media_core::VideoCodec::H265 => match codec.nal_type(p) {
+            Some(16..=21 | 32..=34) => true,
+            Some(49) if p.len() >= 4 => {
+                p[2] & 0x80 != 0 && matches!(p[2] & 0x3f, 16..=21 | 32..=34)
+            }
+            _ => false,
+        },
+    }
+}
+
 /// An intentional local drop invalidates compressed references, not the UDP
 /// route. Forget old gap repair state so a fresh IDR starts a new sequence base.
 fn reset_receiver_reference_chain(
@@ -3124,7 +3296,7 @@ fn request_recovery_keyframe(
     last_request: &mut Option<Instant>,
     requests: &mut u64,
 ) -> bool {
-    if last_request.is_some_and(|instant| instant.elapsed() < Duration::from_millis(500)) {
+    if last_request.is_some_and(|instant| instant.elapsed() < Duration::from_millis(250)) {
         return true;
     }
     if control
@@ -3175,6 +3347,42 @@ mod tests {
             ssrc: protocol::presentation_ssrc(1),
             payload: vec![0x65, 0x88],
         };
+        let mut probe = packet(1, 1);
+        assert!(recovery_packet_starts_au(
+            &probe,
+            media_core::VideoCodec::H264
+        ));
+        probe.payload = vec![0x61, 0];
+        assert!(!recovery_packet_starts_au(
+            &probe,
+            media_core::VideoCodec::H264
+        ));
+        probe.payload = vec![0x7c, 0x85, 1];
+        assert!(recovery_packet_starts_au(
+            &probe,
+            media_core::VideoCodec::H264
+        ));
+        probe.payload[1] = 5;
+        assert!(!recovery_packet_starts_au(
+            &probe,
+            media_core::VideoCodec::H264
+        ));
+        probe.payload = vec![0x67, 1];
+        assert!(recovery_packet_starts_au(
+            &probe,
+            media_core::VideoCodec::H264
+        ));
+        probe.payload_type = 98;
+        probe.payload = vec![49 << 1, 1, 0x80 | 19, 1];
+        assert!(recovery_packet_starts_au(
+            &probe,
+            media_core::VideoCodec::H265
+        ));
+        probe.payload[2] = 19;
+        assert!(!recovery_packet_starts_au(
+            &probe,
+            media_core::VideoCodec::H265
+        ));
         jitter.push(packet(10, 1), now);
         let ready = now + Duration::from_millis(20);
         let first = jitter.pop_ready(ready).unwrap();

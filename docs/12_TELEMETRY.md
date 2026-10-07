@@ -1,5 +1,27 @@
 # Runtime telemetry — schema 3, protocol 5
 
+## Teacher adaptive diagnostics — 2026-10-07 (protocol 8 unchanged)
+
+`process_cpu_percent` retains summed logical-core usage. New
+`process_cpu_capacity_percent` divides it by host logical CPU count, clamps to
+0–100, and feeds `adaptive_pressure_cpu_percent`. A serial encoder bottleneck
+remains independently detected by encode latency; low host CPU share alone
+does not prove that every pipeline stage is fast.
+
+Teacher media intervals include encode/CPU pressure flags, pressure FPS ceiling,
+bitrate proposal/reason, refinement state and proposal deferral. Applied bitrate
+logs distinguish local pressure, receiver degradation and recovery. New
+`teacher receiver cadence interval` computes decode/render FPS from successive
+existing receiver report counters and records the report window and missing
+sequence delta. It is not optical latency or direct receiver ingress measurement.
+
+Fan-out and repair log cumulative deadline-exhausted and retry-budget-exhausted
+counters, plus repair WouldBlock counts. Existing error counters stay cumulative.
+The exhaustion counters identify sends entering retry with no allowance; they
+are not additional packet-loss counts to add to send errors.
+
+These additions need no wire-schema change or new Student commands.
+
 ## Collection and delivery
 
 No extra flags or measurement mode are required. Use the same current executable
@@ -249,3 +271,29 @@ capture/encode scheduler. VideoToolbox requests hardware encoding when
 available and logs the selected session backend. Hardware-enabled creation
 retains a default-session fallback for machines where VideoToolbox cannot create
 that session.
+
+## Aggregate send and recovery diagnostics ? 2026-10-07
+
+- sender_pressure / sender_ceiling_bps: local send abandonment or actual interval
+  encoded rate beyond the 80%-of-wire-budget per-recipient ceiling. The controller
+  needs sustained pressure before stepping bitrate/FPS; single IDR spikes are not
+  proof of sustained link overload. Refinement uses the same ceiling.
+- send_au_deadline_drops: recipient AU rejections (predicted budget) or actual paced
+  sends reaching their absolute deadline. send_dependency_skipped_packets counts
+  dependent datagrams deliberately omitted until an IDR; it is separate from
+  send_abandoned_packets/send_errors. A preflight rejection adds abandonment but
+  does not fabricate a socket send error.
+- aggregate_pacer_wait_us / aggregate_pacer_denied: cumulative scheduled wait across
+  video, repair and pointer threads, and rejected/expired scheduling reservations.
+  Wait is summed across concurrent threads, not wall-clock session latency.
+- udp_au_completion / udp_keyframe_completion: worker start through API send
+  completion, not NIC transmission or receipt. fanout_handoff_wait_interval_ms now
+  also includes pre-encode admission wait; capture remains latest-wins upstream.
+- nack_packet_age: age from cache insertion to repair handling; cache miss counters
+  expired/capacity/invalid/unknown use bounded recent eviction metadata. Unknown can
+  include an old expiry, an uncached sequence or history eviction. stale_repairs
+  counts cached repair packets rejected by TTL or the bounded batch deadline.
+- Student recovery_packets_discarded / unrepaired_gap_resets /
+  waiting_for_keyframe_ms: discarded packets before a recovery AU anchor, expired-gap
+  resets and current waiting-IDR duration. Recovery completion still needs decode
+  and render progress; accepting an IDR alone is not a visible-output guarantee.

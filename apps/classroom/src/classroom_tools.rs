@@ -2476,6 +2476,21 @@ mod tests {
     }
 
     #[test]
+    fn disconnect_still_reports_offline_and_alerts_to_teacher() {
+        let hub = Hub::default();
+        hub.set_activity_monitoring(true);
+        hub.0.lock().unwrap().peers.insert("student-a".into(), 9);
+        hub.disconnected("student-a", 9);
+        assert!(hub.snapshot()["ready"].as_array().unwrap().is_empty());
+        let alerts = hub.activity_alerts();
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0]["student"], "student-a");
+        assert_eq!(alerts[0]["id"], "student-a-9");
+        hub.disconnected("student-a", 9);
+        assert!(hub.activity_alerts().is_empty());
+    }
+
+    #[test]
     fn disconnect_marks_inflight_job_retryable() {
         let temp = TestFolder(test_folder());
         let outbox = temp.0.join("outbox");

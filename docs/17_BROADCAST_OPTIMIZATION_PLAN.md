@@ -94,6 +94,7 @@ the Teacher screen is ≤ 1080p and a future "share window/region" mode.
 | O3 keyframe-storm control | live-verified 2026-10-03 (joins coalesced) | `keyframe_gate.rs`; periodic IDR 2 s → 4 s |
 | O4 GPU zero-copy | planned | needs a Windows machine with a real GPU to verify (Parallels VM is not representative) |
 | O5 multicast + FEC | deferred | after physical lab ladder |
+| Teacher CPU adaptation + UDP bursts | unit-tested; Teacher restarted with 36 unchanged Students 2026-10-07 | Host-capacity CPU input, per-datagram pacing; media improvement not yet measured (§10) |
 
 ## 5. Implementation notes (for the next agent)
 
@@ -262,3 +263,80 @@ Re-run of the §8 ladder (same link, Students pinned to `bridge0`):
 40/40 connected sockets, 0 connect failures. Teacher capture→hand-off p50
 stays ~28–30 ms. Open: confirm on real Windows Teacher hardware with 1 GbE and
 40 physical Students; consider raising `fanout_threads` on many-core PCs.
+
+## 10. Windows Teacher improvement after 16-Student session — 2026-10-07
+
+The owner authorized source changes and Teacher-only replacement during an exam.
+Student deployments remain prohibited. Protocol 8, Protobuf schema, RTP framing,
+ports, codec choice, queues and receiver configuration are unchanged.
+
+CPU adaptation now consumes process CPU divided by host logical CPU count; the
+original summed CPU metric remains in logs. Encode p95 independently detects a
+slow serial encoder. Bitrate reasons, CPU/encode pressure, pressure FPS ceiling,
+refinement deferral and per-receiver counter-derived cadence are logged.
+
+Fan-out pacing now indexes each datagram/recipient and divides a nominal 16 KiB
+burst allowance across workers rather than giving each worker its own 16 KiB
+allowance. It retains the existing capped pacing span (8 ms or one-third frame
+interval), worker count and bounded AU queues. Intentional pacing wait is excluded
+from the 10 ms send-work retry deadline; the total active retry allowance stays
+2 ms per worker/AU. Scheduling delays can exceed nominal wall-time bounds; this
+change adds no packet retry queue. Deadline versus active-budget exhaustion is
+logged independently for fan-out and repair. Repair/pointer do not yet share a
+single aggregate pacing governor; no claim that their send errors are resolved.
+
+Filtered tests use pure policy tests or ephemeral localhost sockets, never the
+classroom network. New Teacher reconnects all 36 prior Student IDs on their old
+build. No broadcast or Student runtime update was initiated by the agent. Native
+media improvement requires a later owner-run sharing session and log comparison.
+
+## 11. Real 35-Student video failure: aggregate pacing and reference recovery ? 2026-10-07
+
+The owner reported YouTube motion in run 1 and basic desktop actions in run 2.
+The first run had 13.60% abandoned recipient datagrams, 97.29% NACK cache misses
+and 15?16 s counter-derived decode stalls; the second rendered ~25?26 FPS without
+zero-decode intervals. See the detailed real-LAN report in checkpoints/diagnostics.
+
+The old 8 ms span clamp is replaced by a session AggregatePacer shared by fan-out,
+repair and pointer. Every send attempt, including socket retries, consumes wire-rate
+credit (UDP payload plus a conservative 80-byte framing allowance), with one 16 KiB
+aggregate burst allowance. No rate credit is multiplied by worker count. Zero Mbps
+still explicitly disables pacing. Average bitrate remains distinct from instantaneous
+wire traffic; the OS can still delay/coalesce scheduled sends.
+
+AU admission waits for the previous AU before taking the latest capture. Worker
+channels remain bounded, but the next encoded AU is no longer queued behind an IDR.
+Predicted wire-time greater than the AU budget rejects the entire job; send attempts
+also have absolute wall-time deadlines (network.send_au_deadline_ms=120,
+network.send_keyframe_deadline_ms=300, configurable 10?500 ms). These budgets do not
+accelerate pacing. A failed endpoint chain skips dependent AUs until a successfully
+sent IDR and schedules a coalesced recovery request. Per-worker active socket retry
+remains at most 2 ms, independent of pacing time; no packet retry queue is added.
+
+Teacher adaptive policy includes actual encoded-rate and sender-drop pressure;
+refinement is capped by encoded-stream wire headroom and suppressed during pressure
+or a pending IDR. IDR coalescing still widens during storms, with default upper window
+800 ms (or the configured base window if larger), instead of 2 s. This trades recovery
+speed against IDR traffic; large IDRs remain governed by the same wire budget.
+
+Student abandons expired gap state on the first unrecoverable gap rather than chasing
+serial stale gaps. During recovery it anchors only on parameter-set/IDR-start packets
+(H.264 and the existing H.265 Observe path), discards ordinary P/continuation packets
+until an anchor, and keeps normal sequence/NACK handling for the recovery AU itself.
+Requests are rate-limited to 250 ms and still coalesced by Teacher. No popup is created
+on disconnect. Protocol 8 and RTP framing remain unchanged.
+
+Cache TTL/capacity are unchanged. Bounded eviction metadata classifies recent misses
+as expired/capacity/invalid/unknown, and nack_packet_age records cache age. Old misses
+outside the metadata window are unknown, not asserted expired. Repair sends have a
+5 ms batch limit and cannot outlive the cached packet TTL. New AU completion,
+pre-encode backpressure, reference-skipped and waiting-IDR telemetry exposes the
+remaining path; API completion still does not prove wire delivery or optical latency.
+
+Seventy-three relevant local tests passed, one manual fan-out benchmark remained
+ignored. No classroom performance pass is inferred from unit tests. The exam has
+ended; paired build and updater deployment completed for 35/35 online Students
+(build 1791350009-lan-paced-20261007). A 10-second desktop smoke reached all 35,
+with zero socket errors/cache misses but remaining AU shedding and reduced cadence.
+Teacher stopped cleanly. This does not establish smooth video improvement; matched
+basic-actions/video comparison remains pending. See the deployment checkpoint.

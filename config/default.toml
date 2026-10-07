@@ -13,8 +13,11 @@ control_port = 47800
 media_port = 47810
 feedback_port = 47811
 retransmission_cache_ms = 300
-# Aggregate UDP fan-out pacing; each AU is capped at 8 ms of pacing. 0 disables.
+# Aggregate wire budget shared by video, repair and pointer. 0 disables pacing.
 send_pacing_mbps = 400
+# Bounded send time; rate is never accelerated to squeeze into these deadlines.
+send_au_deadline_ms = 120
+send_keyframe_deadline_ms = 300
 # RTP fan-out worker threads off the encode thread (1..16; Students sharded).
 fanout_threads = 4
 # Per-Student connected UDP sockets on the shared media port (faster sendto).

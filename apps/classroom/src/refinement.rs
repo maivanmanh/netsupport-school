@@ -61,6 +61,25 @@ impl Refinement {
         matches!(self.state, State::Refining { .. })
     }
 
+    /// Suppressed settles are consumed; they cannot spring a delayed burst during recovery.
+    pub fn constrain(&mut self, allowed: bool, max_bps: u32) -> Option<Action> {
+        self.max_bps = max_bps;
+        if allowed {
+            return None;
+        }
+        let restore = if let State::Refining { base_bps, .. } = self.state {
+            Some(base_bps)
+        } else {
+            None
+        };
+        self.state = State::Idle;
+        if restore.is_some() {
+            self.stats.cancelled += 1;
+        }
+        self.started = None;
+        restore.map(Action::End)
+    }
+
     /// Called once per media tick with the policy's idle/active view.
     pub fn tick(&mut self, idle: bool, base_bps: u32, now: Instant) -> Option<Action> {
         if self.percent <= 100 {
@@ -155,6 +174,12 @@ mod tests {
         assert_eq!(r.tick(true, 6_000_000, now), Some(Action::Begin(8_000_000)));
         assert_eq!(r.tick(false, 6_000_000, now), Some(Action::End(6_000_000)));
         assert_eq!(r.stats.cancelled, 1);
+        assert_eq!(r.tick(true, 6_000_000, now), Some(Action::Begin(8_000_000)));
+        assert_eq!(r.constrain(false, 7_000_000), Some(Action::End(6_000_000)));
+        assert!(!r.refining());
+        assert_eq!(r.tick(true, 6_000_000, now), None);
+        r.tick(false, 6_000_000, now);
+        assert_eq!(r.tick(true, 6_000_000, now), Some(Action::Begin(7_000_000)));
         let mut off = Refinement::new(0, 8_000_000);
         off.tick(false, 6_000_000, now);
         assert_eq!(off.tick(true, 6_000_000, now), None);

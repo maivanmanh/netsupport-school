@@ -3602,3 +3602,108 @@ Status: owner-reported Win+R local dispatch fixed and tested Windows-to-Windows.
 - Verified: `cargo test -p classroom-app` 166 passed, both Rust targets clean, `flutter analyze` clean, paired macOS build rebuilt and the Teacher Agent restarted — confirmed 37/37 Students reconnected cleanly within seconds, 0 offline before or after.
 - NOT verified: that the VS Code/Internet windows actually remember a real Apply now (no Apply has happened since the fix deployed — the owner needs to Apply once and reopen to confirm in their own live workflow); whether the Observe-to-front behavior is now any better in practice; 505-GV's firewall still unfixed, pending SSH access.
 - Exact next step: get SSH credentials for `10.0.55.200` to diagnose/fix the Observe firewall rule; once the owner applies an Internet/VS Code policy again, confirm the window now shows it checked/selected on reopen; watch for further owner feedback on window-focus behavior before attempting anything deeper there.
+
+## 2026-10-07 — Silent Student connection loss (source + unit tests only)
+
+- Owner requested no Student popup on Teacher connection loss during a real exam; explicitly prohibited application rebuild/package/deploy and interaction with running classroom endpoints.
+- Student ConnectionStatus now returns before native window creation for every non-connected status, including initial connecting and reconnect retries, regardless of persisted popup preference. Connection loss releases an existing confirmation and clears its timer/draw/dismissal state. Optional Connected confirmation retains the existing three-second behavior.
+- Teacher reporting remains intact: new pure unit test verifies tools disconnect removes the peer from ready and queues an activity alert when activity monitoring is enabled, without duplicate alerts. No live classroom IPC/network/process actions were performed.
+- Verified locally: student_connection_ui tests 3 passed (2 new + existing placement test); Teacher disconnect reporting test 1 passed. Commands: cargo test -p classroom-app --bin Classroom student_connection_ui::tests --offline; cargo test -p classroom-app --bin Classroom disconnect_still_reports_offline_and_alerts_to_teacher --offline. These compile/run only filtered unit-test harnesses, not portable/release apps. rustfmt --check --edition 2021 apps/classroom/src/student_connection_ui.rs and scoped git diff --check passed. Workspace cargo fmt --all -- --check fails on pre-existing formatting across unrelated files; no broad reformat applied.
+- Updated docs/20_LAN_STUDENT_BOOTSTRAP.md to reflect silent connecting/reconnecting. No release build, packaging, deploy, app restart or runtime UI validation. Existing classroom binaries have not received this source change.
+- Exact next step: after the exam and explicit owner authorization, build the paired Teacher/Student package and validate native disconnect/reconnect on an isolated test endpoint before deployment.
+
+## 2026-10-07 — Teacher CPU adaptation / UDP pacing; compatible Teacher-only restart
+
+- Owner authorized Teacher/Student source changes and a new Teacher build/run, conditional on compatibility with the old Students taking a real exam. No Student deployment or active classroom test was authorized. Updated Teacher protocol remains 8, IPC remains 1; protocol/control/media transport crates have no diff. No new Student command or wire field is needed.
+- Fixed Teacher adaptation input to normalized host-capacity CPU percent while preserving the summed-core CPU log. Encode latency still independently detects serial encoder pressure. Suppressed bitrate recovery during local pressure. Added applied/proposed bitrate reasons, refinement deferral/pressure ceiling, and per-receiver counter-derived cadence/window logs.
+- Changed fan-out pacing to individual datagrams across recipients with nominal burst budget divided across workers (formerly each worker had its own ~16 KiB burst). Kept existing pacing span and bounded queues. Excluded measured intentional pacing wait from the 10 ms send-work retry deadline; active retry remains capped at 2 ms per worker/AU. Added deadline/budget exhaustion counters for fan-out and repair; repair also exposes WouldBlock. This does not prove all observed send errors fixed, and repair/pointer still lack a shared aggregate governor.
+- Verification: 41 focused unit tests passed: quality 23, UDP budget/pacing 6, CPU normalization 1, fanout 4 (manual benchmark ignored), repair 2, popup 3, Teacher disconnect alert 1, protocol 1. Network unit tests used ephemeral 127.0.0.1 only. Scoped rustfmt and git diff --check passed. Clippy completed exit 0 with existing project/vendor warnings (79 app warnings); workspace formatting has pre-existing unrelated differences. No opt-in benchmark, Student executable, screen-share, Observe, remote input, file job or updater test was launched.
+- Paired MSVC x64 Rust/Flutter build label teacher-adaptive-20261007 completed in isolated target/Classroom-Teacher-adaptive-20261007, fresh Student ZIP included. SHA256 Teacher helper 926c647d7f3aa1ed09fbdb2d5f9b2e6200f7a2377731ebc98cae7e6f127f5ea1; Student aadb6aba59460f2a8faff0ff0eeafff3c592a252b90834b616cc127ee647fe9c; bundled ZIP b5a5b4cee584b1816af364b84324dde69290d1d112df132efbd1697ab96c37ff. Copies match build outputs. Build script now supports explicit OutputDirectory so a running Teacher bundle is not overwritten.
+- Read-only IPC baseline: Teacher idle, 36 online, activity monitoring false, connection popup false, all Student builds 1791341267-paired-20261007-094727. Issued owner-authorized graceful Teacher quit only after checking idle/no Observe, then launched new isolated Teacher with --bind-ip 10.0.55.10. Old GUI/helper exited normally. New Teacher GUI PID 12064, helper 3764, build_id 1791347790-teacher-adaptive-20261007; TCP ports 47800/47801/47802 bind to 10.0.55.10.
+- Startup initially showed 0 online. New executable path had a separate Windows Firewall approval context; later read-only netsh inspection shows Private allow/Public block for the new path. Agent did not change Firewall policy or elevate. A proposed local old-bundle replacement was automatically rejected before execution because it included removal of old build files; this limitation was announced and the isolated new bundle retained. No deletion/replacement happened after rejection, and no running binary was overwritten.
+- Runtime compatibility verified by passive Teacher state: all 36 previous Student IDs returned, no missing IDs, and all still on old build 1791341267-paired-20261007-094727. New helper ready at unix_ms 1791347891273; first Student online 1791347942615 (~51.3 s), last 1791347960196 (~68.9 s). Do not characterize this as a seamless/instant reconnect. Teacher remains idle; no screen sharing was initiated by the agent. Existing settings/profile/logs retained. Old Student popup behavior remains until a separately authorized update.
+- Exact next step: analyze a later owner-initiated share to the unoccupied selected machines, comparing normalized CPU/pressure reasons, sender/repair exhaustion and receiver cadence with the 16-machine baseline. Media/latency improvement and 40-PC acceptance remain unverified. Keep Student deployments/tests prohibited during the exam.
+- Checkpoint commit attempted but Git refused because user.name/user.email are unset. No author identity was invented; source/checkpoint changes remain staged for an owner-configured commit.
+
+## 2026-10-07 — Real LAN 1080p / 35 Student: two owner-run workloads
+
+- Read-only analysis of streams 8994680672841960415 (94.925 s, 11:47:45–11:49:20 +07) and 8994680672841960416 (37.449 s, 11:49:25–11:50:03 +07). Owner clarified first run included YouTube video on Teacher; second was basic desktop actions without video. These are different workloads, not a same-workload A/B. Both used actual 1920×1080, Intel Quick Sync, one encoder and 35 Windows receiver endpoints. Local physical Ethernet reports 1 Gbps. Detailed evidence and per-Student tables: checkpoints/diagnostics/2026-10-07-35-student-real-lan-performance.md.
+- Teacher encode 28.68 / 26.94 FPS, p95 13.17 / 12.98 ms, normalized CPU median 3.24 / 3.62%; no CPU/encode pressure. Video run receiver render 16.47–17.33 FPS with counter decode stalls up to 15.015–16.090 s per endpoint; basic-actions run 25.38–25.82 FPS and no zero-decode report interval. First run abandoned 316,730 recipient datagrams (13.60% sent+abandoned), 18,156 send errors and 56,623 / 58,198 NACK cache misses. Second run abandoned 5,795 (0.67%), 245 send errors, no cache miss but 1,088 repair send errors. UDP counters continue during widespread decode stalls; this supports transport/reference recovery failure over a stopped encoder, without Student-local decoder proof.
+- Source confirms pacing span clamped to 8 ms despite the largest AU × 35 recipients requiring >=101 ms payload serialization at 1 Gbps. Shared aggregate pacing including repair/pointer, AU freshness/byte admission, bounded reference recovery and NACK/cache-age telemetry are priorities; do not just enlarge retry/queue/jitter buffers. Average Mbps does not establish burst safety. No 40-endpoint/optical-latency acceptance claim.
+- No code changes, executable tests, build, app restart or deployment performed for this analysis; wrote report/local analysis artifacts only.
+- **Owner authorization changed after the exam ended:** future newly built Students should be deployed to the classroom machines as well, so Teacher and Student can be tested at the same fresh revision. The previous exam-time prohibition is lifted. Continue paired build/bundled ZIP rule and use Classroom updater, preserving settings/device IDs/logs; verify build ID for each reachable endpoint and report unavailable machines. Do not treat authorization as evidence deployment has already happened.
+- Exact next step: implement sender aggregate pacing / AU budget and instrument recovery with bounded semantics, build paired roles, deploy Student through Classroom updater under the new authorization, then compare fixed basic-actions/video workloads and verify actual endpoint builds before performance claims. Read all project documents before coding. Existing Git identity limitation remains; no checkpoint commit attempted again.
+
+## 2026-10-07 — Sender/recovery implementation plan (owner approved)
+
+- Evidence/decision before implementation: the 8 ms pacing clamp cannot serialize the observed 35-recipient IDR on 1 GbE. Replace it with one session aggregate rate governor shared by video, repair and pointer, counting conservative wire overhead. Keep bounded wall-time AU admission (120 ms normal / 300 ms IDR initially, configurable), bounded retry and no retry queue. Failed endpoint chains wait for a successful IDR, with a coalesced request to the encoder owner.
+- Fan-out workers remain off the encode thread. Wait for the previous AU to finish before acquiring the next latest capture, removing the extra encoded AU backlog during large IDRs. This deliberately trades encode/send overlap for a measured bounded stage; normal 6 Mbps ×35 pacing at 400 Mbps plus ~13 ms encode is close to a 33 ms tick. Log the wait and verify cadence; adjust from evidence, never restore burst-clamping to conceal pressure.
+- Receiver recovery will abandon old gap repair state on unrecoverable loss and re-anchor on parameter-set/IDR-start packets, rather than serially requesting expired gaps. Instrument recovery wait, packet discards, cache age/eviction reasons and AU completion. Limit refinement by fan-out bandwidth and suppress it under pressure. No protocol/schema change planned.
+- Files expected: udp_sender.rs, fanout.rs, teacher_repair.rs, pointer_channel.rs, main.rs, quality.rs, refinement.rs, classroom-config, config/default.toml and corresponding docs. Build paired roles into a new isolated Teacher package; update Students through the existing Classroom updater; preserve identity/settings/logs. User authorized deployment after exam completion.
+
+## 2026-10-07 ? Sender/recovery source milestone verified; paired build pending
+
+- Implemented session-wide aggregate wire pacing for video/repair/pointer and every
+  socket retry; removed the per-AU 8 ms acceleration. Added wire-time preflight and
+  configurable 120 ms normal / 300 ms keyframe send deadlines. Workers retain bounded
+  channels; publisher waits for prior AU completion before acquiring latest capture.
+  Endpoint send failures suppress dependent frames until a successful IDR and schedule
+  recovery on the encoder owner. Capture/encode/packetize still occur once.
+- Adaptive now considers sender abandonment and actual encoded Mbps versus per-recipient
+  wire headroom. Refinement is capped by bandwidth/video limits and suppressed during
+  pressure/pending recovery. Default storm coalescing ceiling reduced 2 s ?800 ms;
+  Student request throttle 500?250 ms. No wire/schema/port/version change (protocol 8).
+- Student clears expired repair/reference state on the first unrecoverable gap and
+  anchors recovery at parameter-set/IDR-start packets instead of repeatedly chasing
+  stale P-frame gaps. Existing silent disconnect fix is included in fresh Student.
+- Added bounded eviction metadata and expired/capacity/invalid/unknown cache-miss
+  counters, NACK packet age, stale repair counters, aggregate wait/denial, endpoint
+  AU deadline/reference skips, worker AU/keyframe completion and Student waiting-IDR
+  metrics. TTL/cache capacity/jitter/ingress limits are unchanged.
+- Local verification: 46 filtered Classroom tests passed (UDP 6, fan-out 4, repair 2,
+  pointer 2, quality 23, refinement 2, keyframe gate 3, local reference expiration 1,
+  silent popup 3), one existing manual benchmark ignored. Config 6, transport 20 and
+  protocol 1 passed: total 73 distinct tests. Existing test cases were extended for
+  real rate/deadline math, rejected AU/reference suppression, sender pressure,
+  refinement cancellation, cache reason and H.264/H.265 recovery anchors. All sockets
+  were ephemeral localhost; no screen share or Student deployment yet. Evidence
+  target/lan-pacing-20261007/test-*.txt and transport-config-tests.txt.
+- cargo check -p classroom-app --bins --offline and cargo clippy -p classroom-app
+  --bin Classroom --offline passed (existing warnings retained). Scoped rustfmt with
+  skip_children=true and git diff --check passed; no broad formatting of other modules.
+- Read-only Teacher preflight: idle/no Observe, 35 online compatible Windows x64 Students,
+  all old build 1791341267-paired-20261007-094727; 505-25 /10.0.55.125 offline. Snapshot
+  saved without IPC token to target/lan-pacing-20261007/baseline.json.
+- Exact next step: paired fresh MSVC/Flutter build, graceful Teacher replacement at
+  verified owned paths, then Classroom updater deployment and per-endpoint receipts.
+  No physical post-fix performance result yet. Global pacing may reduce cadence or
+  shed over-budget AUs; compare controlled video/basic workloads after deployment.
+
+
+## 2026-10-07 - Paired LAN deployment and minimal runtime checkpoint
+
+- Paired build lan-paced-20261007 succeeded; fresh Student ZIP embedded. Teacher
+  restarted at existing approved path target/Classroom-Teacher-adaptive-20261007,
+  bind 10.0.55.10. Classroom updater completed 35/35 online Students; all verified
+  build 1791350009-lan-paced-20261007 with baseline IDs. 505-25 was offline/unupdated.
+- Owner shortened runtime testing due to lab departure: 10-second desktop smoke
+  reached all 35 receivers (decoded 158; rendered 152-158 at last reports), stopped
+  cleanly, Teacher idle. Zero socket errors/cache misses; 23,415 abandoned recipient
+  datagrams and AU admission/reference skips remain. Encode 22.42 FPS, p95 13.88 ms.
+  Functional smoke only; smooth video improvement and 40-PC acceptance unverified.
+- Full record: checkpoints/diagnostics/2026-10-07-lan-pacing-deployment.md.
+  Native workload foreground precheck prevented an earlier attempted benchmark
+  before any Share. No further build/long test after owner's final instruction.
+- Owner requested repository cleanup and local-only commit. Archive raw evidence
+  outside repo, remove generated/temp/duplicate packages, preserve active ignored
+  Teacher bundle and tracked source/config/lockfiles. No push; owner Git identity
+  requested because repository/global user.name and user.email are unset.
+- Exact next step: controlled same-workload video/basic comparison concentrating
+  on remaining AU shedding and serialized encode/send cadence when lab time allows.
+
+- Final owner steering: no rebuild; commit waived (Git identity unset). Teacher
+  binary removal requested: graceful quit from idle, GUI/helper exited. Automatic
+  review rejected recursive deletion; generated output and stopped Teacher bundle
+  moved outside repo to ../netsupport-school-local-evidence-20261007 using checked
+  paths. No target or ignored generated output remains in repo. External archive
+  was not deleted. Source/config/reproducible lockfile/reports retained. No push.

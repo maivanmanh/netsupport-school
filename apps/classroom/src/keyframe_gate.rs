@@ -16,7 +16,7 @@ pub struct KeyframeStats {
 #[derive(Debug)]
 pub struct KeyframeGate {
     base_window: Duration,
-    /// Widens (×2, up to 2 s) while IDRs keep being forced back-to-back — a
+    /// Widens (×2, up to 800 ms) while IDRs keep being forced back-to-back — a
     /// loss storm where more IDRs only add burst load — and relaxes after.
     window: Duration,
     pending_since: Option<Instant>,
@@ -47,6 +47,10 @@ impl KeyframeGate {
             self.pending_since = Some(now);
         }
     }
+    pub fn pending(&self) -> bool {
+        self.pending_since.is_some()
+    }
+
     /// True when the encoder should be asked for an IDR now.
     pub fn poll(&mut self, now: Instant) -> bool {
         if self.pending_since.is_none() {
@@ -62,7 +66,7 @@ impl KeyframeGate {
             .last_forced
             .is_some_and(|at| now.saturating_duration_since(at) < self.window * 2);
         self.window = if storm {
-            (self.window * 2).min(Duration::from_secs(2))
+            (self.window * 2).min(self.base_window.max(Duration::from_millis(800)))
         } else {
             self.base_window
         };
@@ -124,7 +128,7 @@ mod tests {
         gate.request(ms(900));
         assert!(!gate.poll(ms(900)), "deferred by the widened window");
         assert!(gate.poll(ms(1250)));
-        assert_eq!(gate.window(), Duration::from_millis(1600));
+        assert_eq!(gate.window(), Duration::from_millis(800));
         gate.request(ms(9000));
         assert!(gate.poll(ms(9000)), "quiet period");
         assert_eq!(gate.window(), Duration::from_millis(400));

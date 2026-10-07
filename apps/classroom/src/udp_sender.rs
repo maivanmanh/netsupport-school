@@ -1,6 +1,10 @@
 use std::{
     io,
     net::{SocketAddrV4, UdpSocket},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -10,10 +14,13 @@ use std::{
 pub struct SendBudget {
     deadline: Instant,
     pub would_block: u64,
-    /// Transient kernel send-queue exhaustion, distinct from WouldBlock.
+    /// Transient kernel send-queue exhaustion, distinct from `WouldBlock`.
     pub resource_backpressure: u64,
     pub recovered: u64,
     pub retry_wait: Duration,
+    pub pacing_wait: Duration,
+    pub deadline_exhausted: u64,
+    pub retry_budget_exhausted: u64,
     remaining_retry_budget: Duration,
 }
 
@@ -25,26 +32,73 @@ impl SendBudget {
             resource_backpressure: 0,
             recovered: 0,
             retry_wait: Duration::ZERO,
+            pacing_wait: Duration::ZERO,
+            deadline_exhausted: 0,
+            retry_budget_exhausted: 0,
             remaining_retry_budget: duration.min(Duration::from_millis(2)),
         }
     }
 
-    pub fn send(
+    /// Deliberate pacing is not socket retry work. Keep the 2ms active retry
+    /// allowance and the send-work deadline; do not let pacing consume both.
+    pub fn exclude_pacing(&mut self, wait: Duration) {
+        self.deadline += wait;
+    }
+
+    pub fn send_to_paced(
         &mut self,
         socket: &UdpSocket,
         packet: &[u8],
         endpoint: SocketAddrV4,
+        pacer: &AggregatePacer,
+        deadline: Instant,
     ) -> io::Result<usize> {
-        self.send_with(|| socket.send_to(packet, endpoint))
+        self.send_with_pacing(
+            || socket.send_to(packet, endpoint),
+            Some((pacer, deadline, packet.len())),
+        )
     }
 
-    /// Same retry budget for a socket already `connect()`ed to its Student.
-    pub fn send_connected(&mut self, socket: &UdpSocket, packet: &[u8]) -> io::Result<usize> {
-        self.send_with(|| socket.send(packet))
+    pub fn send_connected_paced(
+        &mut self,
+        socket: &UdpSocket,
+        packet: &[u8],
+        pacer: &AggregatePacer,
+        deadline: Instant,
+    ) -> io::Result<usize> {
+        self.send_with_pacing(
+            || socket.send(packet),
+            Some((pacer, deadline, packet.len())),
+        )
     }
 
-    fn send_with(&mut self, mut send: impl FnMut() -> io::Result<usize>) -> io::Result<usize> {
-        let first = match send() {
+    fn attempt(
+        &mut self,
+        send: &mut impl FnMut() -> io::Result<usize>,
+        pacing: Option<(&AggregatePacer, Instant, usize)>,
+        paced: &mut Duration,
+    ) -> io::Result<usize> {
+        if let Some((pacer, deadline, bytes)) = pacing {
+            let wait = pacer.wait(bytes, deadline)?;
+            self.exclude_pacing(wait);
+            self.pacing_wait += wait;
+            *paced += wait;
+        }
+        send()
+    }
+
+    #[cfg(test)]
+    fn send_with(&mut self, send: impl FnMut() -> io::Result<usize>) -> io::Result<usize> {
+        self.send_with_pacing(send, None)
+    }
+
+    fn send_with_pacing(
+        &mut self,
+        mut send: impl FnMut() -> io::Result<usize>,
+        pacing: Option<(&AggregatePacer, Instant, usize)>,
+    ) -> io::Result<usize> {
+        let mut paced = Duration::ZERO;
+        let first = match self.attempt(&mut send, pacing, &mut paced) {
             Err(error) if is_transient_backpressure(&error) => error,
             result => return result,
         };
@@ -54,20 +108,27 @@ impl SendBudget {
             self.resource_backpressure += 1;
         }
         let started = Instant::now();
-        let retry_deadline = (started + self.remaining_retry_budget).min(self.deadline);
+        if self.remaining_retry_budget.is_zero() {
+            self.retry_budget_exhausted += 1;
+        } else if started >= self.deadline {
+            self.deadline_exhausted += 1;
+        }
+        let mut retry_paced = Duration::ZERO;
         let result = loop {
-            if Instant::now() >= retry_deadline {
+            if started.elapsed().saturating_sub(retry_paced) >= self.remaining_retry_budget
+                || Instant::now() >= self.deadline
+            {
                 break Err(first);
             }
             // Yield rather than sleeping: Windows timer granularity must not
             // turn a sub-ms socket retry into a full missed video tick.
             thread::yield_now();
-            match send() {
+            match self.attempt(&mut send, pacing, &mut retry_paced) {
                 Err(error) if is_transient_backpressure(&error) => {}
                 result => break result,
             }
         };
-        let waited = started.elapsed();
+        let waited = started.elapsed().saturating_sub(retry_paced);
         self.retry_wait += waited;
         self.remaining_retry_budget = self.remaining_retry_budget.saturating_sub(waited);
         if result.is_ok() {
@@ -94,70 +155,213 @@ fn is_transient_backpressure(error: &io::Error) -> bool {
     }
 }
 
-/// Spreads one packetized AU in bounded batches. Its entire pacing span is
-/// capped, including for a large IDR or forty recipients; never queues an AU.
-pub struct PacketPacer {
-    started: Instant,
-    span: Duration,
-    packets: usize,
-    batch_packets: usize,
-    pub wait: Duration,
+/// One session-wide wire-rate budget for video, repair and pointer. Reservations
+/// are at most one datagram per sending thread; no packet queue is created.
+/// UDP/IP/Ethernet framing, preamble and inter-frame gap are budgeted conservatively.
+pub struct AggregatePacer {
+    mbps: u32,
+    clock: Mutex<RateClock>,
+    pub wait_us: AtomicU64,
+    pub denied: AtomicU64,
 }
 
-impl PacketPacer {
-    #[allow(clippy::cast_precision_loss)] // AU bytes and packet counts are small bounded values.
-    pub fn new(
-        packet_bytes: usize,
-        packets: usize,
-        recipients: usize,
-        mbps: u32,
-        max_span: Duration,
-    ) -> Self {
-        let bytes = packet_bytes.saturating_mul(recipients);
-        let span = if mbps == 0 {
-            Duration::ZERO
-        } else {
-            Duration::from_secs_f64(bytes as f64 * 8.0 / (f64::from(mbps) * 1_000_000.0))
-                .min(max_span)
-        };
+struct RateClock {
+    next_free: Instant,
+    burst: Duration,
+}
+
+impl RateClock {
+    fn reserve(&mut self, now: Instant, cost: Duration, deadline: Instant) -> Option<Instant> {
+        let target = self
+            .next_free
+            .checked_sub(self.burst)
+            .unwrap_or(now)
+            .max(now);
+        if target >= deadline {
+            return None;
+        }
+        self.next_free = self.next_free.max(now) + cost;
+        Some(target)
+    }
+}
+
+impl AggregatePacer {
+    pub fn new(mbps: u32) -> Self {
         Self {
-            started: Instant::now(),
-            span,
-            packets,
-            // Around 16 KiB per burst across all recipients, at least one RTP packet.
-            batch_packets: (16_384 / recipients.max(1) / 1_200).max(1),
-            wait: Duration::ZERO,
+            mbps,
+            clock: Mutex::new(RateClock {
+                next_free: Instant::now(),
+                burst: wire_duration(16_384, mbps),
+            }),
+            wait_us: AtomicU64::new(0),
+            denied: AtomicU64::new(0),
         }
     }
 
-    #[allow(clippy::cast_precision_loss)]
-    pub fn before_packet(&mut self, index: usize) {
-        if self.span.is_zero() || self.packets == 0 || index % self.batch_packets != 0 {
-            return;
+    /// Eighty percent of the wire budget is available to the encoded stream;
+    /// leave room for packet headers, recovery and pointer state.
+    pub fn bitrate_ceiling(&self, recipients: usize) -> u32 {
+        if self.mbps == 0 || recipients == 0 {
+            return u32::MAX;
         }
-        let target = self.started + self.span.mul_f64(index as f64 / self.packets as f64);
-        let started = Instant::now();
-        while Instant::now() < target {
-            thread::yield_now();
-        }
-        self.wait += started.elapsed();
+        u32::try_from(u64::from(self.mbps) * 800_000 / recipients as u64).unwrap_or(u32::MAX)
     }
+
+    pub fn fits(
+        &self,
+        payload_bytes: usize,
+        packets: usize,
+        recipients: usize,
+        budget: Duration,
+    ) -> bool {
+        self.mbps == 0
+            || wire_duration(
+                payload_bytes
+                    .saturating_add(packets.saturating_mul(80))
+                    .saturating_mul(recipients),
+                self.mbps,
+            ) <= budget
+    }
+
+    pub fn wait(&self, payload_bytes: usize, deadline: Instant) -> io::Result<Duration> {
+        let started = Instant::now();
+        let target = if self.mbps == 0 {
+            (started < deadline).then_some(started)
+        } else {
+            self.clock.lock().unwrap().reserve(
+                started,
+                wire_duration(payload_bytes.saturating_add(80), self.mbps),
+                deadline,
+            )
+        };
+        let Some(target) = target else {
+            self.denied.fetch_add(1, Ordering::Relaxed);
+            return Err(io::ErrorKind::TimedOut.into());
+        };
+        while Instant::now() < target {
+            let remaining = target.saturating_duration_since(Instant::now());
+            if remaining > Duration::from_millis(2) {
+                thread::sleep(Duration::from_millis(1));
+            } else {
+                thread::yield_now();
+            }
+        }
+        let waited = started.elapsed();
+        self.wait_us.fetch_add(
+            u64::try_from(waited.as_micros()).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
+        if Instant::now() >= deadline {
+            self.denied.fetch_add(1, Ordering::Relaxed);
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        Ok(waited)
+    }
+}
+
+fn wire_duration(bytes: usize, mbps: u32) -> Duration {
+    if mbps == 0 {
+        return Duration::ZERO;
+    }
+    Duration::from_nanos(
+        (bytes as u64)
+            .saturating_mul(8_000)
+            .div_ceil(u64::from(mbps)),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn pacing_caps_large_idr_and_can_be_disabled() {
-        let cap = Duration::from_millis(8);
-        let paced = PacketPacer::new(2_000_000, 2_000, 40, 400, cap);
-        assert_eq!(paced.span, cap);
-        assert_eq!(paced.batch_packets, 1);
-        let single = PacketPacer::new(20_000, 20, 1, 400, cap);
-        assert_eq!(single.span, Duration::from_micros(400));
-        let mut disabled = PacketPacer::new(2_000_000, 2_000, 40, 0, cap);
-        disabled.before_packet(1_999);
-        assert_eq!(disabled.wait, Duration::ZERO);
+    fn pacing_large_idr_respects_wire_rate_and_can_be_disabled() {
+        let now = Instant::now();
+        let pacer = AggregatePacer::new(400);
+        let mut clock = pacer.clock.lock().unwrap();
+        let mut last = now;
+        for _ in 0..10_500 {
+            last = clock
+                .reserve(now, wire_duration(1280, 400), now + Duration::from_secs(1))
+                .unwrap();
+        }
+        assert!(last.duration_since(now) > Duration::from_millis(250));
+        let saved = clock.next_free;
+        assert!(clock
+            .reserve(
+                now,
+                wire_duration(1280, 400),
+                now + Duration::from_millis(8)
+            )
+            .is_none());
+        assert_eq!(
+            clock.next_free, saved,
+            "rejected work must not create rate debt"
+        );
+        drop(clock);
+        assert!(AggregatePacer::new(0)
+            .wait(2_000_000, now + Duration::from_secs(1))
+            .is_ok());
+        assert_eq!(pacer.bitrate_ceiling(40), 8_000_000);
+        assert!(pacer.fits(361_003, 310, 35, Duration::from_millis(300)));
+        assert!(!pacer.fits(361_003, 310, 35, Duration::from_millis(120)));
+    }
+
+    #[test]
+    fn fanout_bursts_share_one_aggregate_allowance() {
+        let now = Instant::now();
+        let pacer = AggregatePacer::new(400);
+        let mut clock = pacer.clock.lock().unwrap();
+        for _worker in 0..4 {
+            for _ in 0..4 {
+                clock
+                    .reserve(now, wire_duration(1280, 400), now + Duration::from_secs(1))
+                    .unwrap();
+            }
+        }
+        assert!(clock.next_free.duration_since(now) > clock.burst);
+        assert!(
+            clock
+                .reserve(now, wire_duration(1280, 400), now + Duration::from_secs(1))
+                .unwrap()
+                > now
+        );
+    }
+
+    #[test]
+    fn intentional_pacing_does_not_expire_unused_retry_budget() {
+        let now = Instant::now();
+        let mut budget = SendBudget::new(now - Duration::from_secs(1), Duration::from_millis(10));
+        budget.exclude_pacing(Duration::from_secs(1));
+        let mut attempts = 0;
+        let result = budget.send_with(|| {
+            attempts += 1;
+            if attempts == 1 {
+                Err(io::ErrorKind::WouldBlock.into())
+            } else {
+                Ok(1200)
+            }
+        });
+        assert!(result.is_ok());
+        assert_eq!(budget.recovered, 1);
+        assert_eq!(budget.deadline_exhausted, 0);
+        assert!(budget.remaining_retry_budget <= Duration::from_millis(2));
+    }
+
+    #[test]
+    fn expired_send_work_is_not_retried_without_pacing() {
+        let mut budget = SendBudget::new(
+            Instant::now() - Duration::from_secs(1),
+            Duration::from_millis(10),
+        );
+        assert!(budget
+            .send_with(|| Err(io::ErrorKind::WouldBlock.into()))
+            .is_err());
+        assert_eq!(budget.deadline_exhausted, 1);
+        assert_eq!(budget.recovered, 0);
+        assert_eq!(
+            budget.remaining_retry_budget,
+            Duration::from_millis(2) - budget.retry_wait
+        );
     }
 
     #[test]

@@ -119,6 +119,10 @@ pub struct NetworkConfig {
     pub feedback_port: u16,
     pub retransmission_cache_ms: u32,
     pub send_pacing_mbps: u32,
+    #[serde(default = "default_send_au_deadline_ms")]
+    pub send_au_deadline_ms: u32,
+    #[serde(default = "default_send_keyframe_deadline_ms")]
+    pub send_keyframe_deadline_ms: u32,
     pub bind_ip: String,
     pub interface: String,
     /// Teacher RTP fan-out worker threads (Students sharded by client id),
@@ -151,6 +155,7 @@ pub struct VideoConfig {
     pub adaptive_large_change_percent: f32,
     pub adaptive_small_hold_ms: u32,
     pub adaptive_pressure_encode_ms: u32,
+    /// Teacher process share of total logical-CPU capacity, not summed core usage.
     pub adaptive_pressure_cpu_percent: f32,
     pub adaptive_receiver_loss_percent: f32,
     pub adaptive_receiver_min_fps_percent: u32,
@@ -185,7 +190,14 @@ pub struct VideoConfig {
 const fn default_true() -> bool {
     true
 }
-const fn default_fanout_threads() -> u32 {
+const fn default_send_au_deadline_ms() -> u32 {
+    120
+}
+fn default_send_keyframe_deadline_ms() -> u32 {
+    300
+}
+
+fn default_fanout_threads() -> u32 {
     4
 }
 const fn default_refine_percent() -> u32 {
@@ -374,6 +386,14 @@ impl Config {
         if self.network.send_pacing_mbps > 10_000 {
             return Err(ConfigError::Validation(
                 "network.send_pacing_mbps must be 0..=10000 (0 disables pacing)".to_owned(),
+            ));
+        }
+        if !(10..=500).contains(&self.network.send_au_deadline_ms)
+            || !(10..=500).contains(&self.network.send_keyframe_deadline_ms)
+            || self.network.send_keyframe_deadline_ms < self.network.send_au_deadline_ms
+        {
+            return Err(ConfigError::Validation(
+                "network send deadlines must be 10..=500 ms; keyframe >= normal AU".to_owned(),
             ));
         }
         if !(1..=16).contains(&self.network.fanout_threads) {
