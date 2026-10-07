@@ -34,6 +34,18 @@
 //! It also assumes the Student account is a standard (non-administrator)
 //! user, per the project's existing assumption; nothing here defends
 //! against a Student who has local administrator rights.
+//!
+//! [`ensure_installed`] closes the remaining bootstrap gap: an
+//! already-elevated `ClassroomStudent.exe` (the Student only ever runs
+//! elevated when it is doing anything privileged — see `guard::Guard`)
+//! calls it once at startup, and if `ClassroomGuardService.exe` sits next
+//! to it but is not installed yet, installs and starts it right then — an
+//! admin running the Student bundle once elevated is enough; there is no
+//! separate command to remember. A child process spawned by an elevated
+//! parent inherits that same elevated token, so this needs no UAC prompt
+//! of its own. A standard-user Student is never elevated in the first
+//! place, so this path never runs for one and can never be used to
+//! self-install anything.
 #![cfg_attr(windows, allow(unsafe_code))]
 
 #[cfg(windows)]
@@ -77,6 +89,51 @@ mod imp {
             Some(other) => anyhow::bail!("Unknown argument '{other}'; use --install or --uninstall"),
             None => run_as_service(),
         }
+    }
+
+    /// Called from an already-elevated `ClassroomStudent.exe` at startup.
+    /// Best-effort and silent by design: an un-elevated Student (the normal
+    /// case) must never notice or be blocked by this, and a Student folder
+    /// deployed without the bundled service exe is a perfectly valid,
+    /// supported configuration, just without this protection layer.
+    pub fn ensure_installed(teacher_ip: std::net::Ipv4Addr, control_port: u16) {
+        let Ok(current) = std::env::current_exe() else {
+            return;
+        };
+        let Some(dir) = current.parent() else {
+            return;
+        };
+        let service_exe = dir.join("ClassroomGuardService.exe");
+        if !service_exe.exists() || service_installed() {
+            return;
+        }
+        tracing::info!("Classroom Guard service not installed yet; installing it now");
+        let output = Command::new(&service_exe)
+            .args([
+                "--install",
+                "--teacher-ip",
+                &teacher_ip.to_string(),
+                "--control-port",
+                &control_port.to_string(),
+            ])
+            .creation_flags(NO_WINDOW)
+            .output();
+        match output {
+            Ok(o) if o.status.success() => tracing::info!("Classroom Guard service installed"),
+            Ok(o) => tracing::warn!(
+                stderr = %String::from_utf8_lossy(&o.stderr).trim(),
+                "Classroom Guard service install did not report success"
+            ),
+            Err(error) => tracing::warn!(%error, "Could not run ClassroomGuardService.exe --install"),
+        }
+    }
+
+    fn service_installed() -> bool {
+        Command::new("sc.exe")
+            .args(["query", SERVICE_NAME])
+            .creation_flags(NO_WINDOW)
+            .output()
+            .is_ok_and(|o| o.status.success())
     }
 
     /// `ClassroomStudent.exe`'s own CLI arguments, chosen once at install
@@ -409,9 +466,11 @@ Register-ScheduledTask -TaskName '{task}' -Action $action -Principal $principal 
 }
 
 #[cfg(windows)]
-pub use imp::main;
+pub use imp::{ensure_installed, main};
 
 #[cfg(not(windows))]
 pub fn main() -> anyhow::Result<()> {
     anyhow::bail!("The Classroom Guard service is only available on Windows")
 }
+#[cfg(not(windows))]
+pub fn ensure_installed(_teacher_ip: std::net::Ipv4Addr, _control_port: u16) {}

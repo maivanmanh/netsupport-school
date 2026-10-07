@@ -1434,6 +1434,13 @@ pub fn student(
             *address.ip(),
         ));
         guard.restore();
+        if guard.supported() {
+            // `address` is the tools port (control_port + 2, see the
+            // `classroom_tools::student` call site in main.rs); recover the
+            // Student's own --control-port so a freshly installed service
+            // relaunches it with the same connection info it already has.
+            crate::guard_service::ensure_installed(*address.ip(), address.port().saturating_sub(2));
+        }
         let mut fs_run: Option<fs_jobs::Run> = None;
         let mut fs_pending = VecDeque::<ToolPacket>::new();
         let list_active = Arc::new(AtomicUsize::new(0));
