@@ -14,6 +14,11 @@ name = "ClassroomStudent"
 path = "src/main.rs"
 test = false
 
+[[bin]]
+name = "ClassroomGuardService"
+path = "src/main.rs"
+test = false
+
 [dependencies]
 anyhow.workspace = true
 serde.workspace = true
@@ -67,3 +72,4 @@ workspace = true
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_UI_HiDpi", "Win32_UI_Shell", "Win32_NetworkManagement_WindowsFilteringPlatform", "Win32_Security", "Win32_System_Rpc", "Win32_System_Threading", "Win32_UI_Accessibility", "Win32_System_Variant", "Win32_System_DataExchange"] }
 rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }
+windows-service = "0.8"

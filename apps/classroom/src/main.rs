@@ -65,6 +65,7 @@ mod student_bootstrap;
 mod student_connection_ui;
 mod student_file_ui;
 mod guard;
+mod guard_service;
 mod student_lock;
 mod student_fps_badge;
 mod student_presentation;
@@ -268,6 +269,9 @@ enum RestartRequest {
 }
 
 fn main() -> Result<()> {
+    if env!("CARGO_BIN_NAME") == "ClassroomGuardService" {
+        return guard_service::main();
+    }
     if let Some(result) = dev_update::early_operation() {
         return result;
     }
