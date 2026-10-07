@@ -21,12 +21,18 @@ STUDENT_PACKAGE="$ROOT/target/updates/student-windows-x64.zip"
 python3 scripts/classroom-dev-update.py package \
   "$CROSS_DIR/x86_64-pc-windows-gnu/release/ClassroomStudent.exe" \
   --version "$CLASSROOM_BUILD_LABEL" --output "$STUDENT_PACKAGE"
-# Deployment bundle: both executables an admin needs together in one folder
-# to run `ClassroomGuardService.exe --install` once (never shipped to
-# Students via the in-app "Share Student app" download — that still only
-# ever serves the plain Student, matching the existing dev-update manifest
-# format, which expects exactly one executable).
+# ClassroomGuardService.exe rides alongside as an extra, unverified entry —
+# the manifest/hash the auto-update path trusts still covers only
+# ClassroomStudent.exe, so this cannot weaken that mechanism. The Teacher's
+# "Share Student app" HTTP download (student_bootstrap.rs) carries this
+# entry through into what a Student actually downloads, so running the
+# downloaded ClassroomStudent.exe elevated once self-installs the Guard
+# service — one download, one elevated run, fully protected.
 WINDOWS_RELEASE_DIR="$CROSS_DIR/x86_64-pc-windows-gnu/release"
+(cd "$WINDOWS_RELEASE_DIR" && zip -q "$STUDENT_PACKAGE" ClassroomGuardService.exe)
+# Separate plain-folder bundle too, for an admin who wants to copy both
+# executables onto a machine directly (e.g. over SMB) without going through
+# the HTTP share at all.
 BUNDLE_DIR="$ROOT/target/updates/classroom-student-guard-windows-x64"
 rm -rf "$BUNDLE_DIR"
 mkdir -p "$BUNDLE_DIR"

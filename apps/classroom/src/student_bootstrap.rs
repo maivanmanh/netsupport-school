@@ -205,13 +205,6 @@ fn prepare(
                 .eq_ignore_ascii_case("ClassroomStudent.exe"),
         "Choose a Windows Student dev-update ZIP containing a portable executable"
     );
-    let mut input = zip::ZipArchive::new(fs::File::open(source)?)?;
-    let mut entry = input.by_name(&manifest.executable)?;
-    anyhow::ensure!(
-        entry.size() <= super::dev_update::MAX_PACKAGE
-            && entry.unix_mode().is_none_or(|m| m & 0o170_000 != 0o120_000),
-        "Invalid Student executable"
-    );
     fs::create_dir_all(directory)?;
     let mut random = [0u8; 12];
     getrandom::fill(&mut random).map_err(|e| anyhow::anyhow!("Package nonce: {e}"))?;
@@ -231,35 +224,85 @@ fn prepare(
         let mut output = zip::ZipWriter::new(file);
         let options = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated);
-        output.start_file("ClassroomStudent.exe", options)?;
-        let mut digest = Sha256::new();
-        let mut buffer = vec![0u8; 64 * 1024];
-        let mut total = 0u64;
-        loop {
+        let mut input = zip::ZipArchive::new(fs::File::open(source)?)?;
+        {
+            // Scoped so this entry's borrow of `input` ends before looking
+            // up the Guard service entry below — the zip crate only allows
+            // one open entry from an archive at a time.
+            let mut entry = input.by_name(&manifest.executable)?;
             anyhow::ensure!(
-                !cancel.load(Ordering::Acquire),
-                "Student ZIP preparation cancelled"
+                entry.size() <= super::dev_update::MAX_PACKAGE
+                    && entry.unix_mode().is_none_or(|m| m & 0o170_000 != 0o120_000),
+                "Invalid Student executable"
             );
-            let n = entry.read(&mut buffer)?;
-            if n == 0 {
-                break;
+            output.start_file("ClassroomStudent.exe", options)?;
+            let mut digest = Sha256::new();
+            let mut buffer = vec![0u8; 64 * 1024];
+            let mut total = 0u64;
+            loop {
+                anyhow::ensure!(
+                    !cancel.load(Ordering::Acquire),
+                    "Student ZIP preparation cancelled"
+                );
+                let n = entry.read(&mut buffer)?;
+                if n == 0 {
+                    break;
+                }
+                total += n as u64;
+                anyhow::ensure!(
+                    total <= super::dev_update::MAX_PACKAGE,
+                    "Student executable too large"
+                );
+                digest.update(&buffer[..n]);
+                output.write_all(&buffer[..n])?;
             }
-            total += n as u64;
             anyhow::ensure!(
-                total <= super::dev_update::MAX_PACKAGE,
-                "Student executable too large"
+                format!("{:x}", digest.finalize()) == manifest.sha256,
+                "Student executable checksum mismatch"
             );
-            digest.update(&buffer[..n]);
-            output.write_all(&buffer[..n])?;
         }
-        anyhow::ensure!(
-            format!("{:x}", digest.finalize()) == manifest.sha256,
-            "Student executable checksum mismatch"
-        );
+        // Carried through whenever the source dev-update package has one
+        // (an older package built before the Guard service existed won't):
+        // the Student self-installs it at startup when run elevated, so
+        // shipping both together means a Teacher-shared download is a
+        // complete, protectable install, not just the plain Student.
+        let bundled_guard = match input.by_name("ClassroomGuardService.exe") {
+            Ok(mut guard_entry) => {
+                anyhow::ensure!(
+                    guard_entry.size() <= super::dev_update::MAX_PACKAGE
+                        && guard_entry.unix_mode().is_none_or(|m| m & 0o170_000 != 0o120_000),
+                    "Invalid Guard service executable"
+                );
+                output.start_file("ClassroomGuardService.exe", options)?;
+                let mut buffer = vec![0u8; 64 * 1024];
+                loop {
+                    anyhow::ensure!(
+                        !cancel.load(Ordering::Acquire),
+                        "Student ZIP preparation cancelled"
+                    );
+                    let n = guard_entry.read(&mut buffer)?;
+                    if n == 0 {
+                        break;
+                    }
+                    output.write_all(&buffer[..n])?;
+                }
+                true
+            }
+            Err(zip::result::ZipError::FileNotFound) => false,
+            Err(error) => return Err(error.into()),
+        };
         output.start_file("classroom-bootstrap.toml", options)?;
         output.write_all(toml::to_string(settings)?.as_bytes())?;
         output.start_file("README.txt", options)?;
-        output.write_all(format!("Classroom Student ({})\r\nGiai nen toan bo ZIP vao thu muc local, roi double click ClassroomStudent.exe.\r\nTeacher: {}:{}\r\nKhong chay executable truc tiep ben trong ZIP.\r\n",manifest.arch,settings.teacher_ip,settings.control_port).as_bytes())?;
+        output.write_all(format!(
+            "Classroom Student ({})\r\nGiai nen toan bo ZIP vao thu muc local, roi double click ClassroomStudent.exe.\r\nTeacher: {}:{}\r\nKhong chay executable truc tiep ben trong ZIP.\r\n{}",
+            manifest.arch, settings.teacher_ip, settings.control_port,
+            if bundled_guard {
+                "\r\nDe bat bao ve chong tat (ClassroomGuardService), chuot phai ClassroomStudent.exe > Run as administrator mot lan; no se tu cai va chay dich vu bao ve.\r\n"
+            } else {
+                ""
+            },
+        ).as_bytes())?;
         let file = output.finish()?;
         file.sync_all()?;
         let size = file.metadata()?.len();
