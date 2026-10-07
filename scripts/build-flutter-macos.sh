@@ -15,12 +15,26 @@ export CLASSROOM_BUILD_LABEL="${CLASSROOM_BUILD_LABEL:-paired-$(date +%Y%m%d-%H%
 rustup run stable cargo build --release --bin Classroom --bin ClassroomStudent
 CROSS_DIR="$ROOT/target/rustup-windows"
 env CARGO_TARGET_DIR="$CROSS_DIR" rustup run stable cargo build --release \
-  --bin ClassroomStudent --target x86_64-pc-windows-gnu
+  --bin ClassroomStudent --bin ClassroomGuardService --target x86_64-pc-windows-gnu
 mkdir -p "$ROOT/target/updates"
 STUDENT_PACKAGE="$ROOT/target/updates/student-windows-x64.zip"
 python3 scripts/classroom-dev-update.py package \
   "$CROSS_DIR/x86_64-pc-windows-gnu/release/ClassroomStudent.exe" \
   --version "$CLASSROOM_BUILD_LABEL" --output "$STUDENT_PACKAGE"
+# Deployment bundle: both executables an admin needs together in one folder
+# to run `ClassroomGuardService.exe --install` once (never shipped to
+# Students via the in-app "Share Student app" download — that still only
+# ever serves the plain Student, matching the existing dev-update manifest
+# format, which expects exactly one executable).
+WINDOWS_RELEASE_DIR="$CROSS_DIR/x86_64-pc-windows-gnu/release"
+BUNDLE_DIR="$ROOT/target/updates/classroom-student-guard-windows-x64"
+rm -rf "$BUNDLE_DIR"
+mkdir -p "$BUNDLE_DIR"
+cp "$WINDOWS_RELEASE_DIR/ClassroomStudent.exe" "$BUNDLE_DIR/ClassroomStudent.exe"
+cp "$WINDOWS_RELEASE_DIR/ClassroomGuardService.exe" "$BUNDLE_DIR/ClassroomGuardService.exe"
+GUARD_BUNDLE="$ROOT/target/updates/classroom-student-guard-windows-x64.zip"
+rm -f "$GUARD_BUNDLE"
+(cd "$ROOT/target/updates" && zip -q -r "$(basename "$GUARD_BUNDLE")" "$(basename "$BUNDLE_DIR")")
 CLASSROOM_MAC_OUTPUT_DIR="${CLASSROOM_MAC_OUTPUT_DIR:-$ROOT/target}" \
   bash scripts/build-student-macos.sh
 MAC_STUDENT="${CLASSROOM_MAC_OUTPUT_DIR:-$ROOT/target}/Classroom Student.app"
@@ -71,3 +85,4 @@ rm -rf "$APP"
 cp -R "$BUILD_APP" "$APP"
 codesign --verify --deep --strict "$APP"
 echo "$APP"
+echo "$GUARD_BUNDLE"
