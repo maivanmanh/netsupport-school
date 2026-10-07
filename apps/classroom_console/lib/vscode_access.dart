@@ -61,11 +61,28 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
     super.initState();
     final enabledPref = agent.preferences['vscode_enabled'];
     if (enabledPref is bool) enabled = enabledPref;
+    if (agent.connected) {
+      load();
+    } else {
+      // A freshly spawned window's socket to the Teacher agent is not
+      // guaranteed to be up yet (it connects asynchronously right after
+      // this window's process starts) — fetching immediately can lose
+      // that race and fail with "Teacher agent is not connected" for
+      // good, since nothing here retried. Wait for the first connection
+      // instead, matching Files/Activity windows.
+      agent.addListener(waitForAgent);
+    }
+  }
+
+  void waitForAgent() {
+    if (!agent.connected) return;
+    agent.removeListener(waitForAgent);
     load();
   }
 
   @override
   void dispose() {
+    agent.removeListener(waitForAgent);
     search.dispose();
     super.dispose();
   }
@@ -194,7 +211,9 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
 
   @override
   Widget build(BuildContext context) {
-    final blocked = vscodeBlockedStudents(agent).length;
+    final blockedIds = vscodeBlockedStudents(agent);
+    final blocked = blockedIds.length;
+    final copilotActive = widget.studentIds.any(blockedIds.contains);
     final filter = search.text.trim().toLowerCase();
     final shown = filter.isEmpty
         ? extensions
@@ -252,7 +271,7 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              _CopilotRow(),
+                              _CopilotRow(active: copilotActive),
                               const SizedBox(height: 12),
                               Row(
                                 children: [
@@ -303,10 +322,12 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
                               const SizedBox(height: 8),
                               Expanded(
                                 child: extensions.isEmpty
-                                    ? const Center(
+                                    ? Center(
                                         child: Text(
-                                          'No user-installed extensions were found on the selected computers.',
-                                          style: TextStyle(color: Colors.blueGrey),
+                                          !agent.connected
+                                              ? 'Connecting to the Teacher agent…'
+                                              : 'No user-installed extensions were found on the selected computers.',
+                                          style: const TextStyle(color: Colors.blueGrey),
                                         ),
                                       )
                                     : ListView.separated(
@@ -477,6 +498,13 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
 /// Copilot is always left out of the allowlist this window sends —
 /// regardless of what the Teacher checks below.
 class _CopilotRow extends StatelessWidget {
+  const _CopilotRow({required this.active});
+  /// Whether the allowlist is actually enforced right now for at least one
+  /// of the selected computers — not just configured in this window. The
+  /// badge must never claim Copilot is blocked when nothing has been
+  /// applied yet, since an un-applied policy changes nothing on the real
+  /// machine.
+  final bool active;
   @override
   Widget build(BuildContext context) => Container(
     padding: const EdgeInsets.all(10),
@@ -489,29 +517,44 @@ class _CopilotRow extends StatelessWidget {
       children: [
         const Icon(Icons.smart_toy_outlined, size: 18, color: Colors.blueGrey),
         const SizedBox(width: 10),
-        const Expanded(
-          child: Text(
-            'GitHub Copilot / Copilot Chat',
-            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'GitHub Copilot / Copilot Chat',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+              ),
+              Text(
+                active
+                    ? 'Excluded from the allowlist currently enforced on the selected computer(s).'
+                    : 'Always excluded from the allowlist — but only once you turn the switch below on and press Apply.',
+                style: const TextStyle(fontSize: 11, color: Colors.blueGrey),
+              ),
+            ],
           ),
         ),
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
           decoration: BoxDecoration(
-            color: _danger.withValues(alpha: 0.12),
+            color: (active ? _danger : Colors.blueGrey).withValues(alpha: 0.12),
             borderRadius: BorderRadius.circular(20),
           ),
-          child: const Row(
+          child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.lock_outline, size: 13, color: _danger),
-              SizedBox(width: 4),
+              Icon(
+                active ? Icons.lock_outline : Icons.schedule,
+                size: 13,
+                color: active ? _danger : Colors.blueGrey,
+              ),
+              const SizedBox(width: 4),
               Text(
-                'Always blocked',
+                active ? 'Blocked now' : 'Not applied yet',
                 style: TextStyle(
                   fontSize: 11.5,
                   fontWeight: FontWeight.w700,
-                  color: _danger,
+                  color: active ? _danger : Colors.blueGrey,
                 ),
               ),
             ],

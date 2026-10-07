@@ -225,12 +225,55 @@ mod windows_impl {
         reg(&["add", &format!("HKLM\\{REG_PATH}"), "/v", REG_VALUE, "/t", "REG_SZ", "/d", &json, "/f"])
             .context("Could not write the extension allowlist (run as administrator?)")?;
         set_disable_ai(true)?;
+        // VS Code only resolves `AllowedExtensions` at process start (seen
+        // directly in its own log: PolicyConfiguration#initialize runs once
+        // during startup). A copy the Student already had open before this
+        // policy landed — or deliberately keeps open to dodge it — would
+        // otherwise keep running unrestricted indefinitely, so force a
+        // restart whenever enforcement turns on. Relies on VS Code's default
+        // hot-exit to restore unsaved buffers; not restarted on `clear()`
+        // since relaxing a restriction is never urgent enough to justify
+        // interrupting the Student.
+        restart_vscode_if_running();
         Ok(())
     }
     pub fn clear() -> Result<()> {
         let _ = reg(&["delete", &format!("HKLM\\{REG_PATH}"), "/v", REG_VALUE, "/f"]);
         set_disable_ai(false)?;
         Ok(())
+    }
+    /// Best-effort: a failed restart still leaves the (stronger) registry
+    /// policy in place for VS Code's next ordinary launch, so this never
+    /// escalates — only *immediate* enforcement would be delayed, not lost.
+    fn restart_vscode_if_running() {
+        let running = Command::new("tasklist.exe")
+            .args(["/FI", "IMAGENAME eq Code.exe", "/FO", "CSV", "/NH"])
+            .creation_flags(NO_WINDOW)
+            .output()
+            .is_ok_and(|o| {
+                String::from_utf8_lossy(&o.stdout).to_ascii_lowercase().contains("code.exe")
+            });
+        if !running {
+            return;
+        }
+        if let Err(error) = Command::new("taskkill.exe")
+            .args(["/F", "/IM", "Code.exe", "/T"])
+            .creation_flags(NO_WINDOW)
+            .output()
+        {
+            tracing::warn!(%error, "Could not force-close VS Code for policy enforcement");
+            return;
+        }
+        // Let the OS release the previous process' file locks before the
+        // relaunch tries to open the same user profile.
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        let Some(local) = std::env::var_os("LOCALAPPDATA") else { return };
+        let exe = PathBuf::from(local).join("Programs").join("Microsoft VS Code").join("Code.exe");
+        if exe.exists() {
+            if let Err(error) = Command::new(&exe).creation_flags(NO_WINDOW).spawn() {
+                tracing::warn!(%error, "Could not relaunch VS Code after enforcing a policy");
+            }
+        }
     }
     pub fn supported() -> bool {
         true
