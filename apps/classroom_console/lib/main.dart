@@ -1233,6 +1233,21 @@ class _ConsoleState extends State<Console> with WindowListener {
                           ),
                         ),
                       ),
+                    const SizedBox(width: 16),
+                    Icon(
+                      Icons.computer_outlined,
+                      size: 15,
+                      color: online > 0 ? const Color(0xff1f7a4d) : Colors.blueGrey,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      '$online / ${agent.students.length} connected',
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w600,
+                        color: online > 0 ? const Color(0xff1f7a4d) : Colors.blueGrey,
+                      ),
+                    ),
                   ],
                 ),
               ),
