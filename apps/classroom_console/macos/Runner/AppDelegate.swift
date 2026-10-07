@@ -3,7 +3,7 @@ import FlutterMacOS
 
 @main
 class AppDelegate: FlutterAppDelegate {
-  private var isObserve: Bool { CommandLine.arguments.contains("--observe-id") || CommandLine.arguments.contains("--files-id") || CommandLine.arguments.contains("--activity-id") || CommandLine.arguments.contains("--internet-ids") }
+  private var isObserve: Bool { CommandLine.arguments.contains("--observe-id") || CommandLine.arguments.contains("--files-id") || CommandLine.arguments.contains("--activity-id") || CommandLine.arguments.contains("--internet-ids") || CommandLine.arguments.contains("--vscode-ids") }
 
   override func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
     // Teacher hides its window while the room stays active. AppKit must not

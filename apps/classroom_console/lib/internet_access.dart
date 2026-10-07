@@ -98,10 +98,7 @@ class InternetWindow extends StatefulWidget {
 }
 
 class _InternetWindowState extends State<InternetWindow> {
-  late List<SiteList> lists = [
-    for (final l in (agent.preferences['internet_lists'] as List? ?? const []))
-      if (l is Map) SiteList.fromJson(l),
-  ];
+  List<SiteList> lists = [];
   late final text = TextEditingController();
   String mode = 'block_all';
   String? listId;
@@ -123,6 +120,30 @@ class _InternetWindowState extends State<InternetWindow> {
   @override
   void initState() {
     super.initState();
+    // Same race as the VS Code window: `agent.preferences` is not loaded
+    // yet at this widget's first build (Agent.start() finishes later), so
+    // reading it unconditionally here always saw the empty default —
+    // every reopen defaulted to Block all with no saved lists. Defer to
+    // once the agent is actually ready.
+    if (agent.connected) {
+      applyPreferences();
+    } else {
+      agent.addListener(waitForAgent);
+    }
+  }
+
+  void waitForAgent() {
+    if (!agent.connected) return;
+    agent.removeListener(waitForAgent);
+    if (!mounted) return;
+    setState(applyPreferences);
+  }
+
+  void applyPreferences() {
+    lists = [
+      for (final l in (agent.preferences['internet_lists'] as List? ?? const []))
+        if (l is Map) SiteList.fromJson(l),
+    ];
     final last = agent.preferences['internet_last'];
     if (last is Map) {
       mode = '${last['mode'] ?? mode}';
@@ -135,6 +156,7 @@ class _InternetWindowState extends State<InternetWindow> {
 
   @override
   void dispose() {
+    agent.removeListener(waitForAgent);
     text.dispose();
     super.dispose();
   }

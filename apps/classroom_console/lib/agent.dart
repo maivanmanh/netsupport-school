@@ -40,12 +40,14 @@ class Agent extends ChangeNotifier {
   int observeLaunch = 0;
   int lastObserveFocus = 0;
 
-  /// Observe, file and activity windows are dependent UIs of the main console.
+  /// Observe, file, activity, Internet-access and VS Code windows are
+  /// dependent UIs of the main console.
   bool get dependent =>
       option('--observe-id') != null ||
       option('--files-id') != null ||
       option('--activity-id') != null ||
-      option('--internet-ids') != null;
+      option('--internet-ids') != null ||
+      option('--vscode-ids') != null;
   String? pendingObserveFocus;
 
   void ingestState(Map<String, dynamic> value) {
@@ -716,6 +718,23 @@ class Agent extends ChangeNotifier {
       return;
     }
     final f = File('${dataDirectory!.path}/console-settings.json');
+    // The main console and every dependent window (Observe/Files/Activity/
+    // Internet/VS Code) are separate processes sharing this one file with
+    // no lock; each only loads it once, at its own startup. Serializing
+    // this process's own in-memory `preferences` would silently erase
+    // whatever any other window wrote afterward — confirmed: a long-running
+    // console's stale copy was overwriting a dependent window's save within
+    // seconds. Re-read the file fresh and merge `changes` onto *that*.
+    Map<String, dynamic> onDisk = {};
+    if (await f.exists()) {
+      try {
+        onDisk = jsonDecode(await f.readAsString()) as Map<String, dynamic>;
+      } catch (_) {
+        onDisk = {};
+      }
+    }
+    onDisk.addAll(changes);
+    preferences = onDisk;
     final temp = File('${f.path}.tmp');
     await temp.writeAsString(jsonEncode(preferences), flush: true);
     if (Platform.isWindows && await f.exists()) {

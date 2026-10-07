@@ -265,6 +265,9 @@ class _ConsoleState extends State<Console> with WindowListener {
     final audience = selectionMode && selected.isNotEmpty
         ? '${ids.length} selected computers'
         : 'the class (${ids.length} online)';
+    // Lets an already-open window come forward instead of silently doing
+    // nothing when clicked again (mirrors Observe/Files/Activity).
+    agent.pendingObserveFocus = 'internet';
     return agent.request(
       'internet_window',
       selected: ids,
@@ -278,6 +281,7 @@ class _ConsoleState extends State<Console> with WindowListener {
     final audience = selectionMode && selected.isNotEmpty
         ? '${ids.length} selected computers'
         : 'the class (${ids.length} online)';
+    agent.pendingObserveFocus = 'vscode';
     return agent.request(
       'vscode_window',
       selected: ids,

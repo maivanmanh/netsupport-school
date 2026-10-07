@@ -59,24 +59,30 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
   @override
   void initState() {
     super.initState();
-    final enabledPref = agent.preferences['vscode_enabled'];
-    if (enabledPref is bool) enabled = enabledPref;
+    // `agent.preferences` is only populated once Agent.start() finishes its
+    // own disk read, which happens *after* this widget's first build (see
+    // main()'s sequencing) — reading it here unconditionally always sees
+    // the empty default, every single time, which is why the toggle used
+    // to forget its last value on every reopen. Apply it (and fetch) only
+    // once the agent is actually ready, same connected-gating as Files/
+    // Activity windows already use.
     if (agent.connected) {
+      applyPreferences();
       load();
     } else {
-      // A freshly spawned window's socket to the Teacher agent is not
-      // guaranteed to be up yet (it connects asynchronously right after
-      // this window's process starts) — fetching immediately can lose
-      // that race and fail with "Teacher agent is not connected" for
-      // good, since nothing here retried. Wait for the first connection
-      // instead, matching Files/Activity windows.
       agent.addListener(waitForAgent);
     }
+  }
+
+  void applyPreferences() {
+    final enabledPref = agent.preferences['vscode_enabled'];
+    if (enabledPref is bool) enabled = enabledPref;
   }
 
   void waitForAgent() {
     if (!agent.connected) return;
     agent.removeListener(waitForAgent);
+    applyPreferences();
     load();
   }
 

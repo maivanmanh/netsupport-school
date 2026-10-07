@@ -872,6 +872,16 @@ pub(super) fn run(
                             .collect();
                         if ids.is_empty() {
                             Err("Select at least one online Student")
+                        } else if let Some(child) = internet_windows.first() {
+                            // An Internet access window is already open: bring
+                            // it forward instead of silently doing nothing (it
+                            // does not retarget to a different audience — close
+                            // it first for that, same as before).
+                            snapshot.observe_focus.0 = "internet".into();
+                            snapshot.observe_focus.1 += 1;
+                            snapshot.observe_focus.2 = child.id();
+                            publish_due = Instant::now();
+                            Ok(())
                         } else if internet_windows.len() >= MAX_INTERNET_WINDOWS {
                             Err("Close an Internet access window before opening another")
                         } else if let Some(console) = console {
@@ -910,6 +920,14 @@ pub(super) fn run(
                             .collect();
                         if ids.is_empty() {
                             Err("Select at least one online Student")
+                        } else if let Some(child) = vscode_windows.first() {
+                            // Already open: bring it forward (same simplification
+                            // as internet_window — does not retarget audience).
+                            snapshot.observe_focus.0 = "vscode".into();
+                            snapshot.observe_focus.1 += 1;
+                            snapshot.observe_focus.2 = child.id();
+                            publish_due = Instant::now();
+                            Ok(())
                         } else if vscode_windows.len() >= MAX_VSCODE_WINDOWS {
                             Err("Close a VS Code control window before opening another")
                         } else if let Some(console) = console {
