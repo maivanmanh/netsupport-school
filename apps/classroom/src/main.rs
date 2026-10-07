@@ -1656,6 +1656,8 @@ fn run_teacher_media_inner(
                 sender_pressure,
                 sender_ceiling_bps,
                 send_au_deadline_drops = fanout.stats.au_deadline_drops.load(Ordering::Relaxed),
+                send_preflight_recipient_drops = fanout.stats.preflight_recipient_drops.load(Ordering::Relaxed),
+                connected_send_fallbacks = fanout.stats.connected_send_fallbacks.load(Ordering::Relaxed),
                 send_dependency_skipped_packets = fanout.stats.dependency_skipped_packets.load(Ordering::Relaxed),
                 aggregate_pacer_denied = repair.pacer.denied.load(Ordering::Relaxed),
                 aggregate_pacer_wait_us = repair.pacer.wait_us.load(Ordering::Relaxed),
@@ -1784,6 +1786,26 @@ fn run_teacher_media_inner(
                 .swap(false, Ordering::AcqRel)
         {
             keyframes.request(Instant::now());
+        }
+        let oversized_percent = fanout
+            .stats
+            .oversized_keyframe_percent
+            .swap(0, Ordering::AcqRel);
+        if oversized_percent != 0 {
+            if let Some(action) = refine.constrain(false, quality.bitrate_bps()) {
+                apply_refinement(&mut encoder, action, &mut refine_qp_supported);
+            }
+            let proposal = quality.oversized_keyframe_bitrate(oversized_percent);
+            match quality.apply_bitrate(&mut encoder, proposal, Instant::now()) {
+                Ok(Some(bitrate_bps)) => {
+                    bitrate_changes += 1;
+                    awaiting_bitrate_change_access_unit = true;
+                    info!(bitrate_bps, oversized_percent, "teacher reduced bitrate after unsendable keyframe");
+                }
+                Ok(None) => warn!(oversized_percent, bitrate_bps = quality.bitrate_bps(),
+                    "unsendable keyframe: bitrate minimum, opt-out or unsupported backend; recovery remains bounded"),
+                Err(error) => warn!(%error, "encoder rejected oversized keyframe bitrate reduction"),
+            }
         }
         if keyframes.poll(Instant::now()) {
             encoder.request_keyframe()?;
@@ -2946,6 +2968,7 @@ fn run_student_receiver(
                     wire_packets = wire.packets,
                     wire_bytes = wire.bytes,
                     ingress_dropped_packets = wire.dropped,
+                    injected_dropped_packets = wire.test_dropped,
                     malformed_packets = wire.malformed,
                     wrong_peer_packets = wire.peer_rejected,
                     socket_errors = wire.socket_errors,
@@ -3066,6 +3089,7 @@ fn run_student_receiver(
             wire_packets = wire.packets,
             wire_bytes = wire.bytes,
             ingress_dropped_packets = wire.dropped,
+            injected_dropped_packets = wire.test_dropped,
             ingress_reference_loss_events,
             malformed_packets = wire.malformed,
             wrong_peer_packets = wire.peer_rejected,

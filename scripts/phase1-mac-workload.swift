@@ -15,11 +15,29 @@ text.font = NSFont.monospacedSystemFont(ofSize: 20, weight: .regular)
 text.textColor = .white; text.backgroundColor = .black
 window.contentView!.addSubview(text)
 window.makeKeyAndOrderFront(nil); app.activate(ignoringOtherApps: true)
+let audit = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : nil
+var auditRows: [[String: Any]] = []
 let start = Date(); var previous = -1; var tick = 0
 let timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
     let elapsed = Date().timeIntervalSince(start)
-    if elapsed >= seconds { app.terminate(nil); return }
+    if elapsed >= seconds {
+        if let audit = audit, let data = try? JSONSerialization.data(withJSONObject: auditRows, options: [.prettyPrinted]) {
+            try? data.write(to: URL(fileURLWithPath: audit))
+        }
+        app.terminate(nil); return
+    }
     let phase = Int(elapsed / 10) % 5; tick += 1
+    // Other applications may activate during the run. Keep
+    // the authorized test content foreground, then audit on subsequent ticks.
+    if tick % 20 == 0 && !app.isActive {
+        window.makeKeyAndOrderFront(nil)
+        app.activate(ignoringOtherApps: true)
+    }
+    if tick % 20 == 0 && auditRows.count < 660 {
+        auditRows.append(["elapsed_s": elapsed, "phase": phase,
+                          "foreground": NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier,
+                          "visible": window.isVisible, "width": window.frame.width, "height": window.frame.height])
+    }
     if phase != previous { text.string = ""; previous = phase }
     switch phase {
     case 0:

@@ -207,6 +207,21 @@ impl QualityController {
         self.sender_pressure = overloaded || self.bitrate_bps > self.sender_ceiling_bps;
     }
 
+    /// An unsendable IDR is direct evidence: do not wait for receiver reports
+    /// that cannot arrive while all chains are suppressed. Respect opt-out,
+    /// backend support and configured minimum; normal increases retain cooldown.
+    pub fn oversized_keyframe_bitrate(&mut self, percent: u64) -> Option<u32> {
+        self.sender_pressure = true;
+        self.low_loss_streak = 0;
+        if !self.config.adaptive || !self.bitrate_supported {
+            return None;
+        }
+        let candidate = u32::try_from(u64::from(self.bitrate_bps) * percent.clamp(1, 80) / 100)
+            .unwrap_or(self.bitrate_bps)
+            .max(self.config.min_bitrate_kbps.saturating_mul(1_000));
+        (candidate < self.bitrate_bps).then_some(candidate)
+    }
+
     pub fn refinement_allowed(&self) -> bool {
         !self.sender_pressure && self.pressure_streak == 0 && self.degraded_streak == 0
     }
@@ -659,6 +674,24 @@ mod tests {
             protected_content_masked_out: false,
             capture_latency: Duration::ZERO,
         }
+    }
+
+    #[test]
+    fn unsendable_keyframe_reduces_rate_immediately_but_never_below_minimum() {
+        let start = Instant::now();
+        let mut policy = QualityController::new(&config(), start);
+        assert_eq!(policy.oversized_keyframe_bitrate(77), Some(4_620_000));
+        policy.bitrate_applied(4_620_000, start);
+        let minimum = policy.config.min_bitrate_kbps * 1_000;
+        assert_eq!(policy.oversized_keyframe_bitrate(1), Some(minimum));
+        policy.bitrate_applied(minimum, start);
+        assert_eq!(policy.oversized_keyframe_bitrate(77), None);
+        policy.config.adaptive = false;
+        policy.bitrate_applied(6_000_000, start);
+        assert_eq!(policy.oversized_keyframe_bitrate(77), None);
+        policy.config.adaptive = true;
+        policy.disable_bitrate_adaptation();
+        assert_eq!(policy.oversized_keyframe_bitrate(77), None);
     }
 
     #[test]

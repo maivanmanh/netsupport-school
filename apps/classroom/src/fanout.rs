@@ -63,6 +63,10 @@ pub struct FanoutStats {
     pub au_deadline_drops: AtomicU64,
     pub dependency_skipped_packets: AtomicU64,
     pub recovery_requested: AtomicBool,
+    /// Lowest safe bitrate percentage suggested by rejected keyframes; consumed by encoder owner.
+    pub oversized_keyframe_percent: AtomicU64,
+    pub preflight_recipient_drops: AtomicU64,
+    pub connected_send_fallbacks: AtomicU64,
     /// Time the encode thread spent waiting for a busy worker.
     pub handoff_wait_us: AtomicU64,
     pub connected_sockets: AtomicU64,
@@ -321,6 +325,22 @@ impl Worker {
             self.stats
                 .au_deadline_drops
                 .fetch_add(mine.len() as u64, Ordering::Relaxed);
+            self.stats
+                .preflight_recipient_drops
+                .fetch_add(mine.len() as u64, Ordering::Relaxed);
+            if job.is_keyframe {
+                let percent = self.pacer.recovery_percent(
+                    job.packets.iter().map(Vec::len).sum(),
+                    job.packets.len(),
+                    job.targets.len(),
+                    age_budget,
+                );
+                let _ = self.stats.oversized_keyframe_percent.fetch_update(
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                    |old| Some(if old == 0 { percent } else { old.min(percent) }),
+                );
+            }
             self.stats.recovery_requested.store(true, Ordering::Release);
             self.needs_keyframe.extend(mine.iter().map(|(id, _)| *id));
             return;
@@ -348,7 +368,7 @@ impl Worker {
                     }
                     continue;
                 }
-                let result = match self.sockets.get(id).and_then(|(_, s)| s.as_ref()) {
+                let mut result = match self.sockets.get(id).and_then(|(_, s)| s.as_ref()) {
                     Some(socket) => {
                         budget.send_connected_paced(socket, packet, &self.pacer, deadline)
                     }
@@ -356,6 +376,30 @@ impl Worker {
                         budget.send_to_paced(&self.shared, packet, *endpoint, &self.pacer, deadline)
                     }
                 };
+                // macOS sandboxed connected UDP can bind/connect successfully but
+                // reject send with EPIPE. Retire that socket for this endpoint and
+                // retry this unsent datagram once through the proven shared flow.
+                // Both attempts use the same governor and original AU deadline.
+                if cfg!(target_os = "macos")
+                    && result
+                        .as_ref()
+                        .is_err_and(|e| e.kind() == io::ErrorKind::BrokenPipe)
+                    && self.sockets.get(id).is_some_and(|(_, s)| s.is_some())
+                {
+                    self.sockets.get_mut(id).unwrap().1 = None;
+                    self.stats.connected_sockets.fetch_sub(1, Ordering::Relaxed);
+                    self.stats
+                        .connected_send_fallbacks
+                        .fetch_add(1, Ordering::Relaxed);
+                    warn!(client_id = id, %endpoint, "connected UDP send rejected; using shared socket for endpoint");
+                    result = budget.send_to_paced(
+                        &self.shared,
+                        packet,
+                        *endpoint,
+                        &self.pacer,
+                        deadline,
+                    );
+                }
                 match result {
                     Ok(_) => {
                         sent += 1;
@@ -493,6 +537,41 @@ mod tests {
             max_keyframe_age: Duration::from_millis(300),
             send_buffer_bytes: 256 * 1024,
         }
+    }
+
+    #[test]
+    fn rejected_idr_publishes_rate_hint_without_sending_partial_frame() {
+        let shared = shared_socket();
+        let receiver = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let std::net::SocketAddr::V4(endpoint) = receiver.local_addr().unwrap() else {
+            unreachable!()
+        };
+        let mut settings = config(2, false);
+        settings.pacing_mbps = 1;
+        settings.max_keyframe_age = Duration::from_millis(1);
+        let fanout = Fanout::start(&shared, settings).unwrap();
+        fanout.send(FanoutJob {
+            is_keyframe: true,
+            packets: vec![vec![1; 1200]; 20],
+            targets: vec![(1, endpoint)],
+        });
+        fanout.wait_idle(&AtomicBool::new(false));
+        assert_eq!(fanout.stats.sent_packets.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            fanout
+                .stats
+                .preflight_recipient_drops
+                .load(Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            fanout
+                .stats
+                .oversized_keyframe_percent
+                .swap(0, Ordering::AcqRel),
+            1
+        );
+        assert!(fanout.stats.recovery_requested.load(Ordering::Acquire));
     }
 
     #[test]

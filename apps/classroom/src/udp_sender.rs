@@ -207,6 +207,29 @@ impl AggregatePacer {
         u32::try_from(u64::from(self.mbps) * 800_000 / recipients as u64).unwrap_or(u32::MAX)
     }
 
+    /// Ratio to aim below the rejected IDR wire budget, with 20% recovery headroom.
+    /// This is a rate-control hint, not a codec guarantee of the next IDR size.
+    pub fn recovery_percent(
+        &self,
+        payload: usize,
+        packets: usize,
+        recipients: usize,
+        budget: Duration,
+    ) -> u64 {
+        let required = wire_duration(
+            payload
+                .saturating_add(packets.saturating_mul(80))
+                .saturating_mul(recipients),
+            self.mbps,
+        );
+        if self.mbps == 0 || required.is_zero() {
+            return 100;
+        }
+        u64::try_from(budget.as_nanos().saturating_mul(80) / required.as_nanos())
+            .unwrap_or(100)
+            .clamp(1, 80)
+    }
+
     pub fn fits(
         &self,
         payload_bytes: usize,
@@ -273,6 +296,20 @@ fn wire_duration(bytes: usize, mbps: u32) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn oversized_recovery_hint_reserves_headroom_and_handles_disabled_pacing() {
+        let pacer = AggregatePacer::new(400);
+        assert_eq!(
+            pacer.recovery_percent(361_003, 301, 40, Duration::from_millis(300)),
+            77
+        );
+        assert!(pacer.recovery_percent(600_000, 500, 35, Duration::from_millis(300)) < 60);
+        assert_eq!(
+            AggregatePacer::new(0).recovery_percent(1, 1, 40, Duration::from_millis(300)),
+            100
+        );
+    }
+
     #[test]
     fn pacing_large_idr_respects_wire_rate_and_can_be_disabled() {
         let now = Instant::now();

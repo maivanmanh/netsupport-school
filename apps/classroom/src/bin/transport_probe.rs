@@ -1,6 +1,13 @@
 //! Local synthetic AU probe using the production sender. No capture or decoder.
 #[path = "../fanout.rs"]
 mod fanout;
+#[path = "../keyframe_gate.rs"]
+mod keyframe_gate;
+#[cfg(test)]
+#[path = "../process_metrics.rs"]
+mod process_metrics;
+#[path = "../quality.rs"]
+mod quality;
 #[path = "../udp_sender.rs"]
 mod udp_sender;
 
@@ -48,6 +55,9 @@ struct Args {
     auxiliary_packets: u32,
     #[arg(long)]
     connected: bool,
+    /// Models proportional IDR size response to real policy; not a codec guarantee.
+    #[arg(long)]
+    adaptive_idr: bool,
     #[arg(long)]
     output: PathBuf,
 }
@@ -159,6 +169,10 @@ fn main() -> Result<()> {
     let tick = Duration::from_secs_f64(1.0 / f64::from(args.fps));
     let mut rows = Vec::new();
     let mut aux_sent = 0_u64;
+    let (config, _) = classroom_config::Config::load(None)?;
+    let mut quality = quality::QualityController::new(&config.video, started);
+    let initial_bitrate = quality.bitrate_bps();
+    let mut gate = keyframe_gate::KeyframeGate::new(Duration::from_millis(400));
     for frame in 0..args.frames {
         let due = started + tick * frame;
         if let Some(wait) = due.checked_duration_since(Instant::now()) {
@@ -168,13 +182,41 @@ fn main() -> Result<()> {
         fan.wait_idle(&stop);
         let wait_ms = before_wait.elapsed().as_secs_f64() * 1000.0;
         thread::sleep(Duration::from_millis(args.encode_ms));
+        let hint = fan
+            .stats
+            .oversized_keyframe_percent
+            .swap(0, Ordering::AcqRel);
+        if args.adaptive_idr && hint != 0 {
+            if let Some(rate) = quality.oversized_keyframe_bitrate(hint) {
+                quality.bitrate_applied(rate, Instant::now());
+            }
+        }
         let recovery = fan.stats.recovery_requested.swap(false, Ordering::AcqRel);
-        let idr = frame % args.idr_every == 0 || recovery;
+        if args.adaptive_idr && recovery {
+            gate.request(Instant::now());
+        }
+        let idr = frame % args.idr_every == 0
+            || if args.adaptive_idr {
+                gate.poll(Instant::now())
+            } else {
+                recovery
+            };
         let bytes = if idr {
-            args.idr_bytes
+            if args.adaptive_idr {
+                usize::try_from(
+                    u64::try_from(args.idr_bytes)? * u64::from(quality.bitrate_bps())
+                        / u64::from(initial_bitrate),
+                )?
+                .max(16)
+            } else {
+                args.idr_bytes
+            }
         } else {
             args.normal_bytes
         };
+        if args.adaptive_idr && idr {
+            gate.emitted(bytes, Instant::now());
+        }
         let count = bytes.div_ceil(1200);
         let mut packets = Vec::with_capacity(count);
         for index in 0..count {
@@ -210,6 +252,7 @@ fn main() -> Result<()> {
     let sent = stat.sent_packets.load(Ordering::Relaxed);
     let sent_bytes = stat.sent_bytes.load(Ordering::Relaxed);
     let sender = json!({"sent_packets": sent, "sent_bytes": sent_bytes,
+        "preflight_recipient_drops": stat.preflight_recipient_drops.load(Ordering::Relaxed),
         "send_errors": stat.send_errors.load(Ordering::Relaxed),
         "abandoned": stat.abandoned_packets.load(Ordering::Relaxed),
         "reference_skips": stat.dependency_skipped_packets.load(Ordering::Relaxed),
@@ -227,6 +270,7 @@ fn main() -> Result<()> {
     let auxiliary_received = aux_reader.join().expect("aux sink panic");
     let report = json!({"scope": "same-host loopback synthetic AU sizes; no RTP decode, NIC or optical acceptance",
         "receivers": args.receivers, "workers": args.workers, "pacing_mbps": args.pacing_mbps, "stream_ceiling_bps": pacer.bitrate_ceiling(args.receivers),
+        "adaptive_idr_size_model": args.adaptive_idr, "final_modeled_bitrate": quality.bitrate_bps(),
         "encode_ms_simulated": args.encode_ms, "frames": args.frames, "elapsed_s": elapsed.as_secs_f64(),
         "submission_fps": f64::from(args.frames) / elapsed.as_secs_f64(),
         "auxiliary_sent": aux_sent, "auxiliary_received": auxiliary_received,

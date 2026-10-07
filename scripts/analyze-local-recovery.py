@@ -39,6 +39,19 @@ def main():
         result['first_decode_to_first_present_log_ms'] = first_present - first_decode if first_decode is not None and first_present is not None else None
         result['functional'] = bool(result['first_present_logged'] and summary.get('decoded_frames', 0) > 0
                                     and summary.get('rendered_frames', 0) > 0)
+        workload = args.run / f'{name}-workload.json'
+        if workload.exists():
+            audit = json.loads(workload.read_text())
+            result['workload_audit'] = {
+                'samples': len(audit),
+                'foreground_percent': 100 * sum(row['foreground'] for row in audit) / len(audit) if audit else 0,
+                'visible_percent': 100 * sum(row['visible'] for row in audit) / len(audit) if audit else 0,
+                'phases_seen': sorted(set(row['phase'] for row in audit)),
+            }
+        wire = result['last_ingress']
+        injected = wire.get('injected_dropped_packets')
+        result['injected_percent_of_peer_datagrams'] = (100 * injected / wire['wire_packets']
+            if injected is not None and wire.get('wire_packets', 0) > 0 else None)
         report['scenarios'][name] = result
     (args.run / 'analysis.json').write_text(json.dumps(report, indent=2))
     print(json.dumps(report, indent=2))

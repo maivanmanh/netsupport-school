@@ -28,9 +28,13 @@ def main():
     parser.add_argument('--seconds', type=int, default=50)
     parser.add_argument('--teacher', type=Path, default=ROOT / 'target/local-recovery-build/Classroom Console.app/Contents/Helpers/Classroom Agent.app/Contents/MacOS/Classroom')
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--scenarios', default='baseline,loss,latejoin')
     args = parser.parse_args()
-    if not 20 <= args.seconds <= 120:
-        parser.error('seconds must be 20..120')
+    if not 20 <= args.seconds <= 600:
+        parser.error('seconds must be 20..600')
+    selected = args.scenarios.split(',')
+    if not selected or len(set(selected)) != len(selected) or not set(selected) <= {'baseline', 'loss', 'latejoin'}:
+        parser.error('scenarios must be unique baseline/loss/latejoin names')
     remote = Remote(args.remote, getpass.getpass('Windows SSH password: '))
     run = args.output.resolve()
     run.mkdir(parents=True, exist_ok=False)
@@ -57,26 +61,29 @@ def main():
         ipc = module.IPC(args.endpoint)
     try:
         for scenario, drop, delay in [('baseline', 0, 0), ('loss', 100, 0), ('latejoin', 0, 8000)]:
+            if scenario not in selected:
+                continue
             print('START', scenario, flush=True)
             powershell = f'''$ErrorActionPreference='Stop'
 $env:CLASSROOM_TEST_DROP_PERCENT='{1 if drop else 0}'
 $a=@('--role','student','--teacher-ip','{args.local_ip}','--control-port','48900','--media-port','48910','--feedback-port','48911','--share-seconds','{args.seconds + 10}','--student-connect-delay-ms','{delay}','--config','{remote_root}/config.toml','--launch-profile','{remote_root}/profile.toml','--log-file','{remote_root}/{scenario}.log')
 $p=Start-Process '{remote_root}/Classroom.exe' -ArgumentList $a -PassThru -RedirectStandardOutput '{remote_root}/{scenario}.stdout' -RedirectStandardError '{remote_root}/{scenario}.stderr'
 $null=$p.Handle
-if(!$p.WaitForExit(150000)){{$p.Kill(); throw 'Student timeout'}}
+if(!$p.WaitForExit({(args.seconds + 60) * 1000})){{$p.Kill(); throw 'Student timeout'}}
 @{{exit=$p.ExitCode}} | ConvertTo-Json | Set-Content '{remote_root}/{scenario}.result.json'
 '''
             worker = run / 'worker.ps1'
             worker.write_text(powershell, encoding='utf-8-sig')
             remote.copy(worker, f'{args.remote}:{remote_root}/worker.ps1')
             remote.ps(f"$a=New-ScheduledTaskAction -Execute powershell.exe -Argument '-NoProfile -ExecutionPolicy Bypass -File {remote_root}/worker.ps1'; $p=New-ScheduledTaskPrincipal -UserId '{args.remote.split('@')[0]}' -LogonType Interactive -RunLevel Limited; $s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries; Register-ScheduledTask -TaskName '{task}' -Action $a -Principal $p -Settings $s -Force | Out-Null; Start-ScheduledTask '{task}'")
-            workload = subprocess.Popen([str(ROOT / 'target/phase1-mac-workload'), str(args.seconds + 10)])
+            workload = subprocess.Popen([str(ROOT / 'target/phase1-mac-workload'), str(args.seconds + 10), str(run / f'{scenario}-workload.json')])
             time.sleep(2)
             teacher = None
             try:
                 if ipc:
                     deadline = time.monotonic() + 20
                     while delay == 0 and time.monotonic() < deadline:
+                        time.sleep(0.05)
                         ipc.read()
                         if any(row['online'] for row in ipc.state.get('students', [])):
                             break
@@ -86,6 +93,7 @@ if(!$p.WaitForExit(150000)){{$p.Kill(); throw 'Student timeout'}}
                     end = time.monotonic() + args.seconds
                     saw_sharing = False
                     while time.monotonic() < end:
+                        time.sleep(0.05)
                         ipc.read()
                         if ipc.state.get('phase') == 'sharing':
                             saw_sharing = True
