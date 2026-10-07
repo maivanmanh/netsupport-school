@@ -176,3 +176,16 @@ before replacement. Confirm all receivers report the intended new build.
 | Actual sleep/resume and 125%/150% DPI | Supported physical Windows | Resume presentation/geometry/readability/cursor and logs | Still unverified from earlier milestone |
 
 No simulator/VM result closes docs/06_PERFORMANCE_ACCEPTANCE.md.
+
+
+### Later clarification of the four zero-decode intervals
+
+Subsequent timeline analysis found all four loss-run zero-decode intervals occurred
+before the first decoded frame (first_decode_ms=4630.63, first_present_ms=4986.83).
+Received AUs increased27→107, with waiting_for_keyframe=false, zero decoder errors
+and zero keyframe requests. First output followed a later periodic IDR. There were
+zero zero-decode report intervals after first output in this run. Thus the earlier
+"four stalls" description needs this startup qualification. Missing leading
+parameter sets are a reproducible way to enter this silent-decoder state, but raw
+NAL contents of that original first IDR were not recorded, so its exact missing
+parameter/slice cause is not proved.

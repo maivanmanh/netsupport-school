@@ -31,6 +31,7 @@ pub struct IngressState {
     /// Test only (`CLASSROOM_TEST_DROP_PERCENT`): video packets discarded on
     /// arrival to emulate network loss without OS firewall changes.
     pub test_dropped: u64,
+    pub test_parameter_dropped: u64,
 }
 
 /// Test-only random loss, 0 (default) disables. Bounded to 50 %.
@@ -103,8 +104,18 @@ pub fn receive(
             "TEST ONLY: emulating random video packet loss"
         );
     }
+    let parameter_kind = match std::env::var("CLASSROOM_TEST_DROP_FIRST_PARAMETER_SET").as_deref() {
+        Ok("sps") => Some(7),
+        Ok("pps") => Some(8),
+        _ => None,
+    };
+    let mut parameter_dropped = false;
     // xorshift; deterministic per process is fine for an emulator.
-    let mut seed = 0x9e37_79b9_u32 ^ std::process::id();
+    let mut seed = std::env::var("CLASSROOM_TEST_DROP_SEED")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+        .filter(|&seed| seed != 0)
+        .unwrap_or(0x9e37_79b9_u32 ^ std::process::id());
     while !stop.load(Ordering::Acquire) {
         match socket.recv_from(&mut buffer) {
             Ok((bytes, peer)) => {
@@ -124,6 +135,19 @@ pub fn receive(
                         state.pointer.push(&packet);
                     }
                     Ok(packet) => {
+                        if !parameter_dropped
+                            && parameter_kind
+                                .is_some_and(|kind| first_parameter_packet(&packet, kind))
+                        {
+                            parameter_dropped = true;
+                            state.test_dropped += 1;
+                            state.test_parameter_dropped += 1;
+                            tracing::info!(
+                                sequence = packet.sequence_number,
+                                "TEST ONLY: dropped first parameter-set RTP packet"
+                            );
+                            continue;
+                        }
                         if drop_percent > 0 {
                             seed ^= seed << 13;
                             seed ^= seed >> 17;
@@ -152,8 +176,40 @@ pub fn receive(
     }
 }
 
+/// Test hook matches only H.264 SPS/PPS start packets, never continuation or pointer.
+fn first_parameter_packet(packet: &RtpPacket, kind: u8) -> bool {
+    packet.payload_type == media_core::VideoCodec::H264.rtp_payload_type()
+        && (packet.payload.first().is_some_and(|b| b & 0x1f == kind)
+            || (packet.payload.len() >= 3
+                && packet.payload[0] & 0x1f == 28
+                && packet.payload[1] & 0x80 != 0
+                && packet.payload[1] & 0x1f == kind))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parameter_injection_matches_only_first_nal_or_fu_start() {
+        let mut p = RtpPacket {
+            timing: None,
+            marker: false,
+            payload_type: 96,
+            sequence_number: 0,
+            timestamp: 0,
+            ssrc: 1,
+            payload: vec![0x67, 1],
+        };
+        assert!(first_parameter_packet(&p, 7));
+        assert!(!first_parameter_packet(&p, 8));
+        p.payload = vec![0x7c, 0x87, 1];
+        assert!(first_parameter_packet(&p, 7));
+        p.payload[1] = 7;
+        assert!(!first_parameter_packet(&p, 7));
+        p.payload_type = media_transport::pointer::POINTER_PAYLOAD_TYPE;
+        p.payload = vec![0x67];
+        assert!(!first_parameter_packet(&p, 7));
+    }
+
     #[test]
     fn receives_and_timestamps_while_consumer_is_not_running() {
         let receiver = UdpSocket::bind("127.0.0.1:0").unwrap();

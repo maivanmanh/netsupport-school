@@ -29,9 +29,14 @@ def main():
     parser.add_argument('--teacher', type=Path, default=ROOT / 'target/local-recovery-build/Classroom Console.app/Contents/Helpers/Classroom Agent.app/Contents/MacOS/Classroom')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--scenarios', default='baseline,loss,latejoin')
+    parser.add_argument('--drop-first-parameter-set', choices=['sps', 'pps'])
+    parser.add_argument('--loss-seed', type=int, default=12345)
+    parser.add_argument('--windows-binary', type=Path, default=ROOT / 'target/rustup-windows/x86_64-pc-windows-gnu/release/ClassroomStudent.exe')
     args = parser.parse_args()
     if not 20 <= args.seconds <= 600:
         parser.error('seconds must be 20..600')
+    if not 1 <= args.loss_seed <= 4294967295:
+        parser.error('loss-seed must be 1..4294967295')
     selected = args.scenarios.split(',')
     if not selected or len(set(selected)) != len(selected) or not set(selected) <= {'baseline', 'loss', 'latejoin'}:
         parser.error('scenarios must be unique baseline/loss/latejoin names')
@@ -40,9 +45,10 @@ def main():
     run.mkdir(parents=True, exist_ok=False)
     task = 'Classroom-Recovery-' + str(int(time.time()))
     remote_root = f'C:/Users/{args.remote.split("@")[0]}/{task}'
-    windows_binary = ROOT / 'target/rustup-windows/x86_64-pc-windows-gnu/release/Classroom.exe'
+    windows_binary = args.windows_binary.resolve()
     mac_binary = args.teacher.resolve()
     manifest = {'scope': 'Mac Teacher / Windows ARM VM, isolated ports; no wired scale acceptance',
+                'loss_seed': args.loss_seed, 'drop_first_parameter_set': args.drop_first_parameter_set,
                 'mac_sha256': hashlib.sha256(mac_binary.read_bytes()).hexdigest(),
                 'windows_sha256': hashlib.sha256(windows_binary.read_bytes()).hexdigest(),
                 'inventory': remote.ps('quser; $env:PROCESSOR_ARCHITECTURE'), 'remote_root': remote_root}
@@ -66,6 +72,8 @@ def main():
             print('START', scenario, flush=True)
             powershell = f'''$ErrorActionPreference='Stop'
 $env:CLASSROOM_TEST_DROP_PERCENT='{1 if drop else 0}'
+$env:CLASSROOM_TEST_DROP_SEED='{args.loss_seed}'
+$env:CLASSROOM_TEST_DROP_FIRST_PARAMETER_SET='{args.drop_first_parameter_set or ''}'
 $a=@('--role','student','--teacher-ip','{args.local_ip}','--control-port','48900','--media-port','48910','--feedback-port','48911','--share-seconds','{args.seconds + 10}','--student-connect-delay-ms','{delay}','--config','{remote_root}/config.toml','--launch-profile','{remote_root}/profile.toml','--log-file','{remote_root}/{scenario}.log')
 $p=Start-Process '{remote_root}/Classroom.exe' -ArgumentList $a -PassThru -RedirectStandardOutput '{remote_root}/{scenario}.stdout' -RedirectStandardError '{remote_root}/{scenario}.stderr'
 $null=$p.Handle

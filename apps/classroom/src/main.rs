@@ -40,6 +40,7 @@ mod classroom_tools;
 mod clipboard_guard;
 mod compact_log;
 mod dashboard_view;
+mod decode_health;
 mod desktop_tray;
 mod dev_update;
 mod diagnostics;
@@ -2594,6 +2595,11 @@ fn run_student_receiver(
     let mut observed_ingress_drops = 0_u64;
     let mut ingress_reference_loss_events = 0_u64;
     let mut recovery_peak_ms = 0.0_f64;
+    let mut decode_health = decode_health::DecodeHealth::default();
+    let mut decoder_no_output_resets = 0_u64;
+    let mut incomplete_recovery_units = 0_u64;
+    let mut pending_decoded_recovery_since = Some(started);
+    let mut decoded_recovery_peak_ms = 0.0_f64;
 
     info!(address = %socket.local_addr()?, jitter_buffer_ms = config.video.jitter_buffer_ms, headless, "student M3 UDP receiver ready");
     send_media_route_probe(
@@ -2797,7 +2803,33 @@ fn run_student_receiver(
                         pre_keyframe_frames_discarded += 1;
                         continue;
                     }
+                    if waiting_for_keyframe
+                        && !decode_health::complete_recovery_unit(&access_unit.bytes, video_codec)
+                    {
+                        incomplete_recovery_units += 1;
+                        recovery_timestamp = None;
+                        stale_backlog_packets += reset_receiver_reference_chain(
+                            &mut jitter,
+                            &mut depacketizer,
+                            &mut frame_timings,
+                        ) as u64;
+                        info!(
+                            incomplete_recovery_units,
+                            "student rejected recovery AU missing parameter sets"
+                        );
+                        if !request_recovery_keyframe(
+                            control,
+                            presentation.stream_id,
+                            &mut last_keyframe_request,
+                            &mut keyframe_requests,
+                        ) {
+                            reconnect = true;
+                            break 'session;
+                        }
+                        continue;
+                    }
                     if waiting_for_keyframe {
+                        pending_decoded_recovery_since = Some(waiting_for_keyframe_since);
                         let recovery = waiting_for_keyframe_since.elapsed();
                         receiver_stages.record("keyframe_recovery", recovery);
                         recovery_peak_ms = recovery_peak_ms.max(recovery.as_secs_f64() * 1000.0);
@@ -2833,6 +2865,41 @@ fn run_student_receiver(
                         &mut decode_latencies,
                     ) {
                         Ok(mut frames) => {
+                            if decode_health.observe(!frames.is_empty(), Instant::now()) {
+                                decoder_no_output_resets += 1;
+                                waiting_for_keyframe_since =
+                                    pending_decoded_recovery_since.unwrap_or_else(Instant::now);
+                                waiting_for_keyframe = true;
+                                recovery_timestamp = None;
+                                stale_backlog_packets += reset_receiver_reference_chain(
+                                    &mut jitter,
+                                    &mut depacketizer,
+                                    &mut frame_timings,
+                                ) as u64;
+                                shared.lock().unwrap().clear();
+                                info!(decoder_no_output_resets, "student decoder accepted AUs without output; requesting fresh IDR");
+                                if !request_recovery_keyframe(
+                                    control,
+                                    presentation.stream_id,
+                                    &mut last_keyframe_request,
+                                    &mut keyframe_requests,
+                                ) {
+                                    reconnect = true;
+                                    break 'session;
+                                }
+                            }
+                            if !frames.is_empty() {
+                                if let Some(since) = pending_decoded_recovery_since.take() {
+                                    let elapsed = since.elapsed();
+                                    decoded_recovery_peak_ms = decoded_recovery_peak_ms
+                                        .max(elapsed.as_secs_f64() * 1000.0);
+                                    receiver_stages.record("keyframe_decode_recovery", elapsed);
+                                    info!(
+                                        decoded_recovery_ms = elapsed.as_secs_f64() * 1000.0,
+                                        "student recovery confirmed by decoded output"
+                                    );
+                                }
+                            }
                             for frame in &mut frames {
                                 frame.timing = frame.media_timestamp.and_then(|timestamp| {
                                     frame_timings
@@ -2960,7 +3027,8 @@ fn run_student_receiver(
                 reordered_packets = jitter.statistics().reordered_packets, jitter_overflow_packets = jitter.statistics().overflow_packets,
                 recovery_packets_discarded, unrepaired_gap_resets,
                 waiting_for_keyframe, waiting_for_keyframe_ms = if waiting_for_keyframe { waiting_for_keyframe_since.elapsed().as_millis() } else { 0 },
-                recovery_episodes, recovery_peak_ms, stale_backlog_packets, ingress_reference_loss_events, repeated_source_frames, unmapped_decoded_frames,
+                recovery_episodes, recovery_peak_ms, decoded_recovery_peak_ms, decoder_no_output_resets, incomplete_recovery_units,
+                awaiting_decoded_recovery = pending_decoded_recovery_since.is_some(), stale_backlog_packets, ingress_reference_loss_events, repeated_source_frames, unmapped_decoded_frames,
                 "student freshness recovery interval");
             {
                 let mut wire = ingress.lock().unwrap();
@@ -2969,6 +3037,7 @@ fn run_student_receiver(
                     wire_bytes = wire.bytes,
                     ingress_dropped_packets = wire.dropped,
                     injected_dropped_packets = wire.test_dropped,
+                    injected_parameter_dropped_packets = wire.test_parameter_dropped,
                     malformed_packets = wire.malformed,
                     wrong_peer_packets = wire.peer_rejected,
                     socket_errors = wire.socket_errors,
@@ -3090,6 +3159,7 @@ fn run_student_receiver(
             wire_bytes = wire.bytes,
             ingress_dropped_packets = wire.dropped,
             injected_dropped_packets = wire.test_dropped,
+            injected_parameter_dropped_packets = wire.test_parameter_dropped,
             ingress_reference_loss_events,
             malformed_packets = wire.malformed,
             wrong_peer_packets = wire.peer_rejected,

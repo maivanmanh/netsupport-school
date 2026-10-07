@@ -27,15 +27,24 @@ def main():
         recovery = [fields(line) for line in lines if 'student freshness recovery interval' in line]
         ingress = [fields(line) for line in lines if 'student UDP ingest interval' in line]
         summary = complete[-1] if complete else {}
+        first_decode_event = next((fields(line) for line in lines if 'student first decoded frame' in line), {})
+        first_present_event = next((fields(line) for line in lines if 'student first presented frame' in line), {})
+        first_decode = first_decode_event.get('unix_ms')
+        first_present = first_present_event.get('unix_ms')
         # IDR arrival is earlier than successful decode/presentation; keep it named.
         result = {'summary': summary,
                   'first_present_logged': any('student first presented frame' in line for line in lines),
                   'zero_decode_intervals': sum(row.get('decode_fps') == 0 for row in intervals),
+                  'startup_zero_decode_intervals': sum(row.get('decode_fps') == 0 and (first_decode is None or row.get('unix_ms', 0) < first_decode) for row in intervals),
                   'idr_arrival_recovery_peak_ms': max([row.get('recovery_peak_ms', 0) for row in recovery] or [0]),
                   'last_recovery': recovery[-1] if recovery else {},
                   'last_ingress': ingress[-1] if ingress else {}}
-        first_decode = next((fields(line).get('unix_ms') for line in lines if 'student first decoded frame' in line), None)
-        first_present = next((fields(line).get('unix_ms') for line in lines if 'student first presented frame' in line), None)
+        result['first_decode_ms'] = first_decode_event.get('first_decode_ms')
+        result['first_present_ms'] = first_present_event.get('first_present_ms')
+        result['decoded_output_recovery_peak_ms'] = max([row.get('decoded_recovery_peak_ms', 0) for row in recovery] or [0])
+        result['decoder_no_output_resets'] = max([row.get('decoder_no_output_resets', 0) for row in recovery] or [0])
+        result['incomplete_recovery_units'] = max([row.get('incomplete_recovery_units', 0) for row in recovery] or [0])
+        result['post_first_decode_zero_intervals'] = sum(row.get('decode_fps') == 0 and first_decode is not None and row.get('unix_ms', 0) >= first_decode for row in intervals)
         result['first_decode_to_first_present_log_ms'] = first_present - first_decode if first_decode is not None and first_present is not None else None
         result['functional'] = bool(result['first_present_logged'] and summary.get('decoded_frames', 0) > 0
                                     and summary.get('rendered_frames', 0) > 0)

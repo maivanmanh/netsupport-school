@@ -3732,3 +3732,26 @@ Status: owner-reported Win+R local dispatch fixed and tested Windows-to-Windows.
 - Focused checks62 distinct tests passed (42 imported probe +20 media-transport; one manual ignored), Classroom all-bin check/clippy and probe clippy completed with existing/imported warnings. Scoped rustfmt, Swift compile, Python compile, diff check passed. Only regression-test code/diagnostic scripts added after production paired build; no later runtime implementation change.
 - Cleanup verified original installed Windows Guard/Student retained, no recovery tasks/test processes and Mac GUI/helper/workload stopped. Detailed report/checklist: checkpoints/diagnostics/2026-10-07-recovery-budget-followup.md; raw evidence target/recovery-budget-*.
 - Exact next step: investigate four loss-run stalls by aligning ingress loss, repair expiry, keyframe gate, decode/presentation events; preserve bounded buffers. In physical lab run identical visible workloads at actual1080p ladder1/5/10/20/35/40, real IDR floor/hardware/software cases, optical latency,30-minute fixed-resolution soak, sleep/resume/DPI. None of those physical gates is passed here. No push.
+
+## 2026-10-07 — Confirm recovery by decoded output
+
+- Corrected prior loss interpretation: four zero-decode intervals were startup
+  before first output, not four freezes after playback began. Original missing-SPS
+  cause remains unproven because raw NALs were not retained.
+- Reject incomplete parameter-set/random-access recovery AUs; request a fresh IDR.
+  Add bounded decoder no-output watchdog and decoded-output recovery telemetry.
+  Preserve existing queue, jitter, repair and keyframe request budgets.
+-70 focused tests passed; check/clippy/scoped formatting/Python checks complete.
+  Fresh paired Mac Teacher/Student and Windows x64 Student+Guard built with label
+  decoded-recovery-20261007; embedded packages/hashes verified.
+- Windows VM headless loopback: first SPS drop recovered to decoded output922ms,
+  first PPS drop157ms; zero decode errors.1510×948 static desktop, about5FPS.
+  Existing31a0e74 CLI Teacher + fresh Student: compatibility/component validation,
+  not same-revision native Windows release or visible-render acceptance.
+- Mac Teacher live run blocked by Screen Recording after signing; owner asked for
+  exact parent/helper paths and restart. No privacy grants automated.
+- Next: after owner regrant, restart exact paired Mac bundle and run visible
+  Mac→Windows SPS/PPS plus longer loss/late-join cases. Then physical Windows x64
+  wired1080p ladder1/5/10/20/35/40, optical latency, fixed-resolution soak,
+  DPI125%/150% and real sleep/resume. These lab gates remain unverified.
+- Detailed evidence: checkpoints/diagnostics/2026-10-07-decoded-recovery.md.
