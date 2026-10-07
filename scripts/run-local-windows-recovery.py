@@ -48,7 +48,7 @@ def main():
     windows_binary = args.windows_binary.resolve()
     mac_binary = args.teacher.resolve()
     manifest = {'scope': 'Mac Teacher / Windows ARM VM, isolated ports; no wired scale acceptance',
-                'loss_seed': args.loss_seed, 'drop_first_parameter_set': args.drop_first_parameter_set,
+                'started_unix_ms': int(time.time() * 1000), 'loss_seed': args.loss_seed, 'drop_first_parameter_set': args.drop_first_parameter_set,
                 'mac_sha256': hashlib.sha256(mac_binary.read_bytes()).hexdigest(),
                 'windows_sha256': hashlib.sha256(windows_binary.read_bytes()).hexdigest(),
                 'inventory': remote.ps('quser; $env:PROCESSOR_ARCHITECTURE'), 'remote_root': remote_root}
@@ -148,8 +148,24 @@ if(!$p.WaitForExit({(args.seconds + 60) * 1000})){{$p.Kill(); throw 'Student tim
     finally:
         if ipc:
             teacher_log = Path.home() / 'Library/Containers/com.classroom.classroomConsole/Data/Library/Application Support/com.classroom.classroomConsole/teacher-log.txt'
-            if teacher_log.exists():
-                shutil.copyfile(teacher_log, run / 'teacher.log')
+            # Another Console can rotate the shared support log. Match this
+            # isolated room and run clock rather than copying a stale idle log.
+            candidates = [teacher_log, *teacher_log.parent.joinpath('archive').glob('teacher-log.txt.*.txt')]
+            matching = []
+            for candidate in candidates:
+                if not candidate.is_file():
+                    continue
+                contents = candidate.read_text(errors='replace')
+                ready_times = [int(value) for value in re.findall(
+                    rf'unix_ms=(\d+) INFO teacher M3 media loop ready[^\n]*source={re.escape(args.local_ip)}:48911', contents)]
+                if any(value >= manifest['started_unix_ms'] for value in ready_times):
+                    matching.append((max(ready_times), candidate))
+            for index, (_, candidate) in enumerate(sorted(matching)):
+                shutil.copyfile(candidate, run / f'teacher-session-{index}.log')
+            if matching:
+                shutil.copyfile(max(matching)[1], run / 'teacher.log')
+            else:
+                print('WARNING: no matching Teacher media log; receiver evidence remains separate', flush=True)
             try:
                 ipc.command('stop')
                 ipc.command('quit')

@@ -3755,3 +3755,26 @@ Status: owner-reported Win+R local dispatch fixed and tested Windows-to-Windows.
   wired1080p ladder1/5/10/20/35/40, optical latency, fixed-resolution soak,
   DPI125%/150% and real sleep/resume. These lab gates remain unverified.
 - Detailed evidence: checkpoints/diagnostics/2026-10-07-decoded-recovery.md.
+
+## 2026-10-07 — Visible recovery follow-up completed
+
+- Restarted same paired Mac Teacher; Screen Recording now works, Windows IP
+  192.168.50.215. No product rebuild or automatic privacy changes.
+- Visible1512×982 tests: deterministic first SPS/PPS drop50seconds each; incomplete
+  recovery rejected, first decode696/220ms, render26.94/27.38FPS, decoder errors0.
+-120seconds each: baseline29.12decode/28.47renderFPS, latejoin29.04/28.35FPS,
+  decoder errors0 and no post-first-output one-second zero-decode intervals.
+-1% deterministic random loss measured0.9763%:25.61decode/24.36renderFPS,
+  decoder errors0 but two zero-decode intervals, recovery peak1674ms. Waiting for
+  complete recovery IDR during those gaps; two incomplete AUs rejected. No claim
+  that smooth loss handling is solved. No runtime watchdog trigger.
+- Audited workload all five phases foreground/visible100%. Teacher oneencoder;
+  all runs send errors/abandoned/cache misses0. Actual1.57–2.73Mbps,6Mbps initial
+  target; dimensions below1080p, VM/x64 emulation on shared Mac, not wired lab.
+- Corrected diagnostic log collection: another Console rotated shared log; recover
+  matching source/port/time session from archive instead of copying stale idle log.
+  Python compilation/diff check complete. Full raw evidence retained under target.
+- Next: identical-seed/workload comparisons of recovery parameter/IDR loss and
+  request gate/repair timing. Physical1080p ladder1/5/10/20/35/40, optical latency,
+  fixed-resolution soak, DPI125/150%, real sleep/resume remain deferred.
+- Report: checkpoints/diagnostics/2026-10-07-decoded-recovery.md.
