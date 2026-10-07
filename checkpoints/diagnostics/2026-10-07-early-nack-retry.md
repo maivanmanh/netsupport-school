@@ -160,3 +160,12 @@ verify native controlled first-repair loss and fixed-quality repetitions before
 promoting. Both final policies decode/present and log their correct timers;
 no smooth-loss or35/40 wired acceptance claimed. Test-owned Windows tasks/processes
 and Mac Teacher/helper cleaned; installed Student/profile/logs preserved.
+
+## Controlled repair follow-up completed
+
+The proposed native middle-IDR plus first-repair-loss experiment is now implemented
+and repeated twice per policy. See2026-10-07-controlled-repair.md: half-budget
+129.6/133.0ms vsRTT29.1/24.7ms for repair-copy wait; all decoded/presented without
+codec errors. This closes that targeted experiment, not general random-loss or
+physical35/40 acceptance. RTT remains opt-in; leading parameter loss and cold
+startup diagnosis remain separate next steps.

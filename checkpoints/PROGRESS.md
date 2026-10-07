@@ -3816,3 +3816,26 @@ Status: owner-reported Win+R local dispatch fixed and tested Windows-to-Windows.
   comparison did not. Different loss positions and adaptive quality prevent a
   causal speedup claim. RTT stays opt-in; controlled repair-loss repetitions are
   the next experiment. Both final policies runtime-verified; TCC block resolved.
+
+## 2026-10-07 — Controlled first-repair loss verified twice per policy
+
+- Added disabled-by-default bounded hook dropping original and first repair of
+  one middle H.264 IDR FU-A, accepting third copy; keyed SSRC/timestamp/sequence,
+  no rearm/queue. Analyzer verifies three events, exactly2drops/1accepted,
+  one clean session and decode/render. Runner excludes random/parameter loss.
+- Paired controlled-repair-20261007 rebuilt Teacher+Mac/Windows Students+Guard,
+  embedded hashes/executables verified. No privacy automation/regrant required
+  this build. Installed Student/settings preserved; tracked Flutter lock restored.
+-32focused tests passed (ingress5, transport23, decoder-health4); all-bin clippy
+  completes, one new function-length warning recorded alongside existing warnings.
+  Scoped formatting/Python/diff checks complete.
+- Four50second Mac→Windows ARM VM runs,1512×982, five-phase foreground/visible100%.
+  Half-budget repair-copy wait129.592/132.989ms; RTT29.116/24.687ms. Targeted wait
+  reduced100.476/108.302ms; all decode/rendered without errors or post-first-output
+  zero intervals, render28.18–28.89FPS. This is packet repair timing, not optical
+  latency or proof all freezes solved. All Teacher send errors/abandoned/cache
+  misses0, oneencoder, target6Mbps with no bitrate changes.
+- RTT remains opt-in. Exact next: isolate missing leading parameter after reset
+  on available VM, separate cold-start timeout; physical x64 controlled-repair
+  tests/high RTT/CPU and wired1080p1/5/10/20/35/40 simultaneous-fault/optical/soak/
+  DPI/sleep tests remain deferred. Full report: diagnostics/2026-10-07-controlled-repair.md.

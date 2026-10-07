@@ -67,6 +67,28 @@ def main():
         injected = wire.get('injected_dropped_packets')
         result['injected_percent_of_peer_datagrams'] = (100 * injected / wire['wire_packets']
             if injected is not None and wire.get('wire_packets', 0) > 0 else None)
+        events = []
+        for line in lines:
+            if 'TEST ONLY: controlled IDR packet copy' in line:
+                event = fields(line)
+                action = re.search(r'\baction="?([a-z_]+)', line)
+                event['action'] = action.group(1) if action else None
+                events.append(event)
+        if events:
+            identities = {(event.get('ssrc'), event.get('rtp_timestamp'), event.get('sequence')) for event in events}
+            result['controlled_repair'] = {
+                'events': events,
+                'accepted_copy_to_first_decode_log_ms': (
+                    first_decode - events[-1]['unix_ms']
+                    if first_decode is not None and events[-1].get('copy') == 3
+                    and first_decode >= events[-1]['unix_ms'] else None),
+                'evidence_complete': result['functional'] and result['clean_single_session']
+                    and [event.get('copy') for event in events] == [1, 2, 3]
+                    and [event.get('action') for event in events] == ['drop_original', 'drop_first_repair', 'accept_second_repair']
+                    and len(identities) == 1
+                    and wire.get('injected_repair_dropped_packets') == 2
+                    and wire.get('controlled_repair_accepted_packets') == 1,
+            }
         report['scenarios'][name] = result
     (args.run / 'analysis.json').write_text(json.dumps(report, indent=2))
     print(json.dumps(report, indent=2))

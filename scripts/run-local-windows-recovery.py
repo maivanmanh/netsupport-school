@@ -30,6 +30,7 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--scenarios', default='baseline,loss,latejoin')
     parser.add_argument('--drop-first-parameter-set', choices=['sps', 'pps'])
+    parser.add_argument('--drop-first-idr-and-repair', action='store_true')
     parser.add_argument('--loss-seed', type=int, default=12345)
     parser.add_argument('--nack-retry-policy', choices=['rtt', 'half-budget'], default='half-budget')
     parser.add_argument('--windows-binary', type=Path, default=ROOT / 'target/rustup-windows/x86_64-pc-windows-gnu/release/ClassroomStudent.exe')
@@ -41,6 +42,8 @@ def main():
     selected = args.scenarios.split(',')
     if not selected or len(set(selected)) != len(selected) or not set(selected) <= {'baseline', 'loss', 'latejoin'}:
         parser.error('scenarios must be unique baseline/loss/latejoin names')
+    if args.drop_first_idr_and_repair and (selected != ['baseline'] or args.drop_first_parameter_set):
+        parser.error('controlled repair loss requires baseline only and no parameter-set injection')
     remote = Remote(args.remote, getpass.getpass('Windows SSH password: '))
     run = args.output.resolve()
     run.mkdir(parents=True, exist_ok=False)
@@ -51,6 +54,7 @@ def main():
     manifest = {'scope': 'Mac Teacher / Windows ARM VM, isolated ports; no wired scale acceptance',
                 'started_unix_ms': int(time.time() * 1000), 'loss_seed': args.loss_seed, 'drop_first_parameter_set': args.drop_first_parameter_set,
                 'nack_retry_policy': args.nack_retry_policy,
+                'drop_first_idr_and_repair': args.drop_first_idr_and_repair,
                 'mac_sha256': hashlib.sha256(mac_binary.read_bytes()).hexdigest(),
                 'windows_sha256': hashlib.sha256(windows_binary.read_bytes()).hexdigest(),
                 'inventory': remote.ps('quser; $env:PROCESSOR_ARCHITECTURE'), 'remote_root': remote_root}
@@ -78,6 +82,7 @@ $env:CLASSROOM_TEST_DROP_SEED='{args.loss_seed}'
 $env:CLASSROOM_TEST_NACK_RETRY_HALF_BUDGET='{'1' if args.nack_retry_policy == 'half-budget' else ''}'
 $env:CLASSROOM_TEST_NACK_RETRY_RTT='{'1' if args.nack_retry_policy == 'rtt' else ''}'
 $env:CLASSROOM_TEST_DROP_FIRST_PARAMETER_SET='{args.drop_first_parameter_set or ''}'
+$env:CLASSROOM_TEST_DROP_FIRST_IDR_AND_REPAIR='{'1' if args.drop_first_idr_and_repair else ''}'
 $a=@('--role','student','--teacher-ip','{args.local_ip}','--control-port','48900','--media-port','48910','--feedback-port','48911','--share-seconds','{args.seconds + 10}','--student-connect-delay-ms','{delay}','--config','{remote_root}/config.toml','--launch-profile','{remote_root}/profile.toml','--log-file','{remote_root}/{scenario}.log')
 $p=Start-Process '{remote_root}/Classroom.exe' -ArgumentList $a -PassThru -RedirectStandardOutput '{remote_root}/{scenario}.stdout' -RedirectStandardError '{remote_root}/{scenario}.stderr'
 $null=$p.Handle

@@ -3054,6 +3054,8 @@ fn run_student_receiver(
                     ingress_dropped_packets = wire.dropped,
                     injected_dropped_packets = wire.test_dropped,
                     injected_parameter_dropped_packets = wire.test_parameter_dropped,
+                    injected_repair_dropped_packets = wire.test_repair_dropped,
+                    controlled_repair_accepted_packets = wire.test_repair_accepted,
                     malformed_packets = wire.malformed,
                     wrong_peer_packets = wire.peer_rejected,
                     socket_errors = wire.socket_errors,

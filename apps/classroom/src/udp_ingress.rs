@@ -32,6 +32,67 @@ pub struct IngressState {
     /// arrival to emulate network loss without OS firewall changes.
     pub test_dropped: u64,
     pub test_parameter_dropped: u64,
+    pub test_repair_dropped: u64,
+    pub test_repair_accepted: u64,
+}
+
+#[derive(Debug, PartialEq)]
+enum RepairInjectionEvent {
+    OriginalDropped,
+    FirstRepairDropped,
+    Accepted {
+        original_wait: Duration,
+        retry_wait: Duration,
+    },
+}
+
+/// Disabled diagnostic: two drops of one selected packet, never a video queue.
+#[derive(Default)]
+struct RepairInjection {
+    enabled: bool,
+    selected: Option<(u32, u32, u16)>,
+    copies: u8,
+    original_at: Option<Instant>,
+    repair_at: Option<Instant>,
+}
+impl RepairInjection {
+    fn observe(&mut self, packet: &RtpPacket, now: Instant) -> Option<RepairInjectionEvent> {
+        if !self.enabled || self.copies == 3 {
+            return None;
+        }
+        let identity = (packet.ssrc, packet.timestamp, packet.sequence_number);
+        if self.selected.is_none() {
+            let p = &packet.payload;
+            // H.264 FU-A IDR middle: not S, not E, not the AU marker. Losing
+            // it creates an observable sequence gap after the retained prefix.
+            if packet.payload_type != media_core::VideoCodec::H264.rtp_payload_type()
+                || packet.marker
+                || p.len() < 3
+                || p[0] & 0x1f != 28
+                || p[1] & 0xc0 != 0
+                || p[1] & 0x1f != 5
+            {
+                return None;
+            }
+            self.selected = Some(identity);
+            self.original_at = Some(now);
+            self.copies = 1;
+            return Some(RepairInjectionEvent::OriginalDropped);
+        }
+        if self.selected != Some(identity) {
+            return None;
+        }
+        self.copies += 1;
+        if self.copies == 2 {
+            self.repair_at = Some(now);
+            Some(RepairInjectionEvent::FirstRepairDropped)
+        } else {
+            Some(RepairInjectionEvent::Accepted {
+                original_wait: now.saturating_duration_since(self.original_at?),
+                retry_wait: now.saturating_duration_since(self.repair_at?),
+            })
+        }
+    }
 }
 
 /// Test-only random loss, 0 (default) disables. Bounded to 50 %.
@@ -110,6 +171,11 @@ pub fn receive(
         _ => None,
     };
     let mut parameter_dropped = false;
+    let mut repair_injection = RepairInjection {
+        enabled: std::env::var("CLASSROOM_TEST_DROP_FIRST_IDR_AND_REPAIR")
+            .is_ok_and(|value| value == "1"),
+        ..RepairInjection::default()
+    };
     // xorshift; deterministic per process is fine for an emulator.
     let mut seed = std::env::var("CLASSROOM_TEST_DROP_SEED")
         .ok()
@@ -135,6 +201,36 @@ pub fn receive(
                         state.pointer.push(&packet);
                     }
                     Ok(packet) => {
+                        if let Some(event) = repair_injection.observe(&packet, arrived) {
+                            let (action, original_wait, retry_wait) = match event {
+                                RepairInjectionEvent::OriginalDropped => {
+                                    ("drop_original", Duration::ZERO, Duration::ZERO)
+                                }
+                                RepairInjectionEvent::FirstRepairDropped => {
+                                    ("drop_first_repair", Duration::ZERO, Duration::ZERO)
+                                }
+                                RepairInjectionEvent::Accepted {
+                                    original_wait,
+                                    retry_wait,
+                                } => ("accept_second_repair", original_wait, retry_wait),
+                            };
+                            tracing::info!(
+                                action,
+                                copy = repair_injection.copies,
+                                sequence = packet.sequence_number,
+                                rtp_timestamp = packet.timestamp,
+                                ssrc = packet.ssrc,
+                                original_drop_to_accept_ms = original_wait.as_secs_f64() * 1000.0,
+                                repair_drop_to_accept_ms = retry_wait.as_secs_f64() * 1000.0,
+                                "TEST ONLY: controlled IDR packet copy"
+                            );
+                            if repair_injection.copies < 3 {
+                                state.test_dropped += 1;
+                                state.test_repair_dropped += 1;
+                                continue;
+                            }
+                            state.test_repair_accepted += 1;
+                        }
                         if !parameter_dropped
                             && parameter_kind
                                 .is_some_and(|kind| first_parameter_packet(&packet, kind))
@@ -188,6 +284,85 @@ fn first_parameter_packet(packet: &RtpPacket, kind: u8) -> bool {
 
 #[cfg(test)]
 mod tests {
+    fn middle_idr() -> RtpPacket {
+        RtpPacket {
+            timing: None,
+            marker: false,
+            payload_type: 96,
+            sequence_number: 9,
+            timestamp: 90,
+            ssrc: 1,
+            payload: vec![0x7c, 5, 42],
+        }
+    }
+
+    #[test]
+    fn controlled_repair_drops_exactly_two_copies_and_never_rearms() {
+        let t = Instant::now();
+        let p = middle_idr();
+        let mut hook = RepairInjection {
+            enabled: true,
+            ..RepairInjection::default()
+        };
+        assert_eq!(
+            hook.observe(&p, t),
+            Some(RepairInjectionEvent::OriginalDropped)
+        );
+        let mut other = p.clone();
+        other.timestamp += 1;
+        assert_eq!(hook.observe(&other, t), None);
+        other = p.clone();
+        other.ssrc += 1;
+        assert_eq!(hook.observe(&other, t), None);
+        other = p.clone();
+        other.sequence_number += 1;
+        assert_eq!(hook.observe(&other, t), None);
+        assert_eq!(
+            hook.observe(&p, t + Duration::from_millis(5)),
+            Some(RepairInjectionEvent::FirstRepairDropped)
+        );
+        assert_eq!(
+            hook.observe(&p, t + Duration::from_millis(30)),
+            Some(RepairInjectionEvent::Accepted {
+                original_wait: Duration::from_millis(30),
+                retry_wait: Duration::from_millis(25)
+            })
+        );
+        assert_eq!(hook.observe(&p, t + Duration::from_millis(40)), None);
+        assert_eq!(hook.observe(&other, t + Duration::from_millis(40)), None);
+        assert_eq!(hook.copies, 3);
+    }
+
+    #[test]
+    fn controlled_repair_is_disabled_by_default_and_selects_only_middle_idr() {
+        let t = Instant::now();
+        let p = middle_idr();
+        assert_eq!(RepairInjection::default().observe(&p, t), None);
+        let mut hook = RepairInjection {
+            enabled: true,
+            ..RepairInjection::default()
+        };
+        for flags in [0x85, 0x45, 1] {
+            let mut other = p.clone();
+            other.payload[1] = flags;
+            assert_eq!(hook.observe(&other, t), None);
+        }
+        let mut other = p.clone();
+        other.marker = true;
+        assert_eq!(hook.observe(&other, t), None);
+        other = p.clone();
+        other.payload_type = media_transport::pointer::POINTER_PAYLOAD_TYPE;
+        assert_eq!(hook.observe(&other, t), None);
+        other = p.clone();
+        other.payload = vec![0x65, 42];
+        assert_eq!(hook.observe(&other, t), None);
+        assert_eq!(hook.selected, None);
+        assert_eq!(
+            hook.observe(&p, t),
+            Some(RepairInjectionEvent::OriginalDropped)
+        );
+    }
+
     #[test]
     fn parameter_injection_matches_only_first_nal_or_fu_start() {
         let mut p = RtpPacket {
