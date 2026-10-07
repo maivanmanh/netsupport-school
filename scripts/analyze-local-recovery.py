@@ -39,9 +39,15 @@ def main():
                   'idr_arrival_recovery_peak_ms': max([row.get('recovery_peak_ms', 0) for row in recovery] or [0]),
                   'last_recovery': recovery[-1] if recovery else {},
                   'last_ingress': ingress[-1] if ingress else {}}
+        result['receiver_sessions_started'] = sum('student M3 UDP receiver ready' in line for line in lines)
+        result['completed_sessions'] = len(complete)
+        result['control_liveness_timeouts'] = sum('teacher control liveness timeout' in line for line in lines)
+        result['clean_single_session'] = result['receiver_sessions_started'] == 1 and len(complete) == 1 and result['control_liveness_timeouts'] == 0
         result['first_decode_ms'] = first_decode_event.get('first_decode_ms')
         result['first_present_ms'] = first_present_event.get('first_present_ms')
         result['decoded_output_recovery_peak_ms'] = max([row.get('decoded_recovery_peak_ms', 0) for row in recovery] or [0])
+        result['recovery_retry_delays_us'] = sorted({row['nack_retry_after_us'] for row in recovery if row.get('repair_budget_ms') == 250 and 'nack_retry_after_us' in row})
+        result['normal_retry_delays_us'] = sorted({row['nack_retry_after_us'] for row in recovery if row.get('repair_budget_ms', 250) < 250 and 'nack_retry_after_us' in row})
         result['decoder_no_output_resets'] = max([row.get('decoder_no_output_resets', 0) for row in recovery] or [0])
         result['incomplete_recovery_units'] = max([row.get('incomplete_recovery_units', 0) for row in recovery] or [0])
         result['post_first_decode_zero_intervals'] = sum(row.get('decode_fps') == 0 and first_decode is not None and row.get('unix_ms', 0) >= first_decode for row in intervals)

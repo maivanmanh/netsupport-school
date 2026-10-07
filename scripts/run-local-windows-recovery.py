@@ -31,6 +31,7 @@ def main():
     parser.add_argument('--scenarios', default='baseline,loss,latejoin')
     parser.add_argument('--drop-first-parameter-set', choices=['sps', 'pps'])
     parser.add_argument('--loss-seed', type=int, default=12345)
+    parser.add_argument('--nack-retry-policy', choices=['rtt', 'half-budget'], default='half-budget')
     parser.add_argument('--windows-binary', type=Path, default=ROOT / 'target/rustup-windows/x86_64-pc-windows-gnu/release/ClassroomStudent.exe')
     args = parser.parse_args()
     if not 20 <= args.seconds <= 600:
@@ -49,6 +50,7 @@ def main():
     mac_binary = args.teacher.resolve()
     manifest = {'scope': 'Mac Teacher / Windows ARM VM, isolated ports; no wired scale acceptance',
                 'started_unix_ms': int(time.time() * 1000), 'loss_seed': args.loss_seed, 'drop_first_parameter_set': args.drop_first_parameter_set,
+                'nack_retry_policy': args.nack_retry_policy,
                 'mac_sha256': hashlib.sha256(mac_binary.read_bytes()).hexdigest(),
                 'windows_sha256': hashlib.sha256(windows_binary.read_bytes()).hexdigest(),
                 'inventory': remote.ps('quser; $env:PROCESSOR_ARCHITECTURE'), 'remote_root': remote_root}
@@ -73,6 +75,8 @@ def main():
             powershell = f'''$ErrorActionPreference='Stop'
 $env:CLASSROOM_TEST_DROP_PERCENT='{1 if drop else 0}'
 $env:CLASSROOM_TEST_DROP_SEED='{args.loss_seed}'
+$env:CLASSROOM_TEST_NACK_RETRY_HALF_BUDGET='{'1' if args.nack_retry_policy == 'half-budget' else ''}'
+$env:CLASSROOM_TEST_NACK_RETRY_RTT='{'1' if args.nack_retry_policy == 'rtt' else ''}'
 $env:CLASSROOM_TEST_DROP_FIRST_PARAMETER_SET='{args.drop_first_parameter_set or ''}'
 $a=@('--role','student','--teacher-ip','{args.local_ip}','--control-port','48900','--media-port','48910','--feedback-port','48911','--share-seconds','{args.seconds + 10}','--student-connect-delay-ms','{delay}','--config','{remote_root}/config.toml','--launch-profile','{remote_root}/profile.toml','--log-file','{remote_root}/{scenario}.log')
 $p=Start-Process '{remote_root}/Classroom.exe' -ArgumentList $a -PassThru -RedirectStandardOutput '{remote_root}/{scenario}.stdout' -RedirectStandardError '{remote_root}/{scenario}.stderr'

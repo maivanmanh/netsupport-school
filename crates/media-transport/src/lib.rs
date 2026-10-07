@@ -424,14 +424,14 @@ pub struct JitterStatistics {
 pub struct JitterBuffer {
     target_delay: Duration,
     repair_budget: Duration,
+    retry_delay_ceiling: Option<Duration>,
     emitted: bool,
     fast_release_until: Option<u16>,
     next_sequence: Option<u16>,
     packets: BTreeMap<u16, (Instant, RtpPacket)>,
     missing_sequences: VecDeque<u16>,
     gap_started: Option<Instant>,
-    /// One more NACK for a gap still open halfway through the repair budget
-    /// (the first retransmission itself can be lost).
+    /// At most one more NACK for an open gap (the first repair can be lost).
     gap_retried: bool,
     statistics: JitterStatistics,
     diagnostics: media_core::diagnostics::StageMetrics,
@@ -446,6 +446,7 @@ impl JitterBuffer {
         Self {
             target_delay,
             repair_budget,
+            retry_delay_ceiling: None,
             emitted: false,
             fast_release_until: None,
             next_sequence: None,
@@ -533,7 +534,7 @@ impl JitterBuffer {
             return None;
         }
         if !self.gap_retried
-            && now.saturating_duration_since(self.gap_started?) >= self.repair_budget / 2
+            && now.saturating_duration_since(self.gap_started?) >= self.retry_delay()
         {
             self.gap_retried = true;
             self.statistics.nack_retries += 1;
@@ -559,6 +560,19 @@ impl JitterBuffer {
     #[must_use]
     pub const fn repair_budget(&self) -> Duration {
         self.repair_budget
+    }
+
+    /// A measured round trip can justify retrying before half a long recovery
+    /// deadline. This never extends that deadline or adds another retry.
+    pub fn set_retry_delay_ceiling(&mut self, delay: Duration) {
+        self.retry_delay_ceiling = Some(delay.max(Duration::from_millis(1)));
+    }
+
+    #[must_use]
+    pub fn retry_delay(&self) -> Duration {
+        let half = self.repair_budget / 2;
+        self.retry_delay_ceiling
+            .map_or(half, |delay| half.min(delay))
     }
     #[must_use]
     pub const fn statistics(&self) -> JitterStatistics {
@@ -1098,6 +1112,65 @@ mod tests {
             .is_none());
         assert!(jitter.take_missing_sequences().is_empty(), "only one retry");
         assert_eq!(jitter.statistics().nack_retries, 1);
+    }
+
+    #[test]
+    fn rtt_retry_repairs_idr_early_without_extending_deadline() {
+        let start = Instant::now();
+        let at = |ms| start + Duration::from_millis(ms);
+        let mut jitter =
+            JitterBuffer::with_repair_budget(Duration::from_millis(20), Duration::from_millis(250));
+        jitter.set_retry_delay_ceiling(Duration::from_millis(25));
+        jitter.push(test_packet(1, 1, true), at(0));
+        assert!(jitter.pop_ready(at(21)).is_some());
+        jitter.push(test_packet(3, 2, true), at(22));
+        assert!(jitter.pop_ready(at(22)).is_none());
+        assert_eq!(jitter.take_missing_sequences(), vec![2]);
+        assert!(jitter.pop_ready(at(46)).is_none());
+        assert!(jitter.take_missing_sequences().is_empty());
+        assert!(jitter.pop_ready(at(47)).is_none());
+        assert_eq!(jitter.take_missing_sequences(), vec![2]);
+        // Simulate loss of the first repair; the second arrives before125ms.
+        jitter.push(test_packet(2, 2, false), at(48));
+        assert_eq!(jitter.pop_ready(at(69)).unwrap().sequence_number, 2);
+        assert_eq!(jitter.statistics().missing_sequences, 0);
+        assert_eq!(jitter.statistics().nack_retries, 1);
+        assert_eq!(jitter.repair_budget(), Duration::from_millis(250));
+    }
+
+    #[test]
+    fn early_retry_still_expires_at_original_deadline_and_only_retries_once() {
+        let start = Instant::now();
+        let at = |ms| start + Duration::from_millis(ms);
+        let mut jitter =
+            JitterBuffer::with_repair_budget(Duration::from_millis(20), Duration::from_millis(250));
+        jitter.set_retry_delay_ceiling(Duration::from_millis(25));
+        jitter.push(test_packet(1, 1, true), at(0));
+        assert!(jitter.pop_ready(at(21)).is_some());
+        jitter.push(test_packet(3, 2, true), at(22));
+        assert!(jitter.pop_ready(at(22)).is_none());
+        assert_eq!(jitter.take_missing_sequences(), vec![2]);
+        assert!(jitter.pop_ready(at(47)).is_none());
+        assert_eq!(jitter.take_missing_sequences(), vec![2]);
+        assert!(jitter.pop_ready(at(271)).is_none());
+        assert!(jitter.take_missing_sequences().is_empty());
+        assert_eq!(jitter.pop_ready(at(272)).unwrap().sequence_number, 3);
+        assert_eq!(jitter.statistics().missing_sequences, 1);
+        assert_eq!(jitter.statistics().nack_retries, 1);
+    }
+
+    #[test]
+    fn retry_delay_preserves_normal_budget_and_measured_high_rtt() {
+        let mut jitter =
+            JitterBuffer::with_repair_budget(Duration::from_millis(20), Duration::from_millis(25));
+        jitter.set_retry_delay_ceiling(Duration::from_millis(25));
+        assert_eq!(jitter.retry_delay(), Duration::from_micros(12_500));
+        jitter.set_repair_budget(Duration::from_millis(250));
+        assert_eq!(jitter.retry_delay(), Duration::from_millis(25));
+        jitter.set_retry_delay_ceiling(Duration::from_millis(150));
+        assert_eq!(jitter.retry_delay(), Duration::from_millis(125));
+        jitter.set_retry_delay_ceiling(Duration::ZERO);
+        assert_eq!(jitter.retry_delay(), Duration::from_millis(1));
     }
 
     #[test]

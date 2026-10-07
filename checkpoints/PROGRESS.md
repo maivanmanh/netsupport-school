@@ -3778,3 +3778,41 @@ Status: owner-reported Win+R local dispatch fixed and tested Windows-to-Windows.
   request gate/repair timing. Physical1080p ladder1/5/10/20/35/40, optical latency,
   fixed-resolution soak, DPI125/150%, real sleep/resume remain deferred.
 - Report: checkpoints/diagnostics/2026-10-07-decoded-recovery.md.
+
+## 2026-10-07 — Second-NACK timing A/B; candidate not promoted
+
+- Added optional RTT-aware retry ceiling to jitter, without changing gap expiry,
+  queues/cache or one-retry limit.23transport tests incl3timing/deadline regressions,
+  4decode-health tests, all-bin check/clippy/scoped formatting/Python checks pass.
+- Fresh paired early-nack-20261007: A/B120seconds, same source/seed/workload,
+ 1512×982 on Mac→Windows ARM VM. Half-budget control125ms vsRTT25ms retry.
+  Render26.57vs25.83FPS, recovery peak889vs942ms, decode errors0, no post-first
+  output zero intervals in either. Control cold-start5second liveness timeout and
+  reconnect; quality/bitrate varied under adaptation. No demonstrated speedup.
+- Candidate baseline120seconds27.61renderFPS, no decode error/zero intervals,
+  single clean session. Original earlier two incomplete-parameter gaps were not
+  reproduced; second NACK does not repair an unknown leading sequence.
+- Keep production half-budget default. RTT mode is disabled test-only env
+  CLASSROOM_TEST_NACK_RETRY_RTT=1. Analyzer exposes session starts/completions,
+  liveness timeouts and actual retry delays to preserve comparison limitations.
+- Rebuilt final paired nack-retry-experiment-20261007 inclfresh Student ZIPs/hash
+  checks. Final visible default-policy smoke blocked by new signing/TCC; owner
+  asked for exact full parent/helper paths and manual regrant. No privacy changes.
+- Exact next step: after regrant restart same bundle and rerun default loss50s;
+  then controlled middle-IDR+first-repair loss, fixed-quality repetitions and
+  separate cold-start diagnosis. Physical1080p x64 wired35/40/optical/soak/DPI/
+  sleep remain deferred to lab. Report: diagnostics/2026-10-07-early-nack-retry.md.
+
+- Owner regranted Screen Recording; same final bundle restarted, no rebuild.
+  Default50second loss smoke now decoded/presented successfully, one clean session,
+  policy half-budget125ms verified.24.31decode/23.22renderFPS, no decode errors,
+  but3incomplete recovery AUs, two zero intervals,2689ms recovery peak. Functional
+  verification only; loss smoothness is still unresolved. Raw
+  target/nack-retry-final-default-regrant-20261007.
+
+- Final opt-in RTT50second run also verified: policy RTT25ms, one clean session,
+  28.73decode/27.32renderFPS, no decode error/zero intervals/incomplete AUs;
+  recovery peak1259ms. This shorter trial looks better than default50s, but120s
+  comparison did not. Different loss positions and adaptive quality prevent a
+  causal speedup claim. RTT stays opt-in; controlled repair-loss repetitions are
+  the next experiment. Both final policies runtime-verified; TCC block resolved.

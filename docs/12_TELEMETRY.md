@@ -297,3 +297,20 @@ that session.
   waiting_for_keyframe_ms: discarded packets before a recovery AU anchor, expired-gap
   resets and current waiting-IDR duration. Recovery completion still needs decode
   and render progress; accepting an IDR alone is not a visible-output guarantee.
+
+## RTT-bounded second NACK — 2026-10-07
+
+`nack_retry_after_us` reports the current second-request delay, distinct from
+`repair_budget_ms` (gap expiry). The opt-in native receiver experiment caps the existing half-budget
+retry at its RTT-derived budget:1.5×RTT+5ms with configured floor and existing
+150ms ceiling. With25ms floor and recovery250ms deadline, second NACK is25ms;
+normal25ms deadline still retries at12.5ms. Exactly one second request per gap;
+no change to expiry, cache TTL, queue depth or keyframe gate. Test-only
+`CLASSROOM_TEST_NACK_RETRY_RTT=1` enables RTT-derived timing; production default
+remains the original half-budget policy. The earlier early-nack-20261007 candidate
+build used inverse HALF_BUDGET override; its raw A/B manifests/logs document that
+version. Final nack-retry-experiment-20261007 package defaults to half-budget. Correlate repaired gaps/retries,
+expiry resets, incomplete recovery AUs and decoded-output recovery; a shorter
+retry timer alone does not prove smoother video or optical-latency improvement.
+Diagnostic analysis exposes session starts/completions/liveness timeouts and
+`clean_single_session` to keep startup reconnects visible in comparisons.

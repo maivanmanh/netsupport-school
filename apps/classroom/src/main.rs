@@ -2552,6 +2552,19 @@ fn run_student_receiver(
         Duration::from_millis(u64::from(config.video.jitter_buffer_ms)),
         Duration::from_millis(u64::from(config.video.nack_repair_ms)),
     );
+    let experimental_rtt_nack_retry =
+        std::env::var("CLASSROOM_TEST_NACK_RETRY_RTT").is_ok_and(|value| value == "1");
+    if experimental_rtt_nack_retry {
+        info!("test-only RTT-bounded NACK retry experiment enabled");
+    }
+    info!(
+        policy = if experimental_rtt_nack_retry {
+            "rtt"
+        } else {
+            "half-budget"
+        },
+        "student NACK retry policy"
+    );
     let mut depacketizer = H264Depacketizer::for_codec(video_codec);
     let mut process_metrics = ProcessMetrics::new()?;
     let started = Instant::now();
@@ -2634,6 +2647,9 @@ fn run_student_receiver(
         } else {
             rtt_budget
         });
+        if experimental_rtt_nack_retry {
+            jitter.set_retry_delay_ceiling(rtt_budget);
+        }
         let mut drained = false;
         // Drain bounded batches independently of codec cost; the ingest worker
         // timestamps arrivals even while decode is busy.
@@ -3022,7 +3038,7 @@ fn run_student_receiver(
             let clock = control.clock_estimate();
             info!(target: "telemetry", clock_synchronized = clock.is_some(), clock_offset_us = ?clock.map(|value| value.teacher_minus_student_us),
                 clock_uncertainty_us = ?clock.map(|value| value.uncertainty_us),
-                jitter_queue_depth = jitter.queued_packets(), repaired_gaps = jitter.statistics().repaired_gaps, nack_retries = jitter.statistics().nack_retries, repair_budget_ms = jitter.repair_budget().as_millis(), fast_released_frames = jitter.statistics().fast_released_frames, nack_repair_ms = config.video.nack_repair_ms, late_packets = jitter.statistics().late_packets,
+                jitter_queue_depth = jitter.queued_packets(), repaired_gaps = jitter.statistics().repaired_gaps, nack_retries = jitter.statistics().nack_retries, nack_retry_after_us = jitter.retry_delay().as_micros(), repair_budget_ms = jitter.repair_budget().as_millis(), fast_released_frames = jitter.statistics().fast_released_frames, nack_repair_ms = config.video.nack_repair_ms, late_packets = jitter.statistics().late_packets,
                 missing_sequences = jitter.statistics().missing_sequences, duplicate_packets = jitter.statistics().duplicate_packets,
                 reordered_packets = jitter.statistics().reordered_packets, jitter_overflow_packets = jitter.statistics().overflow_packets,
                 recovery_packets_discarded, unrepaired_gap_resets,
