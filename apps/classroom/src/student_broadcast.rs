@@ -214,9 +214,9 @@ pub fn run(
                 }
                 if last_ping.elapsed() >= Duration::from_secs(1) {
                     control.probe_rtt()?;
-                    upstream
-                        .send_to(&super::media_route_probe(client_id), source_endpoint)
-                        .context("Student source UDP route keepalive failed")?;
+                    source_route_keepalive(
+                        upstream.send_to(&super::media_route_probe(client_id), source_endpoint),
+                    );
                     last_ping = Instant::now();
                 }
                 for _ in 0..256 {
@@ -311,9 +311,271 @@ fn rewrite_ssrc(packet: &mut [u8], stream_id: u64) -> Result<()> {
     Ok(())
 }
 
+/// Route refresh is advisory after initial registration. Its failure must not
+/// discard fresh video already arriving from the source. TCP liveness and the
+/// independent ten-second media watchdog still stop a genuinely dead source.
+fn source_route_keepalive(result: std::io::Result<usize>) {
+    if let Err(error) = result {
+        tracing::warn!(%error, "Student source UDP route keepalive failed; retaining live media and retrying next tick");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct Worker {
+        stop: Arc<AtomicBool>,
+        thread: Option<thread::JoinHandle<Result<()>>>,
+    }
+    impl Worker {
+        fn finish(mut self) -> Result<()> {
+            self.stop.store(true, Ordering::Release);
+            self.thread.take().unwrap().join().unwrap()
+        }
+    }
+    impl Drop for Worker {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            if let Some(worker) = self.thread.take() {
+                let _ = worker.join();
+            }
+        }
+    }
+    fn worker(
+        state: watch::Sender<Option<RoomPresentation>>,
+        jobs: super::super::monitoring::ObserveJobs,
+        runtime: tokio::runtime::Handle,
+    ) -> Worker {
+        let stop = Arc::new(AtomicBool::new(false));
+        let cancel = Arc::clone(&stop);
+        Worker {
+            stop,
+            thread: Some(thread::spawn(move || {
+                let config = classroom_config::Config::load(None)?.0;
+                run(
+                    &config,
+                    Ipv4Addr::LOCALHOST,
+                    "source".into(),
+                    Ipv4Addr::LOCALHOST,
+                    100,
+                    &cancel,
+                    &state,
+                    jobs,
+                    runtime,
+                )
+            })),
+        }
+    }
+    async fn requested(jobs: &super::super::monitoring::ObserveJobs) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !jobs.entries.lock().unwrap().contains_key("source") {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[test]
+    fn failed_advisory_keepalive_does_not_return_a_session_error() {
+        source_route_keepalive(Ok(12));
+        source_route_keepalive(Err(std::io::Error::from_raw_os_error(65)));
+        source_route_keepalive(Err(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "fixture",
+        )));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancel_before_source_reply_cleans_job_without_starting_class() {
+        let jobs = Arc::new(super::super::monitoring::ObserveRequests::default());
+        let (state, updates) = watch::channel(None);
+        let worker = worker(state, Arc::clone(&jobs), tokio::runtime::Handle::current());
+        requested(&jobs).await;
+        assert!(updates.borrow().is_none());
+        worker.finish().unwrap();
+        assert!(jobs.entries.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn source_failure_before_registration_cleans_job_and_class() {
+        let jobs = Arc::new(super::super::monitoring::ObserveRequests::default());
+        let (state, updates) = watch::channel(None);
+        let mut worker = worker(state, Arc::clone(&jobs), tokio::runtime::Handle::current());
+        requested(&jobs).await;
+        jobs.entries
+            .lock()
+            .unwrap()
+            .get_mut("source")
+            .unwrap()
+            .error = "fixture capture unavailable".into();
+        let result =
+            tokio::task::spawn_blocking(move || worker.thread.take().unwrap().join().unwrap())
+                .await
+                .unwrap();
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("capture unavailable"));
+        assert!(updates.borrow().is_none());
+        assert!(jobs.entries.lock().unwrap().is_empty());
+    }
+
+    // Real loopback TCP/UDP, fake RTP source: tests control/relay/repair/lifecycle,
+    // not capture, codec, renderer or physical classroom performance.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn loopback_late_join_repair_and_stop_keep_rtp_payload_unchanged() {
+        use control_transport::room::{run_authorized_listener, RoomRoster};
+        use std::sync::Mutex;
+        let source_udp = tokio::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let source_tcp = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let source_port = source_tcp.local_addr().unwrap().port();
+        let (source_events, _source_messages) = mpsc::sync_channel(128);
+        let (source_state, source_updates) = watch::channel(Some(RoomPresentation {
+            config: protocol::StartPresentation {
+                stream_id: 17,
+                width: 640,
+                height: 480,
+                max_fps: 30,
+                bitrate_bps: 6_000_000,
+                rtp_payload_type: 96,
+                rtp_clock_hz: 90_000,
+                teacher_media_udp_port: u32::from(source_udp.local_addr().unwrap().port()),
+            },
+            events: source_events,
+            recipients: Some(Arc::new(HashSet::from(["source-auth".into()]))),
+            excluded_source: None,
+        }));
+        let source_server = tokio::spawn(run_authorized_listener(
+            source_tcp,
+            source_updates,
+            Arc::new(Mutex::new(RoomRoster::default())),
+            Ipv4Addr::LOCALHOST,
+            "source-auth".into(),
+        ));
+        let jobs = Arc::new(super::super::monitoring::ObserveRequests::default());
+        let (class_state, mut class_updates) = watch::channel(None);
+        let class_tcp = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let class_port = class_tcp.local_addr().unwrap().port();
+        let class_server = tokio::spawn(run_authorized_listener(
+            class_tcp,
+            class_updates.clone(),
+            Arc::new(Mutex::new(RoomRoster::default())),
+            Ipv4Addr::LOCALHOST,
+            "receiver-auth".into(),
+        ));
+        let worker = worker(
+            class_state,
+            Arc::clone(&jobs),
+            tokio::runtime::Handle::current(),
+        );
+        requested(&jobs).await;
+        {
+            let mut entries = jobs.entries.lock().unwrap();
+            let job = entries.get_mut("source").unwrap();
+            job.port = source_port;
+            job.token = "source-auth".into();
+        }
+        tokio::time::timeout(Duration::from_secs(2), class_updates.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut bytes = [0; 2048];
+        let (_, relay_upstream) =
+            tokio::time::timeout(Duration::from_secs(2), source_udp.recv_from(&mut bytes))
+                .await
+                .unwrap()
+                .unwrap();
+        let receiver = tokio::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let port = receiver.local_addr().unwrap().port();
+        let (control, id, initial) = control_transport::register_student_for_presentation(
+            SocketAddrV4::new(Ipv4Addr::LOCALHOST, class_port),
+            StudentRegistration {
+                hostname: "receiver".into(),
+                instance_id: "receiver-auth".into(),
+                selected_local_ip: Ipv4Addr::LOCALHOST,
+                media_udp_port: port,
+                feedback_udp_port: port,
+                pointer_overlay: false,
+            },
+        )
+        .await
+        .unwrap();
+        let presentation = initial.unwrap();
+        assert_eq!(presentation.stream_id, 100);
+        assert!(!class_updates.borrow().as_ref().unwrap().includes("source"));
+        let relay_class = SocketAddrV4::new(
+            Ipv4Addr::LOCALHOST,
+            presentation.teacher_media_udp_port as u16,
+        );
+        receiver
+            .send_to(&super::super::media_route_probe(id), relay_class)
+            .await
+            .unwrap();
+        let mut sequence = 0;
+        let received = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let packet = RtpPacket {
+                    marker: true,
+                    payload_type: 96,
+                    sequence_number: sequence,
+                    timestamp: u32::from(sequence) * 3000,
+                    ssrc: protocol::presentation_ssrc(17),
+                    payload: vec![0x65, 7, 8, 9],
+                    timing: None,
+                };
+                source_udp
+                    .send_to(&packet.to_bytes(), relay_upstream)
+                    .await
+                    .unwrap();
+                if let Ok(Ok((n, _))) =
+                    tokio::time::timeout(Duration::from_millis(25), receiver.recv_from(&mut bytes))
+                        .await
+                {
+                    break bytes[..n].to_vec();
+                }
+                sequence += 1;
+            }
+        })
+        .await
+        .unwrap();
+        let packet = RtpPacket::parse(&received).unwrap();
+        assert_eq!(packet.ssrc, protocol::presentation_ssrc(100));
+        assert_eq!(packet.payload, [0x65, 7, 8, 9]);
+        control
+            .nack(protocol::Nack {
+                stream_id: 100,
+                sequence_numbers: vec![u32::from(packet.sequence_number)],
+            })
+            .unwrap();
+        let (n, _) = tokio::time::timeout(Duration::from_secs(1), receiver.recv_from(&mut bytes))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&bytes[..n], received);
+        worker.finish().unwrap();
+        assert!(jobs.entries.lock().unwrap().is_empty());
+        assert!(class_updates.borrow().is_none());
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while control.is_presenting(100) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        drop(control);
+        source_state.send_replace(None);
+        source_server.abort();
+        class_server.abort();
+    }
     #[test]
     fn relay_changes_only_session_ssrc_without_repacketizing() {
         let mut packet = vec![

@@ -50,6 +50,7 @@ mod guard;
 mod guard_service;
 mod keyframe_gate;
 mod launcher;
+mod macos_permissions;
 mod media_activity;
 mod media_session;
 mod monitoring;
@@ -271,6 +272,9 @@ enum RestartRequest {
 }
 
 fn main() -> Result<()> {
+    if let Some(result) = macos_permissions::early_operation() {
+        return result;
+    }
     if env!("CARGO_BIN_NAME") == "ClassroomGuardService" {
         return guard_service::main();
     }

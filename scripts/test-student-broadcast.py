@@ -11,6 +11,7 @@ import importlib.util
 import json
 import subprocess
 import shutil
+import socket
 from pathlib import Path
 import time
 import zipfile
@@ -31,8 +32,9 @@ def main():
     parser.add_argument('--endpoint', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--teacher-log', type=Path, required=True)
+    parser.add_argument('--teacher', help='Optional Windows Teacher SSH address; native Rust agent, not Flutter GUI')
     args = parser.parse_args()
-    if not args.endpoint.is_file():
+    if not args.teacher and not args.endpoint.is_file():
         parser.error('Teacher IPC endpoint is missing; launch the paired Console first')
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -48,11 +50,56 @@ def main():
     owned = []
     client = None
     samples = []
+    tunnel = None
+    teacher_remote = None
     manifest = {'scope': 'Two Windows endpoints / Mac coordinator; functional only',
                 'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
-                'source': args.source, 'receiver': args.receiver}
+                'source': args.source, 'receiver': args.receiver,
+                'teacher': args.teacher or 'Mac Flutter parent',
+                'receiver_colocated_with_teacher': bool(args.teacher and args.teacher == args.receiver)}
     (output / 'manifest.json').write_text(json.dumps(manifest, indent=2))
     try:
+        if args.teacher:
+            teacher_remote = remote_module.Remote(args.teacher, password)
+            root = f'C:/Users/{args.teacher.split("@")[0]}/{task}-teacher'
+            roots['teacher'] = root
+            teacher_binary = ROOT / 'target/rustup-windows/x86_64-pc-windows-gnu/release/Classroom.exe'
+            package = ROOT / 'target/updates/student-broadcast-batch-windows-x64.zip'
+            # A native Teacher test folder also includes its fresh Student ZIP.
+            with zipfile.ZipFile(package) as archive:
+                assert hashlib.sha256(archive.read('ClassroomStudent.exe')).hexdigest() == manifest['binary_sha256']
+            teacher_remote.ps(f"New-Item -ItemType Directory -Force '{root}/student-packages' | Out-Null")
+            owned.append(('teacher', teacher_remote, args.teacher))
+            teacher_remote.copy(teacher_binary, f'{args.teacher}:{root}/Classroom.exe')
+            teacher_remote.copy(package, f'{args.teacher}:{root}/student-packages/student-windows-x64.zip')
+            allowed = ','.join("'" + address.split('@')[1] + "'" for _, _, address in peers)
+            for protocol in ['TCP', 'UDP']:
+                teacher_remote.ps(f"New-NetFirewallRule -Name '{task}-teacher-{protocol}' -DisplayName '{task}-teacher-{protocol}' -Program '{root}/Classroom.exe'.Replace('/','\\') -Direction Inbound -Protocol {protocol} -RemoteAddress {allowed} -Action Allow -Profile Any | Out-Null")
+            arguments = f'--role teacher --teacher-agent --bind-ip {args.local_ip} --control-port 48900 --media-port 48910 --feedback-port 48911 --ipc-file {root}/endpoint.json --launch-profile {root}/profile.toml --log-file {root}/student.log'
+            teacher_remote.ps(f"$a=New-ScheduledTaskAction -Execute '{root}/Classroom.exe' -Argument '{arguments}'; $p=New-ScheduledTaskPrincipal -UserId '{args.teacher.split('@')[0]}' -LogonType Interactive -RunLevel Limited; $s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries; Register-ScheduledTask -TaskName '{task}-teacher' -Action $a -Principal $p -Settings $s -Force | Out-Null; Start-ScheduledTask '{task}-teacher'")
+            teacher_remote.ps(f"$until=(Get-Date).AddSeconds(20); while (-not(Test-Path '{root}/endpoint.json')) {{if((Get-Date) -gt $until){{throw 'Teacher endpoint timeout'}}; Start-Sleep -Milliseconds 100}}")
+            teacher_remote.copy(f'{args.teacher}:{root}/endpoint.json', str(args.endpoint))
+            descriptor = json.loads(args.endpoint.read_text())
+            with socket.socket() as reserve:
+                reserve.bind(('127.0.0.1', 0))
+                local_port = reserve.getsockname()[1]
+            tunnel = remote_module.RemoteProcess(['ssh', *remote_module.OPTS,
+                '-o', 'ExitOnForwardFailure=yes', '-N', '-L',
+                f'127.0.0.1:{local_port}:127.0.0.1:{descriptor["port"]}', args.teacher], password)
+            deadline = time.monotonic() + 10
+            while True:
+                tunnel.pump()
+                if tunnel.code is not None:
+                    raise RuntimeError('Teacher SSH tunnel closed before IPC connection')
+                try:
+                    with socket.create_connection(('127.0.0.1', local_port), timeout=.2):
+                        break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError('Teacher SSH tunnel did not become ready')
+                    time.sleep(.05)
+            descriptor['port'] = local_port
+            args.endpoint.write_text(json.dumps(descriptor))
         for name, remote, address in peers:
             root = f'C:/Users/{address.split("@")[0]}/{task}-{name}'
             roots[name] = root
@@ -112,7 +159,11 @@ def main():
         done = wait_for(lambda s: s.get('diagnostics', {}).get('phase') == 'complete', 60)
         result = done['diagnostics']
         (output / 'diagnostics-result.json').write_text(json.dumps(result, indent=2))
-        with zipfile.ZipFile(result['path']) as archive:
+        archive_path = result['path']
+        if teacher_remote:
+            archive_path = output / 'classroom-diagnostics.zip'
+            teacher_remote.copy(f'{args.teacher}:{result["path"]}', str(archive_path))
+        with zipfile.ZipFile(archive_path) as archive:
             entries = archive.namelist()
             evidence = json.loads(archive.read('manifest.json'))
         assert result['collected'] == 2, result
@@ -139,7 +190,7 @@ def main():
         raise
     finally:
         (output / 'states.json').write_text(json.dumps(samples, indent=2))
-        if args.teacher_log.is_file():
+        if not args.teacher and args.teacher_log.is_file():
             shutil.copy2(args.teacher_log, output / 'teacher.log')
         if client:
             try:
@@ -148,6 +199,8 @@ def main():
             except (OSError, EOFError, RuntimeError):
                 pass
             client.socket.close()
+        if tunnel:
+            tunnel.stop()
         for name, remote, address in owned:
             root = roots[name]
             try:
@@ -156,7 +209,8 @@ def main():
             except Exception as error:
                 print(f'{name} cleanup/evidence: {error}', flush=True)
             try:
-                remote.copy(f'{address}:{root}/student.log', str(output / f'{name}-student.log'))
+                filename = 'teacher.log' if name == 'teacher' else f'{name}-student.log'
+                remote.copy(f'{address}:{root}/student.log', str(output / filename))
             except Exception as error:
                 print(f'{name} log collection: {error}', flush=True)
 

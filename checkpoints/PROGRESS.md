@@ -3884,3 +3884,27 @@ diagnostics/2026-10-08-student-broadcast.md.
   succeeds. Four focused Flutter tests pass; lock restored. Next is manual
   permission refresh and same-bundle rerun without rebuild. Feature remains
   incomplete/runtime-unverified; latest evidence native-regrant/native-route.
+
+
+## 2026-10-08 — macOS permission onboarding and grouped build
+
+Owner requested first-launch checklist with reasons/status/buttons and batching
+macOS builds. Added startup/toolbar dialog, process-specific Console/Agent screen
+permission queries/requests, LAN probe from both identities, Settings/Finder/full
+paths, Continue and idle-only explicit helper + GUI restart. No privacy grant,
+reset, old-item deletion, paid signing or notarization automation. LAN success is
+endpoint-specific connectivity evidence, never a claimed general policy readout.
+PROJECT_NOTES and docs/22_MACOS_PERMISSION_ONBOARDING.md record this workflow.
+
+Final grouped paired ad-hoc build succeeds; Mac/Windows Student + Guard fresh ZIPs
+are embedded and hashes match. 194 Rust tests pass (2 ignored), focused Flutter
+11 pass, analyzer clean, diff check clean. Six unchanged Observe layout failures
+reproduce separately; broad suite must not be described as passed.
+
+Native popup renders, banner reopens it, Screen Recording button opens the right
+Settings page. Native LAN test .106:22 correctly shows Console timeout and Agent
+EHOSTUNREACH as unverified, with no observed Allow dialog. Actual new screen grants
+and full GUI/Agent restart remain pending owner action (requested with full paths).
+Keep this bundle unchanged for that check. Broader Student relay lifecycle/rejoin/
+diagnostic ZIP native test and 35–40 x64 Ethernet acceptance still incomplete.
+Details: diagnostics/2026-10-08-macos-permissions.md.

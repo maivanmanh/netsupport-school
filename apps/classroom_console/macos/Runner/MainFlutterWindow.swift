@@ -4,6 +4,8 @@ import CoreGraphics
 import CoreVideo
 import CoreImage
 import Darwin
+import ApplicationServices
+import Network
 
 class MainFlutterWindow: NSWindow {
   override func awakeFromNib() {
@@ -72,6 +74,54 @@ class MainFlutterWindow: NSWindow {
       name: "classroom/permissions", binaryMessenger: flutterViewController.engine.binaryMessenger)
     permissions.setMethodCallHandler { call, result in
       switch call.method {
+      case "restartConsole":
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        configuration.arguments = Array(CommandLine.arguments.dropFirst())
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, error in
+          DispatchQueue.main.async {
+            if let error = error {
+              result(FlutterError(code: "restart_failed", message: error.localizedDescription, details: nil))
+            } else {
+              result(true)
+              DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { NSApp.terminate(nil) }
+            }
+          }
+        }
+      case "status":
+        ClassroomPermissions.helper(["--permission-status"]) { helper in
+          result(["screen": CGPreflightScreenCaptureAccess(),
+                  "accessibility": AXIsProcessTrusted(),
+                  "helperScreen": helper["screen"] ?? NSNull(),
+                  "helperError": helper["error"] ?? NSNull(),
+                  "appPath": Bundle.main.bundlePath,
+                  "helperPath": ClassroomPermissions.helperBundle.path])
+        }
+      case "requestHelperScreen":
+        ClassroomPermissions.helper(["--permission-request-screen"]) { result($0) }
+      case "requestAccessibility":
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
+        result(AXIsProcessTrustedWithOptions(options as CFDictionary))
+      case "openAccessibilitySettings":
+        result(ClassroomPermissions.openSettings("Privacy_Accessibility"))
+      case "openLocalNetworkSettings":
+        result(ClassroomPermissions.openSettings("Privacy_LocalNetwork"))
+      case "revealApps":
+        NSWorkspace.shared.activateFileViewerSelecting([
+          Bundle.main.bundleURL, ClassroomPermissions.helperBundle])
+        result(nil)
+      case "probeNetwork":
+        guard let args = call.arguments as? [String: Any],
+              let host = args["host"] as? String, let port = args["port"] as? Int,
+              ClassroomPermissions.isPrivateIPv4(host), (1...65535).contains(port) else {
+          result(FlutterError(code: "invalid_endpoint", message: "Enter a private LAN IPv4 address and TCP port 1–65535.", details: nil)); return
+        }
+        ClassroomPermissions.probe(host: host, port: port) { parent in
+          ClassroomPermissions.helper(["--permission-probe-network", "\(host):\(port)"]) { helper in
+            result(["console": parent, "helper": helper["network"] ??
+              ["state": "unverified", "detail": helper["error"] ?? "Helper unavailable"]])
+          }
+        }
       case "screenRecordingGranted":
         result(CGPreflightScreenCaptureAccess())
       case "openScreenRecordingSettings":
@@ -350,6 +400,78 @@ private enum ClassroomFiles {
           DispatchQueue.main.async { result(savedPath) }
         } catch { DispatchQueue.main.async { result(FlutterError(code: "screenshot_save", message: error.localizedDescription, details: nil)) } }
       }
+    }
+  }
+}
+
+
+// Permission probes are bounded, user initiated, and run from the identities
+// that actually need access. No private databases, policy reset or grant writes.
+private enum ClassroomPermissions {
+  static var helperBundle: URL {
+    Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/Classroom Agent.app")
+  }
+  static func openSettings(_ pane: String) -> Bool {
+    let prefix: String
+    if #available(macOS 13.0, *) {
+      prefix = "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?"
+    } else {
+      prefix = "x-apple.systempreferences:com.apple.preference.security?"
+    }
+    return NSWorkspace.shared.open(URL(string: prefix + pane)!)
+  }
+  static func isPrivateIPv4(_ host: String) -> Bool {
+    let parts = host.split(separator: ".", omittingEmptySubsequences: false)
+    guard parts.count == 4,
+          parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy({ $0.isASCII && $0.isNumber }) }),
+          let a = Int(parts[0]), let b = Int(parts[1]),
+          parts.allSatisfy({ (0...255).contains(Int($0) ?? -1) }) else { return false }
+    return a == 10 || (a == 172 && (16...31).contains(b)) || (a == 192 && b == 168)
+  }
+  static func helper(_ args: [String], completion: @escaping ([String: Any]) -> Void) {
+    DispatchQueue.global(qos: .utility).async {
+      let process = Process(), output = Pipe(), errors = Pipe()
+      process.executableURL = helperBundle.appendingPathComponent("Contents/MacOS/Classroom")
+      process.arguments = args
+      process.standardOutput = output; process.standardError = errors
+      do {
+        try process.run()
+        let deadline = Date().addingTimeInterval(6)
+        while process.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        if process.isRunning {
+          process.terminate()
+          DispatchQueue.main.async { completion(["error": "Permission check timed out. Finish the macOS dialog, then refresh."]) }
+          return
+        }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        let parsed = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let value = parsed ?? ["error": "Bundled helper does not support permission checks. A paired update is needed."]
+        DispatchQueue.main.async { completion(value) }
+      } catch {
+        DispatchQueue.main.async { completion(["error": error.localizedDescription]) }
+      }
+    }
+  }
+  static func probe(host: String, port: Int, completion: @escaping ([String: Any]) -> Void) {
+    let connection = NWConnection(host: NWEndpoint.Host(host),
+                                  port: NWEndpoint.Port(rawValue: UInt16(port))!, using: .tcp)
+    let queue = DispatchQueue(label: "classroom.permission-probe")
+    var finished = false
+    func finish(_ state: String, _ detail: String) {
+      guard !finished else { return }; finished = true
+      connection.stateUpdateHandler = nil; connection.cancel()
+      DispatchQueue.main.async { completion(["state": state, "detail": detail]) }
+    }
+    connection.stateUpdateHandler = { state in
+      switch state {
+      case .ready: finish("connected", "TCP connection succeeded")
+      case .failed(let error): finish("unverified", error.localizedDescription)
+      default: break // .waiting can include an unanswered system consent prompt.
+      }
+    }
+    connection.start(queue: queue)
+    queue.asyncAfter(deadline: .now() + 4) {
+      finish("unverified", "No connection yet. Check Allow, address, service and firewall, then retry.")
     }
   }
 }

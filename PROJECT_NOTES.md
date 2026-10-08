@@ -22,3 +22,15 @@ Thiếu toolchain/build lỗi thì báo rõ và không gọi Teacher package là
 - Không sửa privacy grants. Mac signing ad-hoc có thể cần owner cấp quyền lại.
 - Log/report quan trọng cập nhật `checkpoints/PROGRESS.md`, ghi rõ build-verified
   và runtime-verified; không kéo dài test không cần thiết.
+
+## Gom build macOS và hướng dẫn cấp quyền (08-10-2026)
+
+Chủ dự án yêu cầu gom nhiều thay đổi/code/test trước một lượt build/ký macOS,
+tránh build lắt nhắt khiến phải cấp quyền lại nhiều lần. Giữ bundle đang test
+trong lúc kiểm tra source. Local Network không có nút thêm/xóa app: phải để
+chính app phát sinh yêu cầu LAN, owner tự nhấn Allow/bật quyền. Không hướng dẫn
+owner tự add đường dẫn ở mục này. Checklist trong app phải phân biệt trạng thái
+quyền đọc được với kết quả thử kết nối; lỗi kết nối không tự chứng minh bị từ chối
+quyền. Screen Recording cần restart Teacher sau khi cấp. Không sửa privacy grants
+hoặc xóa/reset các mục của hệ thống bằng tự động hóa. Xem
+`docs/22_MACOS_PERMISSION_ONBOARDING.md`.

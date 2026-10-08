@@ -7,6 +7,7 @@ import 'agent.dart';
 import 'observe.dart';
 import 'media_health.dart';
 import 'diagnostics_dialog.dart';
+import 'permissions_dialog.dart';
 import 'observe_startup.dart';
 import 'classroom_tools_ui.dart';
 import 'settings.dart';
@@ -435,6 +436,9 @@ class _ConsoleState extends State<Console> with WindowListener {
     windowManager.addListener(this);
     windowManager.setPreventClose(true);
     if (Platform.isMacOS) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) showMacPermissions(context, agent);
+      });
       permissions
           .invokeMethod<bool>('screenRecordingGranted')
           .then((granted) {
@@ -606,6 +610,16 @@ class _ConsoleState extends State<Console> with WindowListener {
                         ),
                       ),
                     const SizedBox(width: 10),
+                    if (Platform.isMacOS)
+                      IconButton(
+                        tooltip: 'macOS permissions',
+                        onPressed: () => showMacPermissions(context, agent),
+                        icon: const Icon(
+                          Icons.verified_user_outlined,
+                          size: 17,
+                          color: Colors.white70,
+                        ),
+                      ),
                     SizedBox(
                       width: 28,
                       height: 28,
@@ -1111,9 +1125,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                       FilledButton.icon(
                         onPressed: () async {
                           try {
-                            await permissions.invokeMethod<bool>(
-                              'openScreenRecordingSettings',
-                            );
+                            await showMacPermissions(context, agent);
                           } catch (_) {
                             if (context.mounted) {
                               ScaffoldMessenger.of(context).showSnackBar(

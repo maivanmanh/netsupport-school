@@ -25,7 +25,14 @@ void main() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(
           const MethodChannel('classroom/permissions'),
-          (call) async => true,
+          (call) async => call.method == 'status'
+              ? {
+                  'screen': true,
+                  'helperScreen': true,
+                  'appPath': '/fixture/Console.app',
+                  'helperPath': '/fixture/Agent.app',
+                }
+              : true,
         );
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(const MethodChannel('window_manager'), (
@@ -54,6 +61,12 @@ void main() {
       ],
     };
     await tester.pumpWidget(ClassroomApp(agent: a));
+    if (Platform.isMacOS) {
+      await tester.pumpAndSettle();
+      expect(find.text('Set up macOS permissions'), findsOneWidget);
+      await tester.tap(find.text('Continue'));
+      await tester.pumpAndSettle();
+    }
     expect(find.text('Lab PC 01'), findsOneWidget);
     expect(find.byType(StudentFileDrop), findsOneWidget);
     expect(find.text('Stop sharing'), findsNothing);
@@ -122,12 +135,23 @@ void main() {
       ..state = {'phase': 'idle', 'students': <Map<String, dynamic>>[]}
       ..error = 'ScreenCaptureKit TCC declined';
     await tester.pumpWidget(ClassroomApp(agent: a));
+    if (Platform.isMacOS) {
+      await tester.pumpAndSettle();
+      expect(find.text('Set up macOS permissions'), findsOneWidget);
+      await tester.tap(find.text('Continue'));
+      await tester.pumpAndSettle();
+    }
     await tester.pumpAndSettle();
     if (Platform.isMacOS) {
       expect(find.text('Open Settings'), findsOneWidget);
       await tester.tap(find.text('Open Settings'));
       await tester.pumpAndSettle();
+      expect(find.text('Set up macOS permissions'), findsOneWidget);
+      await tester.tap(find.text('Request / Open Settings'));
+      await tester.pumpAndSettle();
       expect(calls, contains('openScreenRecordingSettings'));
+      await tester.tap(find.text('Continue'));
+      await tester.pumpAndSettle();
     } else {
       expect(find.text('Open Settings'), findsNothing);
       expect(find.text('ScreenCaptureKit TCC declined'), findsOneWidget);
@@ -158,6 +182,12 @@ void main() {
           ),
         };
       await tester.pumpWidget(ClassroomApp(agent: a));
+      if (Platform.isMacOS) {
+        await tester.pumpAndSettle();
+        expect(find.text('Set up macOS permissions'), findsOneWidget);
+        await tester.tap(find.text('Continue'));
+        await tester.pumpAndSettle();
+      }
       await tester.pumpAndSettle();
       int columns() =>
           ((tester.widget<GridView>(find.byType(GridView)).gridDelegate)

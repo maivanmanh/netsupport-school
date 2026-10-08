@@ -24,4 +24,5 @@ bool mediaNeedsAttention(Map<String, dynamic> row) => const {
   'unknown',
   'waiting_for_report',
   'waiting_for_image',
+  'receiving_headless',
 }.contains((row['media'] as Map?)?['state']);

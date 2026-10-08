@@ -431,6 +431,29 @@ fn collect(
 mod tests {
     use super::*;
     #[test]
+    fn cancellation_wins_over_worker_completion_and_clears_upload_request() {
+        let state = Arc::new(Mutex::new(json!({"phase":"collecting"})));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let service = Arc::new(Service::default());
+        *service.expected.lock().unwrap() = Some(Expected {
+            id: "fixture".into(), token: "fixture".into(), student: "fixture".into(), response: None,
+        });
+        let worker_state = Arc::clone(&state);
+        let worker_cancel = Arc::clone(&cancel);
+        let worker = thread::spawn(move || {
+            while !worker_cancel.load(Ordering::Acquire) { thread::yield_now(); }
+            *worker_state.lock().unwrap() = json!({"phase":"complete"});
+        });
+        let mut collector = Collector {
+            service, source: Source { metadata: json!({}), log: PathBuf::new() },
+            folder: PathBuf::new(), state, cancel, worker: Some(worker),
+        };
+        collector.cancel();
+        assert_eq!(collector.snapshot()["phase"], "cancelled");
+        assert!(collector.service.expected.lock().unwrap().is_none());
+        assert!(collector.worker.is_none());
+    }
+    #[test]
     fn archive_records_missing_students_and_contains_only_diagnostics() {
         let folder = std::env::temp_dir().join(format!(
             "classroom-diagnostics-{}",
