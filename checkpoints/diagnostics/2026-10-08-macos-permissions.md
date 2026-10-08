@@ -78,3 +78,39 @@ full suite is not clean because of the six unchanged Observe layout failures.
 Do not rebuild/sign before the owner grant/restart check. No push performed.
 
 The optional Windows-native Teacher branch in `scripts/test-student-broadcast.py` is staged for the next diagnostic comparison; Python syntax passes, but that branch has not been exercised. It requires fresh matching Windows Teacher/Student binaries and its specified Student ZIP. Do not claim a Windows Teacher or end-to-end relay pass from it.
+
+## Owner Recording grant follow-up
+
+Owner confirmed Recording grant. Native checklist now shows Granted for both
+Console and Agent. Initiated the actual Request / Test LAN access button to
+192.168.50.106:22 without rebuilding. Console reports unverified timeout, Agent
+reports unverified EHOSTUNREACH; Terminal nc succeeds to the same endpoint.
+No Local Network Allow dialog observed. Navigated the Settings pane via its Local
+Network row (the URL opened Privacy & Security). Current AX state shows all three
+Classroom Console entries off, plus both Classroom Student entries off. No helper
+entry appears. Owner informed to enable Console manually; no toggles/reset/grants
+changed by automation. This current off-state differs from earlier on-state and
+must not be interpreted as proof that the earlier signing/cache problem is fixed.
+Next: owner enables Console, restart the same exact Teacher bundle, rerun bounded
+LAN probe and verify both identities. No further build/sign required.
+
+## Post-Yes result and restart regression
+
+Owner enabled an existing listed Console entry and later clicked Yes on an actual
+Local Network dialog. Without rebuilding, native checklist shows Console/Agent
+Recording Granted and both LAN TCP probes to .106:22 connected (green). Native
+Student relay lifecycle/queued diagnostics test passed; see the broadcast report
+and `target/student-broadcast-native-after-yes-20261008/summary.json`.
+
+Native idle Restart test exposed custom-argument loss: old helper restarted at
+48900 (Unix exec can preserve PID), new GUI launched without custom flags and
+spawned a second helper at 47800. Do not call native custom-argument restart passed.
+Source changed to pass Agent.args explicitly and use bounded normal macOS open
+launcher rather than deriving arguments from native CommandLine. Regression test
+checks actual transmitted IPC/port arguments. Source-only checks are separate from
+signed bundle: no rebuild per batching preference. Next grouped build must run
+native restart and verify exactly one helper, same IPC path/ports, preserved grants.
+Duplicate sessions stopped; final GUI49239/helper49249 on same signed test bundle
+are idle at 48900. Native Record/Network grant checks remain passed for this bundle.
+
+Restart source checks: Swift typecheck passed (registrar stub; existing activation deprecation), Flutter analyzer no issues, focused UI 11 passed. Evidence: `target/macos-permissions-restart-{swift-check,analyze,tests}.txt`. No paired build/deployment of this restart source fix.

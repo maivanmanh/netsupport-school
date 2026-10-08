@@ -75,17 +75,37 @@ class MainFlutterWindow: NSWindow {
     permissions.setMethodCallHandler { call, result in
       switch call.method {
       case "restartConsole":
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.createsNewApplicationInstance = true
-        configuration.arguments = Array(CommandLine.arguments.dropFirst())
-        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, error in
-          DispatchQueue.main.async {
-            if let error = error {
-              result(FlutterError(code: "restart_failed", message: error.localizedDescription, details: nil))
-            } else {
-              result(true)
-              DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { NSApp.terminate(nil) }
+        guard let arguments = call.arguments as? [String] else {
+          result(FlutterError(code: "restart_arguments", message: "Console launch arguments are missing.", details: nil)); return
+        }
+        // Dart owns the actual Flutter entrypoint arguments. Use the same
+        // normal macOS launcher as initial startup, preserving custom IPC/ports.
+        // No shell expansion, external executable selection or privacy changes.
+        let bundlePath = Bundle.main.bundlePath
+        DispatchQueue.global(qos: .utility).async {
+          let launcher = Process()
+          launcher.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+          launcher.arguments = ["-n", bundlePath, "--args"] + arguments
+          do {
+            try launcher.run()
+            let deadline = Date().addingTimeInterval(8)
+            while launcher.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+            if launcher.isRunning {
+              launcher.terminate()
+              DispatchQueue.main.async { result(FlutterError(code: "restart_timeout", message: "macOS launcher timed out; this Console stays open.", details: nil)) }
+              return
             }
+            let success = launcher.terminationStatus == 0
+            DispatchQueue.main.async {
+              if success {
+                result(true)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { NSApp.terminate(nil) }
+              } else {
+                result(FlutterError(code: "restart_failed", message: "macOS could not reopen this Console.", details: nil))
+              }
+            }
+          } catch {
+            DispatchQueue.main.async { result(FlutterError(code: "restart_failed", message: error.localizedDescription, details: nil)) }
           }
         }
       case "status":

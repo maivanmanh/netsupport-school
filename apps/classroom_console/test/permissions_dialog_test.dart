@@ -5,7 +5,13 @@ import 'package:classroom_console/agent.dart';
 import 'package:classroom_console/permissions_dialog.dart';
 
 class PermissionAgent extends Agent {
-  PermissionAgent() : super([]);
+  PermissionAgent()
+    : super([
+        '--ipc-file',
+        '/fixture/test-endpoint.json',
+        '--control-port',
+        '48900',
+      ]);
   @override
   bool get connected => true;
   String? requested;
@@ -25,6 +31,7 @@ void main() {
   Map<String, dynamic> status = {};
   Map<String, dynamic> network = {};
   final calls = <String>[];
+  Object? restartArguments;
   setUp(() {
     status = {
       'screen': false,
@@ -37,9 +44,13 @@ void main() {
       'helper': {'state': 'unverified', 'detail': 'No route'},
     };
     calls.clear();
+    restartArguments = null;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (call) async {
           calls.add(call.method);
+          if (call.method == 'restartConsole') {
+            restartArguments = call.arguments;
+          }
           if (call.method == 'status') return status;
           if (call.method == 'probeNetwork') return network;
           return true;
@@ -137,6 +148,7 @@ void main() {
     await tester.tap(find.text('Restart Teacher'));
     await tester.pumpAndSettle();
     expect(agent.requested, 'restart');
+    expect(restartArguments, agent.args);
     expect(find.text('Set up macOS permissions'), findsNothing);
     agent.dispose();
   });

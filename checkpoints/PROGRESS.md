@@ -3908,3 +3908,23 @@ and full GUI/Agent restart remain pending owner action (requested with full path
 Keep this bundle unchanged for that check. Broader Student relay lifecycle/rejoin/
 diagnostic ZIP native test and 35–40 x64 Ethernet acceptance still incomplete.
 Details: diagnostics/2026-10-08-macos-permissions.md.
+
+
+## 2026-10-08 — native Student broadcast lifecycle passed after Local Network Yes
+
+Same paired-permissions-20261008 bundle after owner Allow: Source .94 -> Mac relay
+-> Receiver .106 passed late join, 20s receive, receiver reconnect, Stop/queued ZIP
+(collected2/missing0), new stream/repeat Stop. Exit0; isolated task/rule/process
+cleanup succeeds. Report medians decode18.959/render18.802 FPS, missing max0,
+Teacher errors0, relay send errors0, keepalive errors0. 1728x1080 from1920x1200;
+ARM Parallels endpoints running x64. Functional evidence only, not 1080p30/40-PC
+wired or motion/latency acceptance. Full raw evidence/summary and ZIP recorded in
+diagnostics/2026-10-08-student-broadcast.md. Recording and LAN probes visibly green.
+
+Found native custom-flag Restart loss, creating GUI/default helper47800 alongside
+restarted helper48900. Fixed source with explicit Dart args -> bounded macOS open
+launcher; no rebuild/sign per owner batching rule, so native fix verification is
+pending the next grouped build. Duplicate sessions cleaned, one test Teacher left
+idle. Next: grouped build/native custom restart test when more source changes are
+ready; fixed1920x1080 foreground workload and 35–40 physical x64 Ethernet ladder,
+optical latency/soak/source failure/sleep/DPI and Defender lab regression deferred.

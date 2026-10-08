@@ -54,3 +54,53 @@ Final Flutter analyze: no issues. Class route handling retains source-specific f
 ## Local Network prompt attempt with unchanged bundle
 
 Owner clarified that Local Network has no manual add/remove control. Launched the existing `target/student-broadcast-build/Classroom Console.app` unchanged, through its Flutter parent, then initiated an authorized reverse TCP request to Windows Source `192.168.50.94`. No Allow dialog was observed. Student registration and thumbnail reception succeeded, but reverse TCP to Source port 57313 failed with EHOSTUNREACH in both Tokio and system fallback. This does not establish the underlying cause or a permission fix. The test stopped, quit its owned Teacher session and removed temporary Windows tasks/firewall rules. Evidence: `target/student-broadcast-native-permission-request-20261008/`; the narrow system-log query returned no matching records. Do not ask the owner to manually add an app to Local Network; future attempts must originate from the exact app and leave privacy decisions to the owner. No rebuild, signing, or privacy modification was performed in this attempt.
+
+## Native functional validation after owner Local Network Allow
+
+Owner enabled a previously listed Console entry, then observed and accepted a
+Local Network dialog (Yes). Restarted the same paired-permissions-20261008 bundle,
+without rebuilding/signing or modifying privacy grants. First allowed trial
+`target/student-broadcast-native-allowed-20261008` still ended source-disconnected
+while permission was changing. Second post-Yes trial completed with exit code 0:
+`target/student-broadcast-native-after-yes-20261008`.
+
+Passed: source .94 presents while .106 is absent; receiver late joins and reaches
+receiving health; sustained 20-second wait; receiver process reconnects while source
+remains live and receives again; diagnostic request queues until Stop; Stop returns
+idle and produces ZIP with Teacher metadata/log plus both Student metadata/logs,
+collected=2/missing=0; a new stream starts, receives and stops cleanly. Cleanup of
+owned Windows tasks/rules/processes completed with no reported error. Installed
+Students/Guard/profiles preserved. Source excluded from class recipient reports.
+
+Evidence: 76 safe state samples, 46 receiving samples. Receiver report medians
+~18.959 decode FPS / 18.802 render FPS; maximum reported missing packets 0; no
+Teacher error states. Span ~28.775 seconds is across lifecycle stages, not a single
+uninterrupted soak. Relay interval reports recipients=1, active_encoder_instances=0,
+send_errors=0; no advisory keepalive error in this post-Yes run. Source logs show
+1920x1200 capture bounded to 1728x1080 preserving aspect ratio and a single source
+encoder. This is not full-width 1920x1080/30fps or a motion workload benchmark.
+Source/receiver are two ARM Parallels guests running x64 binaries; Mac coordinates.
+No physical 35–40-PC scaling/optical latency acceptance claimed.
+
+ZIP: `target/diagnostics/Classroom-diagnostics-1791450284290-session-3164851532613725673.zip`.
+Machine-readable summary and raw logs/state samples are in the post-Yes directory.
+Previously reported macOS EHOSTUNREACH is absent in this unchanged-bundle trial;
+this does not prove permanent ad-hoc identity continuity across another build.
+
+Native permission checklist subsequently shows both Recording grants green and
+Console/Agent LAN connections to .106:22 successful. A separate native idle
+Restart button test found loss of custom Flutter CLI arguments: the replacement
+GUI opened default 47800 while the restarted helper remained 48900. Source now
+passes explicit Dart Agent.args to a bounded normal `/usr/bin/open -n ... --args`
+launcher, with regression coverage. No new Mac build per owner's batching rule;
+this fix is not in the current signed bundle and awaits native validation at the
+next grouped build. Duplicate test sessions were stopped; one same-bundle GUI and
+helper left idle at the explicit test endpoint. Do not rely on this bundle's
+checklist Restart button to preserve custom dev IPC/port flags.
+
+Deferred lab checks: selected-source broadcast to 35–40 physical x64 Ethernet
+receivers, multi-recipient join/reconnect/load and slow/lossy receiver isolation,
+repeatable foreground text/scroll/motion at fixed actual 1920x1080, optical latency,
+long soak, source crash/recovery, sleep/DPI, original Defender quarantine case.
+
+Restart source checks: Swift typecheck passed (registrar stub; existing activation deprecation), Flutter analyzer no issues, focused UI 11 passed. Evidence: `target/macos-permissions-restart-{swift-check,analyze,tests}.txt`. No paired build/deployment of this restart source fix.

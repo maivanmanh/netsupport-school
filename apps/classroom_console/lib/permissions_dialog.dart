@@ -333,7 +333,10 @@ class _MacPermissionsDialogState extends State<MacPermissionsDialog>
                       const [],
                       const {},
                     );
-                    await _permissions.invokeMethod<bool>('restartConsole');
+                    await _permissions.invokeMethod<bool>(
+                      'restartConsole',
+                      widget.agent.args,
+                    );
                     if (context.mounted) Navigator.pop(context);
                   } catch (e) {
                     if (mounted) {
