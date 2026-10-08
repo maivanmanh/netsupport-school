@@ -3856,3 +3856,31 @@ workspace fmt finds unrelated existing formatting differences. No paired release
 build/deployment this milestone, no claim Defender or room disconnect resolved.
 Next: obtain original Windows 10 Defender event/sample; paired build and visible
 Windows popup reconnect/Show/Stop validation, then exact lab regression.
+
+## 2026-10-08 — Student broadcast / receiver health / diagnostics work in progress
+
+Owner authorizes these features and asks to reuse established Teacher media path.
+Implemented Student single-encoder source → compressed RTP Teacher relay → existing
+class receiver path; source excluded, late joins included. Added session-scoped
+receiver progress states and manual diagnostic collection UI with queue-until-Stop.
+Paired Mac/Windows Student + Guard build succeeds, bundled Windows hash matches.
+189 Classroom tests pass (2 ignored), 13 control tests and 1 protocol test pass.
+Latest Flutter analysis has 2 informational braces lints; clippy completes with
+warnings. Native verification incomplete: one trial starts source but relay drops;
+latest exact-path trials fail reverse TCP EHOSTUNREACH while Terminal reaches same
+endpoint. Local Network attribution after ad-hoc rebuild is a hypothesis; owner
+asked to refresh grants manually and Teacher must restart. No privacy automation.
+Next: rerun same bundle after grant, diagnose original source-control disconnect,
+verify render/latejoin/reconnect/Stop/restart/ZIP, then final paired build.
+35–40 physical Windows x64/Ethernet workload, latency, soak/DPI/sleep and Defender
+reproduction remain deferred. Full evidence/limits:
+diagnostics/2026-10-08-student-broadcast.md.
+
+- Owner refreshed Local Network: reverse TCP opens on unchanged bundle; native
+  relay then fails UDP EHOSTUNREACH after receiver joins (not yet localized).
+  Added per-stage contexts, first-RTP/route logs and existing Teacher-style
+  nonfatal class-route receive handling. Paired build/tests pass again, but new
+  signature again precedes reverse TCP EHOSTUNREACH; Terminal exact-port probe
+  succeeds. Four focused Flutter tests pass; lock restored. Next is manual
+  permission refresh and same-bundle rerun without rebuild. Feature remains
+  incomplete/runtime-unverified; latest evidence native-regrant/native-route.

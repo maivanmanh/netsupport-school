@@ -6,8 +6,8 @@ cd "$ROOT"
 export CARGO_TARGET_DIR="$ROOT/target"
 SIGN_MODE="${CLASSROOM_MAC_SIGN_MODE:-adhoc}"
 case "$SIGN_MODE" in
-  adhoc) SIGN_OPTIONS=(--development-ad-hoc); MANIFEST="$ROOT/target/teacher-development-signing.json" ;;
-  apple) python3 scripts/sign-macos-app.py --check-identity; SIGN_OPTIONS=(); MANIFEST="$ROOT/target/teacher-signing.json" ;;
+  adhoc) SIGN_OPTIONS=(--development-ad-hoc --manifest "$ROOT/target/teacher-development-signing.json") ;;
+  apple) python3 scripts/sign-macos-app.py --check-identity; SIGN_OPTIONS=(--manifest "$ROOT/target/teacher-signing.json") ;;
   *) echo "CLASSROOM_MAC_SIGN_MODE must be adhoc or apple" >&2; exit 1 ;;
 esac
 # Always build paired roles from the same working tree; never ship a stale Student.
@@ -86,7 +86,7 @@ python3 "$ROOT/scripts/sign-macos-app.py" "$BUILD_APP" \
   --helper "$AGENT_APP" \
   --helper-entitlements "$ROOT/target/flutter-helper.entitlements" \
   --entitlements macos/Runner/Release.entitlements \
-  --manifest "$MANIFEST" "${SIGN_OPTIONS[@]}"
+  "${SIGN_OPTIONS[@]}"
 rm -rf "$APP"
 cp -R "$BUILD_APP" "$APP"
 codesign --verify --deep --strict "$APP"

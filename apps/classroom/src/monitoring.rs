@@ -43,12 +43,16 @@ impl ObserveRequests {
         Ok(())
     }
     pub fn request(&self, id: String) {
+        self.request_with_offer(id, None);
+    }
+    pub fn request_with_offer(&self, id: String, offer: Option<(Vec<String>, u32)>) {
         let mut entries = self.entries.lock().unwrap();
         entries.insert(
             id,
             ObserveJob {
                 request: true,
                 requested_at: Some(Instant::now()),
+                offer,
                 ..Default::default()
             },
         );
@@ -77,6 +81,7 @@ pub struct ObserveJob {
     pub requested_at: Option<Instant>,
     /// Student-chosen session profile, e.g. "h265@60".
     pub profile: String,
+    pub offer: Option<(Vec<String>, u32)>,
 }
 
 const MAX_JPEG: usize = 48 * 1024;
@@ -288,6 +293,8 @@ fn serve(
                 r
             });
         if let Some(queued_at) = request {
+            let offer = jobs.entries.lock().unwrap().get(&hello.instance_id)
+                .and_then(|j| j.offer.clone()).unwrap_or_else(|| jobs.offer.clone());
             let handshake = Instant::now();
             info!(
                 client_id,
@@ -298,8 +305,8 @@ fn serve(
                 socket,
                 Payload::Observe(protocol::ObserveMessage {
                     action: "start".into(),
-                    codecs: jobs.offer.0.clone(),
-                    max_fps: jobs.offer.1,
+                    codecs: offer.0,
+                    max_fps: offer.1,
                     ..Default::default()
                 }),
             )?;

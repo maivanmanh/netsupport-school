@@ -380,7 +380,8 @@ pub async fn register_student_for_presentation(
     let writer_connected = Arc::clone(&connected);
     let writer_task = tokio::spawn(async move {
         while let Some(envelope) = receiver.recv().await {
-            if write_envelope(&mut writer, &envelope).await.is_err() {
+            if let Err(error) = write_envelope(&mut writer, &envelope).await {
+                warn!(%error, "student control writer stopped");
                 break;
             }
         }
@@ -402,7 +403,10 @@ pub async fn register_student_for_presentation(
                     .await
                 {
                     Ok(Ok(envelope)) => envelope,
-                    Ok(Err(_)) => break,
+                    Ok(Err(error)) => {
+                        warn!(%error, "student control reader stopped");
+                        break;
+                    }
                     Err(_) => {
                         warn!(
                             timeout_ms = CONTROL_LIVENESS_TIMEOUT.as_secs() * 1000,
@@ -411,7 +415,8 @@ pub async fn register_student_for_presentation(
                         break;
                     }
                 };
-            if check_version(&envelope).is_err() {
+            if let Err(error) = check_version(&envelope) {
+                warn!(%error, "student control version rejected");
                 break;
             }
             let pong = match envelope.payload {
@@ -446,7 +451,10 @@ pub async fn register_student_for_presentation(
                     }
                     continue;
                 }
-                _ => break,
+                unexpected => {
+                    warn!(kind = ?unexpected.as_ref().map(std::mem::discriminant), "student control unexpected message");
+                    break;
+                }
             };
             if let Ok(mut state) = reader_rtt.lock() {
                 let now = Instant::now();

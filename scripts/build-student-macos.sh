@@ -4,8 +4,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 SIGN_MODE="${CLASSROOM_MAC_SIGN_MODE:-adhoc}"
 case "$SIGN_MODE" in
-  adhoc) SIGN_OPTIONS=(--development-ad-hoc); MANIFEST="$ROOT/target/student-development-signing.json" ;;
-  apple) python3 scripts/sign-macos-app.py --check-identity; SIGN_OPTIONS=(); MANIFEST="$ROOT/target/student-signing.json" ;;
+  adhoc) SIGN_OPTIONS=(--development-ad-hoc --manifest "$ROOT/target/student-development-signing.json") ;;
+  apple) python3 scripts/sign-macos-app.py --check-identity; SIGN_OPTIONS=(--manifest "$ROOT/target/student-signing.json") ;;
   *) echo "CLASSROOM_MAC_SIGN_MODE must be adhoc or apple" >&2; exit 1 ;;
 esac
 env CARGO_TARGET_DIR="$ROOT/target" rustup run stable cargo build --release --bin ClassroomStudent
@@ -37,7 +37,7 @@ BUILD_NUMBER="$(sed -n 's/^version: .*+//p' apps/classroom_console/pubspec.yaml)
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" "$STAGING/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$STAGING/Contents/Info.plist"
 python3 scripts/sign-macos-app.py "$STAGING" --identifier com.classroom.student \
-  --manifest "$MANIFEST" "${SIGN_OPTIONS[@]}"
+  "${SIGN_OPTIONS[@]}"
 rm -rf "$APP"
 cp -R "$STAGING" "$APP"
 codesign --verify --deep --strict "$APP"

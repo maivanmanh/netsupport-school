@@ -190,6 +190,11 @@ pub struct ReceiverReport {
     /// p95 time spent inside native renderer calls during the report interval.
     #[prost(uint64, tag = "11")]
     pub render_latency_p95_us: u64,
+    /// Reference recovery has not yet produced decoded output.
+    #[prost(bool, tag = "12")]
+    pub recovering: bool,
+    #[prost(uint32, tag = "13")]
+    pub health_version: u32,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -356,6 +361,7 @@ mod tests {
             control_rtt_samples: 2,
             rendering_enabled: true,
             render_latency_p95_us: 1_500,
+            ..Default::default()
         });
         let encoded = report.encode_to_vec();
         let decoded = Envelope::decode(encoded.as_slice()).unwrap();

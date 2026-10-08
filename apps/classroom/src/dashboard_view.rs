@@ -823,6 +823,7 @@ mod tests {
             endpoint: "127.0.0.1:47810".parse().unwrap(),
             online: true,
             monitoring_state: "ready".into(),
+            media: None,
             thumbnail: Some(Arc::new(RoomThumbnail {
                 jpeg: Vec::new(),
                 width: 4,

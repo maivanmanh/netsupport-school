@@ -242,6 +242,7 @@ impl Collector {
             let _ = worker.join();
         }
         self.service.expected.lock().unwrap().take();
+        *self.state.lock().unwrap() = json!({"phase":"cancelled"});
     }
     pub fn start(
         &mut self,
@@ -450,6 +451,7 @@ mod tests {
             online: false,
             thumbnail: None,
             monitoring_state: "offline".into(),
+            media: None,
         };
         let state = Mutex::new(Value::Null);
         collect(

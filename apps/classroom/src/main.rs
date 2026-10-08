@@ -65,6 +65,7 @@ mod remote_input;
 mod startup;
 mod stream_profile;
 mod student_bootstrap;
+mod student_broadcast;
 mod student_connection_ui;
 mod student_file_ui;
 mod student_fps_badge;
@@ -3099,6 +3100,8 @@ fn run_student_receiver(
                     control_rtt_samples,
                     rendering_enabled: !headless,
                     render_latency_p95_us,
+                    recovering: waiting_for_keyframe || pending_decoded_recovery_since.is_some(),
+                    health_version: 1,
                 })
                 .is_err()
             {
@@ -3612,6 +3615,7 @@ mod tests {
                 control_rtt_samples: 0,
                 rendering_enabled: false,
                 render_latency_p95_us: 0,
+            ..Default::default()
             },
         };
         sender.send(report(0, 0)).unwrap();

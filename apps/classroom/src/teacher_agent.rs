@@ -56,6 +56,8 @@ struct Snapshot {
     settings: Value,
     diagnostics: Value,
     student_download: Value,
+    presentation: Option<RoomPresentation>,
+    source_id: Option<String>,
 }
 #[derive(Deserialize)]
 struct Command {
@@ -121,8 +123,15 @@ fn state_json(state: &Snapshot, sent: &mut HashMap<String, u64>) -> Value {
         let thumbnail = row.thumbnail.as_ref().filter(|t| sent.get(&row.instance_id) != Some(&t.sequence))
             .map(|t| { sent.insert(row.instance_id.clone(), t.sequence);
                 json!({"sequence":t.sequence,"width":t.width,"height":t.height,"jpeg":STANDARD.encode(&t.jpeg)}) });
+        let expected = state.presentation.as_ref().is_some_and(|p| p.includes(&row.instance_id));
+        let media = row.media.as_ref().filter(|m| expected && m.report.stream_id == state.stream_id);
+        let health = if !row.online { "offline" } else if state.source_id.as_deref() == Some(row.instance_id.as_str()) { "presenting_source" }
+            else if !expected { "idle" } else { media.map_or("waiting_for_report", |m| m.state()) };
         json!({"id":row.instance_id,"name":row.hostname,"ip":row.endpoint.ip().to_string(),
             "online":row.online,"monitoring":row.monitoring_state,"thumbnail":thumbnail,
+            "media":{"state":health,"decode_fps":media.map(|m|m.decode_fps),"render_fps":media.map(|m|m.render_fps),
+                "report_age_ms":media.map(|m|m.received_at.elapsed().as_millis()),"receive_mbps":media.map(|m|m.report.receive_bitrate_bps as f64/1_000_000.0),
+                "missing_packets":media.map(|m|m.report.missing_packets)},
             "thumbnail_age_ms":row.thumbnail.as_ref().map(|t|t.received_at.elapsed().as_millis())})
     }).collect();
     sent.retain(|id, _| state.rows.iter().any(|r| &r.instance_id == id));
@@ -132,7 +141,7 @@ fn state_json(state: &Snapshot, sent: &mut HashMap<String, u64>) -> Value {
         "tray_available":state.tray,"ui_request":state.ui_request,"open_settings":state.open_settings,
         "students":students,"observe":state.observe,"tools":state.tools,"lifecycle":state.lifecycle,
         "settings":state.settings,"diagnostics":state.diagnostics,"student_download":state.student_download,
-        "observe_focus":state.observe_focus})
+        "observe_focus":state.observe_focus,"source_id":state.source_id})
 }
 async fn client(
     mut socket: TcpStream,
@@ -322,6 +331,8 @@ pub(super) fn run(
         settings: serde_json::to_value(config)?,
         diagnostics: diagnostics.snapshot(),
         student_download: json!({"phase":"off"}),
+        presentation: None,
+        source_id: None,
     };
     let (states, receiver) = watch::channel(snapshot.clone());
     let (commands, mut requests) = mpsc::channel::<Request>(16);
@@ -426,6 +437,7 @@ pub(super) fn run(
                 let done = session.take().unwrap();
                 presentation.send_replace(None);
                 snapshot.phase = "idle".into();
+                snapshot.source_id = None;
                 match done.worker.join() {
                     Ok(Ok(())) => {}
                     Ok(Err(e)) => {
@@ -544,7 +556,13 @@ pub(super) fn run(
                             }
                         }
                     }
-                    "observe_window" => {
+                    "cancel_diagnostics" => {
+                        pending_diagnostics = None;
+                        diagnostics.cancel();
+                        snapshot.diagnostics = diagnostics.snapshot();
+                        Ok(())
+                    }
+                    "observe_window" if snapshot.source_id.is_none() => {
                         observe_windows.retain(|_, child| matches!(child.try_wait(), Ok(None)));
                         let rows = roster.lock().unwrap().snapshot();
                         if let Some(row) = rows
@@ -1048,7 +1066,7 @@ pub(super) fn run(
                             Err("Teacher console executable unavailable")
                         }
                     }
-                    "observe_open" => {
+                    "observe_open" if snapshot.source_id.is_none() => {
                         let rows = roster.lock().unwrap().snapshot();
                         if let Some(row) = rows
                             .iter()
@@ -1110,6 +1128,40 @@ pub(super) fn run(
                         }
                         Ok(())
                     }
+                    "share_student" if session.is_none() => {
+                        observe_windows.retain(|_, child| matches!(child.try_wait(), Ok(None)));
+                        let rows = roster.lock().unwrap().snapshot();
+                        let source = rows.iter().find(|r| r.online && command.selected.len() == 1 && command.selected[0] == r.instance_id);
+                        if !config.monitoring.enabled {
+                            Err("Enable monitoring to request Student screen publishing")
+                        } else if observe.is_some() || !observe_windows.is_empty() {
+                            Err("Close Observe/Control windows before presenting a Student")
+                        } else if let Some(source) = source {
+                            diagnostics.cancel();
+                            let recipients = Arc::new(rows.iter().filter(|r| r.online && r.instance_id != source.instance_id)
+                                .map(|r| r.instance_id.clone()).collect::<HashSet<_>>());
+                            snapshot.stream_id = presentation_ids.next()?;
+                            snapshot.source_id = Some(source.instance_id.clone());
+                            snapshot.scope = "student_class".into();
+                            snapshot.recipients = recipients.len();
+                            snapshot.phase = "starting".into();
+                            snapshot.error = None;
+                            let stop = Arc::new(AtomicBool::new(false));
+                            let cancel = Arc::clone(&stop);
+                            let settings = config.clone();
+                            let state = presentation.clone();
+                            let stream = snapshot.stream_id;
+                            let source_id = source.instance_id.clone();
+                            let source_ip = *source.endpoint.ip();
+                            let jobs = Arc::clone(&observe_jobs);
+                            let runtime = tokio::runtime::Handle::current();
+                            session = Some(Session { stop, worker: thread::spawn(move || {
+                                super::student_broadcast::run(&settings, bind_ip, source_id, source_ip, stream,
+                                    &cancel, &state, jobs, runtime)
+                            }) });
+                            Ok(())
+                        } else { Err("Select exactly one online Student as the presentation source") }
+                    }
                     "share_class" | "share_selected" if session.is_none() => {
                         diagnostics.cancel();
                         let rows = roster.lock().unwrap().snapshot();
@@ -1137,6 +1189,7 @@ pub(super) fn run(
                                 |ids| ids.len(),
                             );
                             snapshot.phase = "starting".into();
+                            snapshot.source_id = None;
                             snapshot.error = None;
                             let stop = Arc::new(AtomicBool::new(false));
                             let cancel = Arc::clone(&stop);
@@ -1229,6 +1282,7 @@ pub(super) fn run(
                     .as_ref()
                     .map_or(Value::Null, super::observe_coordinator::View::state);
                 snapshot.rows = roster.lock().unwrap().snapshot();
+                snapshot.presentation = presentation.borrow().clone();
                 snapshot.tools = tools_hub.snapshot();
                 snapshot.tools["activity_monitoring"] = json!(tools_hub.activity_monitoring());
                 let new_alerts = tools_hub.activity_alerts();

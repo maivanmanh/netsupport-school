@@ -362,7 +362,7 @@ class Agent extends ChangeNotifier {
           '--console-path',
           Platform.resolvedExecutable,
           '--log-file',
-          '${dir.path}/teacher-log.txt',
+          option('--log-file') ?? '${dir.path}/teacher-log.txt',
           '--launch-profile',
           '${dir.path}/teacher-profile.toml',
           '--bind-ip',

@@ -26,10 +26,12 @@ pub struct RoomPresentation {
     pub events: SyncSender<TeacherMediaEvent>,
     /// None means the whole room; Some is a fixed set of stable Student IDs.
     pub recipients: Option<Arc<HashSet<String>>>,
+    /// A Student presentation must not fullscreen its own source desktop.
+    pub excluded_source: Option<String>,
 }
 impl RoomPresentation {
-    fn includes(&self, instance_id: &str) -> bool {
-        self.recipients
+    pub fn includes(&self, instance_id: &str) -> bool {
+        self.excluded_source.as_deref() != Some(instance_id) && self.recipients
             .as_ref()
             .is_none_or(|ids| ids.contains(instance_id))
     }
@@ -43,6 +45,93 @@ pub struct RoomStudent {
     pub online: bool,
     pub thumbnail: Option<Arc<RoomThumbnail>>,
     pub monitoring_state: String,
+    pub media: Option<MediaHealth>,
+}
+
+/// One latest report per bounded roster entry. Counters are session scoped.
+#[derive(Clone, Debug)]
+pub struct MediaHealth {
+    pub report: protocol::ReceiverReport,
+    pub received_at: std::time::Instant,
+    pub decoded_at: Option<std::time::Instant>,
+    pub rendered_at: Option<std::time::Instant>,
+    pub decode_fps: f64,
+    pub render_fps: f64,
+}
+impl MediaHealth {
+    fn update(previous: Option<&Self>, report: protocol::ReceiverReport) -> Self {
+        let now = std::time::Instant::now();
+        let previous = previous.filter(|p| p.report.stream_id == report.stream_id);
+        let seconds = previous.map_or(1.0, |p| now.duration_since(p.received_at).as_secs_f64().max(0.001));
+        let decoded = previous.map_or(0, |p| p.report.decoded_frames);
+        let rendered = previous.map_or(0, |p| p.report.rendered_frames);
+        Self {
+            decoded_at: if report.decoded_frames > decoded { Some(now) } else { previous.and_then(|p| p.decoded_at) },
+            rendered_at: if report.rendered_frames > rendered { Some(now) } else { previous.and_then(|p| p.rendered_at) },
+            // The first cumulative report has no measured sampling interval.
+            decode_fps: previous.map_or(0.0, |_| report.decoded_frames.saturating_sub(decoded) as f64 / seconds),
+            render_fps: previous.map_or(0.0, |_| report.rendered_frames.saturating_sub(rendered) as f64 / seconds),
+            received_at: now,
+            report,
+        }
+    }
+    #[must_use]
+    pub fn state(&self) -> &'static str {
+        if self.received_at.elapsed() > Duration::from_secs(5) { return "report_stale"; }
+        if self.report.health_version == 0 { return "unknown"; }
+        if self.report.recovering { return "recovering"; }
+        if self.decoded_at.is_none() { return "waiting_for_image"; }
+        if self.decoded_at.is_some_and(|at| at.elapsed() > Duration::from_secs(3)) { return "decode_stalled"; }
+        if !self.report.rendering_enabled { return "receiving_headless"; }
+        if self.rendered_at.is_none_or(|at| at.elapsed() > Duration::from_secs(3)) { return "render_stalled"; }
+        "receiving"
+    }
+}
+
+#[cfg(test)]
+mod media_health_tests {
+    use super::*;
+    fn report(stream: u64, frames: u64) -> protocol::ReceiverReport {
+        protocol::ReceiverReport { stream_id: stream, decoded_frames: frames,
+            rendered_frames: frames, rendering_enabled: true, health_version: 1, ..Default::default() }
+    }
+    #[test]
+    fn decoded_and_rendered_progress_are_required() {
+        let mut health = MediaHealth::update(None, report(1, 0));
+        assert_eq!(health.state(), "waiting_for_image");
+        health = MediaHealth::update(Some(&health), report(1, 3));
+        assert_eq!(health.state(), "receiving");
+        health.decoded_at = Some(std::time::Instant::now() - Duration::from_secs(4));
+        assert_eq!(health.state(), "decode_stalled");
+        health.decoded_at = Some(std::time::Instant::now());
+        health.rendered_at = None;
+        assert_eq!(health.state(), "render_stalled");
+        health.report.rendering_enabled = false;
+        assert_eq!(health.state(), "receiving_headless");
+    }
+    #[test]
+    fn old_sessions_and_old_reports_never_look_healthy() {
+        let old = MediaHealth::update(None, report(1, 50));
+        assert_eq!(old.decode_fps, 0.0);
+        assert_eq!(old.render_fps, 0.0);
+        let mut next = MediaHealth::update(Some(&old), report(2, 0));
+        assert!(next.decoded_at.is_none());
+        next.report.recovering = true;
+        assert_eq!(next.state(), "recovering");
+        next.received_at = std::time::Instant::now() - Duration::from_secs(6);
+        assert_eq!(next.state(), "report_stale");
+        next.received_at = std::time::Instant::now();
+        next.report.health_version = 0;
+        assert_eq!(next.state(), "unknown");
+    }
+    #[test]
+    fn student_source_is_excluded_but_unknown_late_join_is_included() {
+        let (events, _) = std::sync::mpsc::sync_channel(1);
+        let session = RoomPresentation { config: Default::default(), events,
+            recipients: None, excluded_source: Some("source".into()) };
+        assert!(!session.includes("source"));
+        assert!(session.includes("late-join"));
+    }
 }
 #[derive(Debug)]
 pub struct RoomThumbnail {
@@ -64,6 +153,11 @@ pub struct RoomRoster {
     cursor_changed: Arc<tokio::sync::Notify>,
 }
 impl RoomRoster {
+    pub fn update_media(&mut self, client_id: u64, report: protocol::ReceiverReport) {
+        if let Some(row) = self.students.iter_mut().find(|r| r.online && r.client_id == client_id) {
+            row.media = Some(MediaHealth::update(row.media.as_ref(), report));
+        }
+    }
     #[must_use]
     pub fn snapshot(&self) -> Vec<RoomStudent> {
         self.students.clone()
@@ -316,6 +410,7 @@ async fn handle_authorized(
         online: true,
         thumbnail: None,
         monitoring_state: "waiting".into(),
+            media: None,
     })?;
     let _peer = PeerGuard {
         roster: Arc::clone(&roster),
@@ -396,7 +491,10 @@ async fn handle_authorized(
                         send(&mut writer,&response).await?;
                     }
                     Some(Payload::ReceiverReport(report))=>{
-                        if let Some(session)=media.active.as_ref().filter(|session|session.config.stream_id==report.stream_id) {dispatch(session,TeacherMediaEvent::ReceiverReport {client_id:id,report})?;}
+                        if let Some(session)=media.active.as_ref().filter(|session|session.config.stream_id==report.stream_id) {
+                            roster.lock().unwrap().update_media(id, report.clone());
+                            dispatch(session,TeacherMediaEvent::ReceiverReport {client_id:id,report})?;
+                        }
                     }
                     Some(Payload::Nack(message))=>{
                         if let Some(session)=media.active.as_ref().filter(|session|session.config.stream_id==message.stream_id) {dispatch(session,TeacherMediaEvent::Nack {client_id:id,endpoint,message})?;}
@@ -476,6 +574,7 @@ mod tests {
                 },
                 events,
                 recipients: None,
+                excluded_source: None,
             },
             receiver,
         )
@@ -690,6 +789,7 @@ mod tests {
             online: true,
             thumbnail: None,
             monitoring_state: "waiting".into(),
+            media: None,
         };
         roster.register(row.clone()).unwrap();
         roster

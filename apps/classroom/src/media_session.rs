@@ -82,6 +82,7 @@ pub(super) fn publish_with_cursor_policy(
             },
             events,
             recipients: recipients.cloned(),
+            excluded_source: None,
         });
         true
     });

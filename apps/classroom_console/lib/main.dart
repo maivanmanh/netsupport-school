@@ -5,6 +5,8 @@ import 'package:window_manager/window_manager.dart';
 import 'package:screen_retriever/screen_retriever.dart';
 import 'agent.dart';
 import 'observe.dart';
+import 'media_health.dart';
+import 'diagnostics_dialog.dart';
 import 'observe_startup.dart';
 import 'classroom_tools_ui.dart';
 import 'settings.dart';
@@ -656,6 +658,20 @@ class _ConsoleState extends State<Console> with WindowListener {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         if (agent.connected && phase == 'idle') ...[
+                          if (onlineSelected.length == 1) ...[
+                            OutlinedButton.icon(
+                              style: toolbarButton(),
+                              onPressed: idle
+                                  ? () => agent.command(
+                                      'share_student',
+                                      onlineSelected,
+                                    )
+                                  : null,
+                              icon: const Icon(Icons.present_to_all, size: 16),
+                              label: const Text('Present Student to class'),
+                            ),
+                            const SizedBox(width: 8),
+                          ],
                           FilledButton.icon(
                             style: toolbarButton(),
                             onPressed: idle && online > 0
@@ -712,6 +728,20 @@ class _ConsoleState extends State<Console> with WindowListener {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         if (agent.connected) ...[
+                          IconButton(
+                            tooltip: selected.isEmpty
+                                ? 'Collect class diagnostics'
+                                : 'Collect selected diagnostics',
+                            onPressed: () => collectDiagnostics(
+                              context,
+                              agent,
+                              selected.toList(),
+                            ),
+                            icon: const Icon(
+                              Icons.bug_report_outlined,
+                              size: 19,
+                            ),
+                          ),
                           IconButton(
                             tooltip: selectionMode && onlineSelected.isNotEmpty
                                 ? 'Message selected students'
@@ -1049,15 +1079,19 @@ class _ConsoleState extends State<Console> with WindowListener {
                         ),
                       ],
                     );
-                    if (constraints.maxWidth < 940 &&
-                        onlineSelected.isNotEmpty &&
-                        phase == 'idle') {
+                    if (constraints.maxWidth < 1500) {
                       return Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          actions,
+                          SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            child: actions,
+                          ),
                           const SizedBox(height: 6),
-                          Align(alignment: Alignment.centerRight, child: tools),
+                          SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            child: tools,
+                          ),
                         ],
                       );
                     }
@@ -1241,7 +1275,9 @@ class _ConsoleState extends State<Console> with WindowListener {
                     Icon(
                       Icons.computer_outlined,
                       size: 15,
-                      color: online > 0 ? const Color(0xff1f7a4d) : Colors.blueGrey,
+                      color: online > 0
+                          ? const Color(0xff1f7a4d)
+                          : Colors.blueGrey,
                     ),
                     const SizedBox(width: 6),
                     Text(
@@ -1249,7 +1285,9 @@ class _ConsoleState extends State<Console> with WindowListener {
                       style: TextStyle(
                         fontSize: 11.5,
                         fontWeight: FontWeight.w600,
-                        color: online > 0 ? const Color(0xff1f7a4d) : Colors.blueGrey,
+                        color: online > 0
+                            ? const Color(0xff1f7a4d)
+                            : Colors.blueGrey,
                       ),
                     ),
                   ],
@@ -1326,6 +1364,8 @@ class _ConsoleState extends State<Console> with WindowListener {
           ? 'Connection lost'
           : 'Not connected in this session';
     }
+    final health = mediaHealthLabel(r);
+    if (health.isNotEmpty) return health;
     if (r['monitoring'] == 'observing') {
       return 'Live Observe active';
     }
@@ -1385,6 +1425,8 @@ class _ConsoleState extends State<Console> with WindowListener {
       color = agent.seenOnlineIds.contains(r['id'])
           ? const Color(0xffd94848)
           : const Color(0xff525a63);
+    } else if (mediaNeedsAttention(r)) {
+      color = const Color(0xffdb8a22);
     } else if (r['monitoring'] != 'paused' &&
         r['monitoring'] != 'observing' &&
         (r['monitoring'] == 'unavailable' ||
@@ -1475,6 +1517,14 @@ class _ConsoleState extends State<Console> with WindowListener {
                   style: const TextStyle(fontWeight: FontWeight.w600),
                 ),
               ),
+              if (mediaHealthLabel(r).isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(right: 12),
+                  child: Text(
+                    mediaHealthLabel(r),
+                    style: const TextStyle(fontSize: 11),
+                  ),
+                ),
               SizedBox(
                 width: 145,
                 child: Text(
@@ -1547,6 +1597,18 @@ class _ConsoleState extends State<Console> with WindowListener {
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(fontSize: 11, color: Colors.blueGrey),
               ),
+              if (mediaHealthLabel(r).isNotEmpty)
+                Text(
+                  mediaHealthLabel(r),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: mediaNeedsAttention(r)
+                        ? Colors.orange.shade800
+                        : Colors.teal.shade700,
+                  ),
+                ),
             ],
           ),
         ),
