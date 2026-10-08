@@ -22,14 +22,21 @@ pub struct ConnectionStatus {
     connected_since: Option<Instant>,
     dismissed: bool,
     last_draw: Option<Instant>,
+    first_connection_seen: bool,
+    first_confirmation_active: bool,
 }
 impl ConnectionStatus {
     #[allow(clippy::too_many_lines)] // One bounded native popup paint/pump pass.
     pub fn pump(&mut self, enabled: bool, status: &str, presenting: bool) {
         let connected = status.starts_with("Connected to Teacher");
+        if connected && !self.first_connection_seen {
+            self.first_connection_seen = true;
+            self.first_confirmation_active = enabled && !presenting;
+        }
         // Never expose startup retries or a lost Teacher connection via a popup,
         // even when the persisted/Teacher-supplied popup preference is enabled.
-        if !enabled || presenting || !connected {
+        if !enabled || presenting || !connected || !self.first_confirmation_active {
+            self.first_confirmation_active = false;
             self.window = None;
             self.canvas = None;
             self.last.clear();
@@ -52,6 +59,7 @@ impl ConnectionStatus {
             }
             self.window = None;
             self.canvas = None;
+            self.first_confirmation_active = false;
             return;
         }
         if self.dismissed {
@@ -198,5 +206,28 @@ mod tests {
             (-316, 946)
         );
         assert_eq!(bottom_right([10, 20, 200, 60], [0, 0, 300, 78]), (10, 20));
+    }
+
+    #[test]
+    fn first_connection_with_popup_disabled_is_not_announced_after_reconnect() {
+        let mut ui = ConnectionStatus::default();
+        ui.pump(false, "Connected to Teacher 10.0.55.10", false);
+        ui.pump(true, "Connecting to Teacher 10.0.55.10", false);
+        ui.pump(true, "Connected to Teacher 10.0.55.10", false);
+        assert!(ui.first_connection_seen);
+        assert!(!ui.first_confirmation_active);
+        assert!(ui.window.is_none());
+        assert!(!ui.dismissed);
+    }
+
+    #[test]
+    fn presentation_end_does_not_rearm_initial_confirmation() {
+        let mut ui = ConnectionStatus::default();
+        ui.pump(true, "Connected to Teacher 10.0.55.10", true);
+        ui.pump(true, "Connected to Teacher 10.0.55.10", false);
+        assert!(ui.first_connection_seen);
+        assert!(!ui.first_confirmation_active);
+        assert!(ui.window.is_none());
+        assert!(!ui.dismissed);
     }
 }

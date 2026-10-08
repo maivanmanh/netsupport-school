@@ -29,12 +29,13 @@ qua x64 emulation trên Windows ARM64. Chưa có nghiệm thu lab 40 PC vật l�
 ## Popup và tray
 
 **Student connection popup** trên Teacher có hiệu lực ngay qua tools TCP hiện có
-cho Student có capability `connection_popup: 1`. Student chỉ hiện Connected,
+cho Student có capability `connection_popup: 1`. Student chỉ hiện Connected lần
+đầu trong mỗi lần chạy app (khi popup được bật và không đang chiếu),
 tự ẩn sau ba giây. Connecting/reconnecting và mất kết nối luôn im lặng,
 kể cả khi bật tùy chọn popup; Teacher vẫn ghi nhận offline và cảnh báo khi bật
 activity monitoring. Popup nonmodal, không lấy focus; tắt popup
 không đổi tray hay kết nối. Popup không che phiên Teacher presentation. Người dùng
-có thể đóng riêng popup; trạng thái thay đổi mới làm nó hiện lại.
+có thể đóng riêng popup; reconnect hoặc kết thúc chiếu không làm nó hiện lại.
 
 Preference được Student ghi theo profile cho thông báo Connected lần sau;
 lúc nối tools, Teacher gửi lại giá trị hiện tại. Teacher

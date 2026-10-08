@@ -3839,3 +3839,20 @@ Status: owner-reported Win+R local dispatch fixed and tested Windows-to-Windows.
   on available VM, separate cold-start timeout; physical x64 controlled-repair
   tests/high RTT/CPU and wired1080p1/5/10/20/35/40 simultaneous-fault/optical/soak/
   DPI/sleep tests remain deferred. Full report: diagnostics/2026-10-07-controlled-repair.md.
+
+## 2026-10-08 — Defender investigation and first-connection-only Student popup
+
+Owner reports Windows 10 Student quarantine and disconnect only during Show;
+original affected machines/sample/threat name unavailable. Read-only SSH at new
+Windows .106 confirms Defender/realtime on and latest existing test EXE NotSigned;
+no detection/event records returned in queried history. No AV policy changes or
+false-positive submissions. See diagnostics/2026-10-08-defender-and-student-status.md
+for signing/submission plan, disconnect hypotheses and exact lab evidence needed.
+Added read-only scripts/collect-windows-defender.ps1 (full script runtime deferred).
+Fixed ConnectionStatus latch: Connected only on first connection per app run;
+reconnect/Stop cannot rearm popup. Policy handlers remain silent. Five focused
+UI tests pass, targeted rustfmt/diff check pass, clippy passes with warnings;
+workspace fmt finds unrelated existing formatting differences. No paired release
+build/deployment this milestone, no claim Defender or room disconnect resolved.
+Next: obtain original Windows 10 Defender event/sample; paired build and visible
+Windows popup reconnect/Show/Stop validation, then exact lab regression.
