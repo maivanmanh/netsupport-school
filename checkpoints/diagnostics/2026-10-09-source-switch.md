@@ -125,3 +125,22 @@ Cần owner cấp lại Screen & System Audio Recording cho đúng hai app Teach
 
 Không cần ký/deploy/cấp lại Mac Student ở .254 vì app đó không đổi. Sau owner
 báo đã cấp, restart cùng Teacher bundle và chạy lại harness. Giữ bản build này.
+
+
+## Sau cấp lại Teacher Recording — chặn ở Mac Student input permission
+
+Restart cùng bundle, không build/sign/deploy. Lượt mới: Teacher capture và hai
+receiver nhận; chuyển Teacher→Windows Control/relay thành công. Khi Windows→Mac,
+Teacher ghi class-source teardown retry (wait6ms) rồi đi qua handshake đến bước
+Control; lỗi watching trước đây không kết thúc phiên ngay nữa. Mac Student trả:
+`Remote input permission/init: the application does not have the permission to simulate input`.
+Không coi đầy đủ Windows→Mac Control là passed. Đây là bước cấp quyền input trên
+Mac Student; Recording đã hoạt động. Full-cycle/stale-close/Stop-cancel native
+acceptance vẫn chưa hoàn tất. Evidence: `target/source-switch-native-accessibility-blocked-20261009`.
+Runner exit1, cleanup.json errors=[]; Teacher idle và lỗi đã clear.
+
+Dừng ngay tại quyền theo owner yêu cầu, không Computer Use hay tự đổi quyền.
+Trên Mac192.168.100.254, kiểm tra/bật Accessibility cho đúng:
+`/Users/lolem/Classroom-source-switch/Classroom Student.app`.
+Teacher Recording không cần cấp lại, cả ba bundles đều giữ nguyên. Sau owner
+báo xong, khởi động lại Mac Student bằng GUI LaunchAgent của harness và tiếp tục.

@@ -4024,3 +4024,12 @@ in diagnostic report. Remote Mac Student remains unchanged/granted. Next owner
 regrants Teacher Recording, restart unchanged bundle, rerun prepared mixed-peer
 handoff.201 Rust tests pass; native retry fix and full source-switch cycles still
 unverified. No further build planned before that confirmation.
+
+
+After manual Teacher Recording regrant/restart, unchanged bundle captures and
+Teacher→Windows native handoff passes. Mac-source retry reaches Control setup,
+then explicit input permission/init failure blocks Mac Student. Paused per owner
+instruction; Accessibility target `/Users/lolem/Classroom-source-switch/Classroom Student.app`
+on192.168.100.254. Cleanup errors0; bundles unchanged, no Computer Use. Next owner
+checks Accessibility, harness restarts Mac Student and reruns full cycles. Full
+native handoff acceptance still pending; diagnostics report preserves each trial.
