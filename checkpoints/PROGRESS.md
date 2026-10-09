@@ -4033,3 +4033,23 @@ instruction; Accessibility target `/Users/lolem/Classroom-source-switch/Classroo
 on192.168.100.254. Cleanup errors0; bundles unchanged, no Computer Use. Next owner
 checks Accessibility, harness restarts Mac Student and reruns full cycles. Full
 native handoff acceptance still pending; diagnostics report preserves each trial.
+
+
+## 2026-10-09 — mixed-endpoint source switching native pass
+
+After owner grants Mac Student Accessibility, unchanged Teacher/Student bundles
+complete two Teacher→Windows→Mac→Windows→Teacher cycles, runner exit0. Ten fresh
+streams (two starts/eight handoffs); all non-Source recipients report positive
+render FPS, six Student-source sessions acknowledge cooperative Control. Current
+target no-op, invalid target rejection without interruption, stale Control-close
+and both pending-switch Stop cancellations pass. Final idle with no source,
+pending target, Control or error; harness cleanup errors0. No further build/sign
+or privacy automation. Evidence and limitations in diagnostics/2026-10-09-source-switch.md.
+
+Health-ready reports take2.505–6.042s (median3.025s), not optical/first-frame latency.
+Mac actual input interaction/native toolbar clicks/second-launch popup visual check
+remain unverified in this run. Prior Rust201 pass/2 ignored and Flutter13 pass
+apply unchanged. Exact next step: physical Windows x64 Ethernet ladder1/5/10/20/
+35–40, fixed1080p workload, optical/source-switch latency and source-upload/preview
+load, cooperative input and soak; retain deferred sleep/DPI/Defender cases. Current
+VM/mixed-LAN functional pass is not Phase1 40-PC performance acceptance.

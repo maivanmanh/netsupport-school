@@ -144,3 +144,41 @@ Trên Mac192.168.100.254, kiểm tra/bật Accessibility cho đúng:
 `/Users/lolem/Classroom-source-switch/Classroom Student.app`.
 Teacher Recording không cần cấp lại, cả ba bundles đều giữ nguyên. Sau owner
 báo xong, khởi động lại Mac Student bằng GUI LaunchAgent của harness và tiếp tục.
+
+## Native hoàn tất sau owner cấp Mac Student Accessibility
+
+Giữ nguyên bundle đã cấp quyền, không build/sign/deploy thêm. Harness restart
+Mac Student trong GUI session và chạy thành công, exit0:
+`target/source-switch-native-student-grant-run.txt`. Evidence cuối nằm trong
+`target/source-switch-native-20261009` (events/states/Teacher và hai Student logs,
+cleanup, verified-summary); các lượt thất bại trước đó được giữ riêng như trên.
+
+- Hai vòng Teacher → Windows → Mac → Windows → Teacher: 10 stream mới, gồm hai
+  lần bắt đầu và tám lần bàn giao. Mọi recipient online ngoài Source đều báo
+  receiving với render FPS >0 ở stream mới.
+- Cả sáu phiên nguồn Student xác nhận mode=control, class_control=true. Mac đã
+  đi qua capture/input initialization; không còn lỗi permission hay rejection
+  watching làm thất bại toàn vòng ở lượt này.
+- Chọn lại nguồn hiện tại giữ stream; chọn offline hoặc hai nguồn bị từ chối
+  mà phiên đang chiếu vẫn tiếp tục. Đóng Control bằng surface cũ không kết thúc
+  phiên Windows mới. Cả hai lần Stop ngay sau queue Mac source hủy chuyển nguồn,
+  giữ idle sau hai giây, không source/next_source/error/Control tồn dư.
+- Cleanup errors=[]; test tasks/rules/LaunchAgent được dọn bởi harness. Teacher
+  để idle. Không thay installed Student/Guard, không tự sửa privacy grants.
+
+Thời gian từ yêu cầu đến báo cáo nhận có render FPS dương: min2.505s,
+median3.025s, max6.042s (Mac nguồn ở vòng hai). Đây bao gồm startup và nhịp báo cáo
+health, không phải độ trễ quang học hay thời điểm frame đầu tiên. Chưa xác định
+nguyên nhân lượt Mac dài hơn; không coi chuyển nguồn tức thời hoặc hết mọi race.
+
+Giới hạn: runner gọi cùng backend IPC của toolbar, widget tests kiểm tra UI;
+chưa xác nhận thao tác nút bằng native GUI. Control handshake/init đã pass nhưng
+chưa gửi thao tác chuột/phím thực trên Mac nguồn trong bài này. Popup onboarding
+đã có unit tests và marker native persisted; chưa kiểm tra trực quan lần mở thứ
+hai. Không suy rộng kết quả thành 1080p30 hoặc35–40 PC vật lý.
+
+Bước kế tiếp khi vào phòng máy: chạy ladder1/5/10/20/35–40 Windows x64 Ethernet
+với workload chữ/cuộn/chuyển động foreground cố định1920×1080; đo first-frame và
+optical latency khi đổi Teacher↔Student, Source upload/Teacher preview CPU/network,
+Teacher và Student cùng thao tác, late join/recovery/Stop, soak liên tục. Giữ các
+bài sleep/DPI/Defender máy từng detection trong checklist chưa nghiệm thu.
