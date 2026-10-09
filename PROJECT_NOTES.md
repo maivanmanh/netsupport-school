@@ -1,5 +1,14 @@
 # Project notes — quy tắc vận hành của chủ dự án
 
+## Dọn bản deploy cũ (09-10-2026)
+
+Giữ một đường dẫn triển khai đang dùng cho mỗi vai trò, cả Teacher và Student.
+Tái sử dụng đường dẫn đó cho các lượt triển khai tiếp theo; không tạo thêm thư mục
+phiên bản trong home khi không cần thiết. Dừng đúng app/helper trước khi thay.
+Giữ settings, profile, device ID và logs ngoài phần binary cần thay. Student
+updater chỉ xóa bản backup sau khi bản mới kết nối thành công; nếu chưa kết nối
+thì vẫn giữ đường lui để rollback. Không tự xóa thư mục người dùng chưa xác minh.
+
 ## Build luôn theo cặp Teacher + Student (06-10-2026)
 
 Mỗi khi chủ dự án yêu cầu build, phải build lại **Teacher và Student từ cùng source

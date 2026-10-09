@@ -1,3 +1,13 @@
+## 2026-10-09 — Teacher deployment cleanup
+
+Removed 41 unused app bundles after full recoverable archiving; consolidated
+remaining old home/build folders under `target/retired-deployments-20261009`.
+Only `target/present-recovery-build` remains among the test `*build` folders.
+Current Teacher processes were preserved. Student updater source now prunes its
+backup after successful reconnect; not built/tested/deployed yet. Next: grouped
+build and success/rollback verification, then remote deployment cleanup.
+See [cleanup details](diagnostics/2026-10-09-deployment-cleanup.md).
+
 ## 2026-10-09 — Control & present Student admission fix
 
 Follow-up after Accessibility grant: direct LaunchAgent restart still failed

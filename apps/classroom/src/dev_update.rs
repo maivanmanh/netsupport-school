@@ -427,7 +427,7 @@ fn clean_previous_successes(plan: &Plan) {
                 old.target == plan.target && old.receipt.with_extension("connected").exists()
             }) {
                 // Only completed transactions for this exact installation. The
-                // current transaction/previous build and all failed runs survive.
+                // Current receipt and all failed runs survive.
                 let _ = fs::remove_dir_all(path);
             }
         }
@@ -464,11 +464,20 @@ pub fn worker(path: &Path) -> Result<()> {
         let connected = plan.receipt.with_extension("connected");
         loop {
             if connected.exists() {
+                // Reconnection commits the update. Until this point the backup
+                // is needed for rollback; afterwards retain no obsolete app.
+                let cleanup = if plan.backup.is_dir() {
+                    fs::remove_dir_all(&plan.backup)
+                } else {
+                    fs::remove_file(&plan.backup)
+                };
+                if let Err(error) = cleanup {
+                    eprintln!("Update {} backup cleanup failed: {error}", plan.id);
+                }
                 clean_previous_successes(&plan);
                 println!(
-                    "Update {} connected; previous build retained at {}",
-                    plan.id,
-                    plan.backup.display()
+                    "Update {} connected; obsolete build cleanup attempted",
+                    plan.id
                 );
                 return Ok(());
             }
