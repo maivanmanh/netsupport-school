@@ -4298,3 +4298,15 @@ Full methods/limits/evidence: diagnostics/2026-10-09-source-motion-measurement.m
   the external command approval service hit its usage limit while trying to
   launch the bounded sink. The current Teacher endpoint also became unavailable
   after the isolated GUI restart, so no runtime result is claimed for Shift+1.
+
+## 2026-10-09 — Live VS Code policy confirmation
+
+Fixed stale dialog state and premature Apply success; retain the dialog and wait
+for Student completion. Badge now describes extension allowlist state rather
+than promising all AI is blocked. Added AI setting readback and restart errors;
+preserve invalid/JSONC settings instead of silently overwriting them. Windows
+`.155` inspection confirmed an allowlist but no AI-disable setting; exact cause
+of the mismatch remains unproven. Mac check and Flutter analyze passed; paired
+build and Teacher/Windows deployment complete, no automated tests run. Windows
+reconnected and confirmed the new build; Apply/Chat checks remain manual. See
+[evidence and limits](diagnostics/2026-10-09-vscode-policy-confirmation.md).

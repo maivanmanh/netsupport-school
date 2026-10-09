@@ -17,7 +17,7 @@
 //!   does not yet ship a machine *registry* policy for its built-in
 //!   `chat.disableAIFeatures` setting (confirmed against its source: that
 //!   setting has no `policy:` registration, and
-//!   microsoft/vscode#268012 is an open request for one), so as a
+//!   microsoft/vscode#268012 was closed as not planned), so as a
 //!   best-effort second layer this also writes `chat.disableAIFeatures:
 //!   true` into the Student's own `User/settings.json` and removes the
 //!   Student's write access to that one file (`icacls`) so the Settings UI
@@ -92,10 +92,19 @@ mod windows_impl {
     const REG_VALUE: &str = "AllowedExtensions";
 
     fn extensions_dir() -> Option<PathBuf> {
-        Some(PathBuf::from(std::env::var_os("USERPROFILE")?).join(".vscode").join("extensions"))
+        Some(
+            PathBuf::from(std::env::var_os("USERPROFILE")?)
+                .join(".vscode")
+                .join("extensions"),
+        )
     }
     fn settings_path() -> Option<PathBuf> {
-        Some(PathBuf::from(std::env::var_os("APPDATA")?).join("Code").join("User").join("settings.json"))
+        Some(
+            PathBuf::from(std::env::var_os("APPDATA")?)
+                .join("Code")
+                .join("User")
+                .join("settings.json"),
+        )
     }
 
     pub fn list_extensions() -> ExtensionReport {
@@ -112,16 +121,27 @@ mod windows_impl {
             Ok(entries) => {
                 for entry in entries.filter_map(std::result::Result::ok) {
                     let manifest = entry.path().join("package.json");
-                    let Ok(bytes) = std::fs::read(&manifest) else { continue };
-                    let Ok(value) = serde_json::from_slice::<Value>(&bytes) else { continue };
-                    let (Some(name), Some(publisher)) = (value["name"].as_str(), value["publisher"].as_str()) else {
+                    let Ok(bytes) = std::fs::read(&manifest) else {
+                        continue;
+                    };
+                    let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
+                        continue;
+                    };
+                    let (Some(name), Some(publisher)) =
+                        (value["name"].as_str(), value["publisher"].as_str())
+                    else {
                         continue;
                     };
                     let id = format!("{publisher}.{name}").to_ascii_lowercase();
                     byid.entry(id.clone()).or_insert_with(|| ExtensionInfo {
                         id,
                         name: value["displayName"].as_str().unwrap_or(name).to_owned(),
-                        description: value["description"].as_str().unwrap_or("").chars().take(300).collect(),
+                        description: value["description"]
+                            .as_str()
+                            .unwrap_or("")
+                            .chars()
+                            .take(300)
+                            .collect(),
                         publisher: publisher.to_owned(),
                     });
                 }
@@ -132,8 +152,16 @@ mod windows_impl {
             .into_values()
             .filter(|e| !COPILOT_IDS.contains(&e.id.as_str()))
             .collect();
-        extensions.sort_by(|a, b| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()));
-        ExtensionReport { supported: true, extensions, notes }
+        extensions.sort_by(|a, b| {
+            a.name
+                .to_ascii_lowercase()
+                .cmp(&b.name.to_ascii_lowercase())
+        });
+        ExtensionReport {
+            supported: true,
+            extensions,
+            notes,
+        }
     }
 
     fn reg(args: &[&str]) -> Result<()> {
@@ -186,25 +214,43 @@ mod windows_impl {
             icacls(&[path.to_string_lossy().as_ref(), "/remove:d", &user]);
         }
         std::fs::create_dir_all(path.parent().context("settings path has no parent")?)?;
-        let mut value: Value = std::fs::read(&path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
-        if !value.is_object() {
-            value = Value::Object(serde_json::Map::new());
-        }
+        let mut value: Value = match std::fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .context("VS Code settings use comments or invalid JSON; left unchanged to preserve user settings")?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound =>
+                Value::Object(serde_json::Map::new()),
+            Err(error) => return Err(error).context("Could not read VS Code settings"),
+        };
+        anyhow::ensure!(
+            value.is_object(),
+            "VS Code settings must be an object; left unchanged"
+        );
         if disable {
             value["chat.disableAIFeatures"] = Value::Bool(true);
         } else if let Some(map) = value.as_object_mut() {
             map.remove("chat.disableAIFeatures");
         }
         std::fs::write(&path, serde_json::to_vec_pretty(&value)?)?;
+        let written: Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+        anyhow::ensure!(
+            if disable {
+                written["chat.disableAIFeatures"] == true
+            } else {
+                written.get("chat.disableAIFeatures").is_none()
+            },
+            "VS Code AI setting readback failed"
+        );
+        tracing::info!(path = %path.display(), disable, "VS Code AI setting written and verified");
         if disable {
             if let Some(user) = username() {
                 // Deny write, delete and "change permissions" for the
                 // Student's own account: owning the file no longer lets a
                 // standard user grant themselves access back.
-                icacls(&[path.to_string_lossy().as_ref(), "/deny", &format!("{user}:(WD,DC,WDAC,WO)")]);
+                icacls(&[
+                    path.to_string_lossy().as_ref(),
+                    "/deny",
+                    &format!("{user}:(WD,DC,WDAC,WO)"),
+                ]);
             }
         }
         Ok(())
@@ -222,8 +268,18 @@ mod windows_impl {
             }
         }
         let json = serde_json::to_string(&Value::Object(map))?;
-        reg(&["add", &format!("HKLM\\{REG_PATH}"), "/v", REG_VALUE, "/t", "REG_SZ", "/d", &json, "/f"])
-            .context("Could not write the extension allowlist (run as administrator?)")?;
+        reg(&[
+            "add",
+            &format!("HKLM\\{REG_PATH}"),
+            "/v",
+            REG_VALUE,
+            "/t",
+            "REG_SZ",
+            "/d",
+            &json,
+            "/f",
+        ])
+        .context("Could not write the extension allowlist (run as administrator?)")?;
         set_disable_ai(true)?;
         // VS Code only resolves `AllowedExtensions` at process start (seen
         // directly in its own log: PolicyConfiguration#initialize runs once
@@ -234,46 +290,60 @@ mod windows_impl {
         // hot-exit to restore unsaved buffers; not restarted on `clear()`
         // since relaxing a restriction is never urgent enough to justify
         // interrupting the Student.
-        restart_vscode_if_running();
+        restart_vscode_if_running()?;
         Ok(())
     }
     pub fn clear() -> Result<()> {
-        let _ = reg(&["delete", &format!("HKLM\\{REG_PATH}"), "/v", REG_VALUE, "/f"]);
+        let _ = reg(&[
+            "delete",
+            &format!("HKLM\\{REG_PATH}"),
+            "/v",
+            REG_VALUE,
+            "/f",
+        ]);
         set_disable_ai(false)?;
         Ok(())
     }
-    /// Best-effort: a failed restart still leaves the (stronger) registry
-    /// policy in place for VS Code's next ordinary launch, so this never
-    /// escalates — only *immediate* enforcement would be delayed, not lost.
-    fn restart_vscode_if_running() {
+    /// A failed restart must reach the Teacher as an error: registry state
+    /// alone does not confirm that an already running editor loaded it.
+    fn restart_vscode_if_running() -> Result<()> {
         let running = Command::new("tasklist.exe")
             .args(["/FI", "IMAGENAME eq Code.exe", "/FO", "CSV", "/NH"])
             .creation_flags(NO_WINDOW)
             .output()
             .is_ok_and(|o| {
-                String::from_utf8_lossy(&o.stdout).to_ascii_lowercase().contains("code.exe")
+                String::from_utf8_lossy(&o.stdout)
+                    .to_ascii_lowercase()
+                    .contains("code.exe")
             });
         if !running {
-            return;
+            return Ok(());
         }
-        if let Err(error) = Command::new("taskkill.exe")
+        let stopped = Command::new("taskkill.exe")
             .args(["/F", "/IM", "Code.exe", "/T"])
             .creation_flags(NO_WINDOW)
             .output()
-        {
-            tracing::warn!(%error, "Could not force-close VS Code for policy enforcement");
-            return;
-        }
+            .context("Could not close VS Code for policy enforcement")?;
+        anyhow::ensure!(
+            stopped.status.success(),
+            "VS Code restart failed; policy has not been confirmed for the running editor"
+        );
         // Let the OS release the previous process' file locks before the
         // relaunch tries to open the same user profile.
         std::thread::sleep(std::time::Duration::from_millis(800));
-        let Some(local) = std::env::var_os("LOCALAPPDATA") else { return };
-        let exe = PathBuf::from(local).join("Programs").join("Microsoft VS Code").join("Code.exe");
+        let local =
+            std::env::var_os("LOCALAPPDATA").context("Missing LOCALAPPDATA for VS Code restart")?;
+        let exe = PathBuf::from(local)
+            .join("Programs")
+            .join("Microsoft VS Code")
+            .join("Code.exe");
         if exe.exists() {
-            if let Err(error) = Command::new(&exe).creation_flags(NO_WINDOW).spawn() {
-                tracing::warn!(%error, "Could not relaunch VS Code after enforcing a policy");
-            }
+            Command::new(&exe)
+                .creation_flags(NO_WINDOW)
+                .spawn()
+                .context("Could not relaunch VS Code after enforcing a policy")?;
         }
+        Ok(())
     }
     pub fn supported() -> bool {
         true
@@ -293,10 +363,10 @@ mod windows_impl {
 }
 
 #[cfg(windows)]
-pub use windows_impl::{apply, is_applied, list_extensions, supported};
-#[cfg(windows)]
 #[allow(dead_code, unused_imports)]
 pub use windows_impl::clear;
+#[cfg(windows)]
+pub use windows_impl::{apply, is_applied, list_extensions, supported};
 
 #[cfg(not(windows))]
 pub fn apply(_policy: &VsCodePolicy) -> anyhow::Result<()> {
@@ -335,8 +405,23 @@ mod tests {
     }
     #[test]
     fn rejects_malformed_or_excessive_ids() {
-        assert!(VsCodePolicy { enabled: true, allowed: vec!["no-dot".into()] }.validate().is_err());
-        assert!(VsCodePolicy { enabled: true, allowed: vec!["a\".b".into()] }.validate().is_err());
-        assert!(VsCodePolicy { enabled: true, allowed: vec!["p.n".into(); 301] }.validate().is_err());
+        assert!(VsCodePolicy {
+            enabled: true,
+            allowed: vec!["no-dot".into()]
+        }
+        .validate()
+        .is_err());
+        assert!(VsCodePolicy {
+            enabled: true,
+            allowed: vec!["a\".b".into()]
+        }
+        .validate()
+        .is_err());
+        assert!(VsCodePolicy {
+            enabled: true,
+            allowed: vec!["p.n".into(); 301]
+        }
+        .validate()
+        .is_err());
     }
 }

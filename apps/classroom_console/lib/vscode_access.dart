@@ -15,7 +15,10 @@ const _copilotIds = {
 /// Ids of Students currently enforcing a VS Code extension allowlist.
 Set<String> vscodeBlockedStudents(Agent agent) {
   final list = (agent.state['tools'] as Map? ?? const {})['vscode_blocked'];
-  return {if (list is List) for (final v in list) '$v'};
+  return {
+    if (list is List)
+      for (final v in list) '$v',
+  };
 }
 
 class _Extension {
@@ -59,6 +62,7 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
   @override
   void initState() {
     super.initState();
+    agent.addListener(refreshStatus);
     // `agent.preferences` is only populated once Agent.start() finishes its
     // own disk read, which happens *after* this widget's first build (see
     // main()'s sequencing) — reading it here unconditionally always sees
@@ -72,6 +76,10 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
     } else {
       agent.addListener(waitForAgent);
     }
+  }
+
+  void refreshStatus() {
+    if (mounted) setState(() {});
   }
 
   void applyPreferences() {
@@ -88,6 +96,7 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
 
   @override
   void dispose() {
+    agent.removeListener(refreshStatus);
     agent.removeListener(waitForAgent);
     search.dispose();
     super.dispose();
@@ -151,7 +160,8 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
       ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
     final persisted = agent.preferences['vscode_allowed'];
     final previous = {
-      if (persisted is List) for (final v in persisted) '$v',
+      if (persisted is List)
+        for (final v in persisted) '$v',
     };
     setState(() {
       loading = false;
@@ -172,14 +182,16 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
     if (busy) return;
     if (enabled && selected.isEmpty) {
       setState(
-        () => error =
-            'Allow at least one extension, or turn the allowlist off.',
+        () =>
+            error = 'Allow at least one extension, or turn the allowlist off.',
       );
       return;
     }
     save();
     setState(() {
       busy = true;
+      applied = false;
+      skipped = [];
       error = null;
     });
     final result = await agent.request(
@@ -199,9 +211,43 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
       return;
     }
     final skippedList = (result['result'] as Map?)?['skipped'];
+    final jobId = result['job_id'];
+    final deadline = DateTime.now().add(const Duration(seconds: 30));
+    String? confirmationError;
+    bool confirmed = false;
+    while (mounted && DateTime.now().isBefore(deadline)) {
+      final jobs = (agent.state['tools'] as Map?)?['jobs'];
+      if (jobs is List) {
+        for (final job in jobs.whereType<Map>()) {
+          if (job['id'] != jobId) continue;
+          final targets = (job['targets'] as List? ?? const [])
+              .whereType<Map>()
+              .toList();
+          if (targets.isNotEmpty &&
+              targets.every(
+                (t) => t['status'] == 'complete' || t['status'] == 'error',
+              )) {
+            final failures = targets.where((t) => t['status'] == 'error');
+            confirmationError = failures.isEmpty
+                ? null
+                : failures.map((t) => '${t['error']}').join('\n');
+            confirmed = failures.isEmpty;
+            break;
+          }
+        }
+      }
+      if (confirmed || confirmationError != null) break;
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+    }
+    if (!mounted) return;
     setState(() {
       busy = false;
-      applied = true;
+      applied = confirmed;
+      error =
+          confirmationError ??
+          (confirmed
+              ? null
+              : 'No completion confirmation received. Check the selected computers and retry.');
       skipped = [
         if (skippedList is List)
           for (final s in skippedList)
@@ -209,17 +255,14 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
               {'name': '${s['name'] ?? ''}', 'ip': '${s['ip'] ?? ''}'},
       ];
     });
-    if (skipped.isEmpty) {
-      await Future<void>.delayed(const Duration(milliseconds: 900));
-      if (mounted) await agent.finishApplication();
-    }
   }
 
   @override
   Widget build(BuildContext context) {
     final blockedIds = vscodeBlockedStudents(agent);
-    final blocked = blockedIds.length;
-    final copilotActive = widget.studentIds.any(blockedIds.contains);
+    final blocked = widget.studentIds.where(blockedIds.contains).length;
+    final copilotActive =
+        widget.studentIds.isNotEmpty && blocked == widget.studentIds.length;
     final filter = search.text.trim().toLowerCase();
     final shown = filter.isEmpty
         ? extensions
@@ -242,7 +285,11 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
                 padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
                 child: Row(
                   children: [
-                    const Icon(Icons.extension_outlined, color: _teal, size: 20),
+                    const Icon(
+                      Icons.extension_outlined,
+                      color: _teal,
+                      size: 20,
+                    ),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
@@ -258,7 +305,10 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
                       blocked == 0
                           ? 'No computer has an allowlist enforced'
                           : '$blocked computer${blocked == 1 ? '' : 's'} currently enforcing an allowlist',
-                      style: const TextStyle(fontSize: 12, color: Colors.blueGrey),
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Colors.blueGrey,
+                      ),
                     ),
                   ],
                 ),
@@ -267,9 +317,9 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
             const Divider(height: 1),
             Expanded(
               child: AbsorbPointer(
-                absorbing: busy || applied,
+                absorbing: busy,
                 child: Opacity(
-                  opacity: busy || applied ? 0.6 : 1,
+                  opacity: busy ? 0.6 : 1,
                   child: loading
                       ? const Center(child: CircularProgressIndicator())
                       : Padding(
@@ -283,7 +333,10 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
                                 children: [
                                   Switch(
                                     value: enabled,
-                                    onChanged: (v) => setState(() => enabled = v),
+                                    onChanged: (v) => setState(() {
+                                      enabled = v;
+                                      applied = false;
+                                    }),
                                   ),
                                   const SizedBox(width: 4),
                                   const Text(
@@ -333,7 +386,9 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
                                           !agent.connected
                                               ? 'Connecting to the Teacher agent…'
                                               : 'No user-installed extensions were found on the selected computers.',
-                                          style: const TextStyle(color: Colors.blueGrey),
+                                          style: const TextStyle(
+                                            color: Colors.blueGrey,
+                                          ),
                                         ),
                                       )
                                     : ListView.separated(
@@ -342,11 +397,14 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
                                             const Divider(height: 1),
                                         itemBuilder: (context, i) {
                                           final e = shown[i];
-                                          final checked = selected.contains(e.id);
+                                          final checked = selected.contains(
+                                            e.id,
+                                          );
                                           return CheckboxListTile(
                                             dense: true,
                                             value: checked,
                                             onChanged: (v) => setState(() {
+                                              applied = false;
                                               if (v == true) {
                                                 selected.add(e.id);
                                               } else {
@@ -364,7 +422,9 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
                                               e.description.isEmpty
                                                   ? e.id
                                                   : '${e.description}  ·  ${e.id}',
-                                              style: const TextStyle(fontSize: 11.5),
+                                              style: const TextStyle(
+                                                fontSize: 11.5,
+                                              ),
                                               maxLines: 2,
                                               overflow: TextOverflow.ellipsis,
                                             ),
@@ -390,7 +450,11 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
                     const Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(Icons.check_circle, size: 17, color: Color(0xff1f7a4d)),
+                        Icon(
+                          Icons.check_circle,
+                          size: 17,
+                          color: Color(0xff1f7a4d),
+                        ),
                         SizedBox(width: 6),
                         Text(
                           'Applied',
@@ -403,7 +467,10 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
                     ),
                   if (error != null) ...[
                     const SizedBox(height: 8),
-                    Text(error!, style: const TextStyle(fontSize: 12.5, color: _danger)),
+                    Text(
+                      error!,
+                      style: const TextStyle(fontSize: 12.5, color: _danger),
+                    ),
                   ],
                   if (skipped.isNotEmpty) ...[
                     const SizedBox(height: 10),
@@ -474,7 +541,7 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
                       ),
                       const SizedBox(width: 8),
                       FilledButton.icon(
-                        onPressed: busy || applied || loading ? null : apply,
+                        onPressed: busy || loading ? null : apply,
                         icon: busy
                             ? const SizedBox(
                                 width: 16,
@@ -505,6 +572,7 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
 /// regardless of what the Teacher checks below.
 class _CopilotRow extends StatelessWidget {
   const _CopilotRow({required this.active});
+
   /// Whether the allowlist is actually enforced right now for at least one
   /// of the selected computers — not just configured in this window. The
   /// badge must never claim Copilot is blocked when nothing has been
@@ -533,7 +601,7 @@ class _CopilotRow extends StatelessWidget {
               ),
               Text(
                 active
-                    ? 'Excluded from the allowlist currently enforced on the selected computer(s).'
+                    ? 'Copilot extensions are excluded. Built-in AI Chat is not independently verified as blocked.'
                     : 'Always excluded from the allowlist — but only once you turn the switch below on and press Apply.',
                 style: const TextStyle(fontSize: 11, color: Colors.blueGrey),
               ),
@@ -556,7 +624,7 @@ class _CopilotRow extends StatelessWidget {
               ),
               const SizedBox(width: 4),
               Text(
-                active ? 'Blocked now' : 'Not applied yet',
+                active ? 'Allowlist applied' : 'Not applied to all',
                 style: TextStyle(
                   fontSize: 11.5,
                   fontWeight: FontWeight.w700,
