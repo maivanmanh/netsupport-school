@@ -82,3 +82,42 @@ minutes of controlled motion, compare pacing/FPS and check for crash. Until then
 the input correction is build/test verified, not a native runtime pass. Defer
 fixed1080p Ethernet1/5/10/20/35–40 ladder, optical latency and physical Windows
 Defender/DPI/sleep acceptance to the lab. No media buffers were enlarged.
+
+## Native verification after manual grants
+
+Owner grants all requested permissions; restart exact new Teacher and GUI-session
+Mac Student. Read-only GUI probe now reports screen:true (the status file appends
+old false and new true records; newest record is authoritative). No signing,
+rebuild or privacy automation during this follow-up.
+
+Windows initially offline: TCP22 accepts but SSH banner times out; the Parallels
+read-only guest command also stalls. Owner says Windows remains responsive, then
+sees the Mac presentation on Windows. SSH recovers and native inventory confirms
+only the retained new Student PID1748 at its isolated Source-Switch path, targeting
+192.168.100.171/48900; sshd running. No forced VM restart and no new Windows deploy.
+The exact cause of this transient access failure remains unproven.
+
+Actual Teacher right-click menu **Control & present Student** opens Mac source
+without checkbox selection. IPC confirms class_control:true, mode:control, live
+source. Mac PID16163 stays alive through the initial several-minute source session
+and input, unlike the previous SIGTRAP. Direct native input Cmd+Space does not
+crash or report a control error. Owner separately tests the actual Control window
+and explicitly confirms Cmd+Tab and Cmd+Space affect only Mac Student, not Teacher.
+This is owner-observed native UI validation; it is not an automated optical test.
+
+One bounded Teacher→Windows→Mac cycle then passes. Ready times3.983/3.541/3.009s
+are control/receiver-health readiness, not first-frame or optical latency. Every
+non-source online recipient reports positive render FPS; both Student sources
+report cooperative Control. Eight seconds of additional state checks per source
+show no disconnect/error. Final Stop reaches idle; all apps remain available.
+Evidence: final-handoff-run.txt, final-handoff-events.json, final-handoff-states.json,
+state-after-owner-windows.json, windows-after-grant-inventory.txt and Mac full log
+in the existing evidence folder.
+
+Windows current Mac-source snapshot decode20.760/render17.794 FPS is a single
+interval on uncontrolled content, not an improvement benchmark. Cumulative missing
+packet counter243 includes recovery/history; do not treat it as this cycle's loss.
+No matched foreground motion A/B, full soak or physical35–40-PC test is claimed.
+Next: owner may manually exercise text input and class operation with these unchanged
+bundles; lab acceptance still requires fixed1080p, physical Windows x64 Ethernet
+ladder and optical latency.

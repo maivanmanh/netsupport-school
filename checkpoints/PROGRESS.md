@@ -4087,3 +4087,17 @@ Full evidence/limitations: diagnostics/2026-10-09-manual-source-control.md.
 Next after grants: restart both roles, actual Mac character/system shortcuts,
 repeated handoff + controlled motion/pacing comparison. 35–40 wired x64 lab and
 optical latency remain deferred; no claimed FPS improvement or native key pass.
+
+
+2026-10-09 native follow-up after manual grants: Mac GUI probe Recording true;
+restarted Teacher/Mac Student unchanged signed bundles. Actual right-click source
+action works without checkboxes; owner confirms Cmd+Tab/Cmd+Space act only on Mac
+Student. Corrected Mac PID stable through source and input; no repeat SIGTRAP.
+Windows initial SSH/banner access stall recovered; inventory retains correct new
+Student PID1748/Teacher171. One Teacher→Windows→Mac cycle passes, health-ready
+3.983/3.541/3.009s, positive render on all class recipients, cooperative Control,
+no error/disconnect during bounded holds; final Stop idle, apps left open. No
+rebuild/sign, forced VM restart or privacy automation. Native functional evidence
+now recorded; matched motion FPS improvement and physical35–40-PC wired1080p
+acceptance still pending. Exact next step: manual class/text interaction with these
+bundles, then lab ladder/optical latency; detailed follow-up in manual-source-control.

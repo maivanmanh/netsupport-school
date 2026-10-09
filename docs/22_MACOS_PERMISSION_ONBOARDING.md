@@ -79,5 +79,6 @@ old onboarding-seen UI marker is retained; it is never treated as a privacy gran
 
 The event tap consumes keys only while the Teacher Control window is active and
 key. On blur, disable, tap loss or bounded queue overflow, remote held keys are
-released. It does not intercept background typing. Native runtime validation of
-Cmd+Tab/Cmd+Space is pending manual permissions for this build.
+released. It does not intercept background typing. After manual grants, the owner confirms Cmd+Tab/Cmd+Space affect only Mac
+Student from the actual Control window; the native mixed-LAN handoff cycle passes.
+See the follow-up in `checkpoints/diagnostics/2026-10-09-manual-source-control.md`.
