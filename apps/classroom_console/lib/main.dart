@@ -15,6 +15,7 @@ import 'file_transfer.dart';
 import 'student_file_drop.dart';
 import 'file_collection.dart';
 import 'launch_apps.dart';
+import 'open_website.dart';
 import 'power_controls.dart';
 import 'internet_access.dart';
 import 'activity_window.dart';
@@ -318,6 +319,19 @@ class _ConsoleState extends State<Console> with WindowListener {
     );
   }
 
+  Future<void> openWebsite() {
+    final ids = toolRecipients;
+    if (ids.isEmpty) return Future.value();
+    return showWebsiteDialog(
+      context,
+      agent,
+      studentIds: ids,
+      audience: selectionMode && selected.isNotEmpty
+          ? '${ids.length} selected computers'
+          : 'the class (${ids.length} online)',
+    );
+  }
+
   Future<void> collectFiles() {
     final ids = toolRecipients;
     if (ids.isEmpty) return Future.value();
@@ -384,7 +398,7 @@ class _ConsoleState extends State<Console> with WindowListener {
       await inspect(row);
     } else if (choice == 'screenshot') {
       try {
-        await agent.screenshotStudent(row);
+        await screenshotStudent(row);
       } catch (error) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
@@ -395,6 +409,85 @@ class _ConsoleState extends State<Console> with WindowListener {
       // The context target is independent of checkbox selection. The backend
       // revalidates online/current/busy state before stopping any old source.
       await presentStudent([row['id'] as String]);
+    }
+  }
+
+  final screenshotBusy = <String>{};
+
+  Future<void> screenshotStudent(Map<String, dynamic> row) async {
+    final id = '${row['id']}';
+    if (!screenshotBusy.add(id)) return;
+    Directory? staging;
+    String? jobId;
+    try {
+      staging = await Directory(
+        agent.endpoint.parent.path,
+      ).createTemp('screenshot-');
+      final response = await agent.request(
+        'student_screenshot',
+        selected: [id],
+        input: {'dest': staging.path},
+      );
+      if (response['ok'] != true) throw StateError(Agent.failure(response));
+      jobId = response['job_id'] as String?;
+      if (jobId == null) throw StateError('Screenshot request was not queued');
+      final deadline = DateTime.now().add(const Duration(seconds: 60));
+      while (true) {
+        if (!mounted) throw StateError('Teacher window closed');
+        if (!agent.connected) throw StateError('Teacher connection lost');
+        if (DateTime.now().isAfter(deadline)) {
+          throw StateError('Student screenshot timed out');
+        }
+        final jobs = agent.fileJobs.where((j) => j['id'] == jobId);
+        final targets = jobs.isEmpty
+            ? const <Map>[]
+            : (jobs.first['targets'] as List).whereType<Map>().toList();
+        final target = targets.where((t) => t['id'] == id).firstOrNull;
+        if (target != null) {
+          if (['error', 'cancelled'].contains(target['status'])) {
+            throw StateError('${target['error'] ?? 'Screenshot cancelled'}');
+          }
+          if (target['status'] == 'complete') break;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      }
+      final image = File('${staging.path}/Screenshot.png');
+      final length = await image.length();
+      if (length < 8 || length > 32 * 1024 * 1024) {
+        throw StateError('Invalid screenshot file size');
+      }
+      final path = await files.invokeMethod<String>('saveScreenshot', {
+        'name': '${row['name']}',
+        'png': await image.readAsBytes(),
+      });
+      if (mounted && path != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Screenshot saved to Desktop · ${path.split(RegExp(r'[/\\]')).last}',
+            ),
+          ),
+        );
+      }
+      jobId = null;
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              error is PlatformException
+                  ? error.message ?? 'Could not save screenshot'
+                  : '$error',
+            ),
+          ),
+        );
+      }
+    } finally {
+      if (jobId != null) await agent.request('fs_cancel', input: {'id': jobId});
+      if (staging != null && await staging.exists()) {
+        await staging.delete(recursive: true);
+      }
+      screenshotBusy.remove(id);
     }
   }
 
@@ -896,6 +989,18 @@ class _ConsoleState extends State<Console> with WindowListener {
                             icon: const Icon(
                               Icons.rocket_launch_outlined,
                               size: 18,
+                            ),
+                          ),
+                          Tooltip(
+                            message: selectionMode && onlineSelected.isNotEmpty
+                                ? 'Open website on selected computers'
+                                : 'Open website on the class',
+                            child: OutlinedButton.icon(
+                              onPressed: !agent.commandBusy && canUseTools
+                                  ? openWebsite
+                                  : null,
+                              icon: const Icon(Icons.language, size: 18),
+                              label: const Text('Open website'),
                             ),
                           ),
                           AnimatedBuilder(

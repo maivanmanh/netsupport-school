@@ -85,6 +85,11 @@ class MainFlutterWindow: NSWindow {
         ClassroomFiles.chooseFile(directory: args["directory"] as? String ?? "", window: self, result: result)
       case "screenshot":
         ClassroomFiles.screenshot(buffer: texture?.snapshot(), name: args["name"] as? String ?? "Student", window: self, result: result)
+      case "saveScreenshot":
+        guard let bytes = args["png"] as? FlutterStandardTypedData else {
+          result(FlutterError(code: "invalid_image", message: "Screenshot bytes missing", details: nil)); return
+        }
+        ClassroomFiles.saveScreenshot(png: bytes.data, name: args["name"] as? String ?? "Student", window: self, result: result)
       default: result(FlutterMethodNotImplemented)
       }
     }
@@ -392,13 +397,45 @@ private enum ClassroomFiles {
       } catch { completion(nil) }
     }
   }
+  static func saveScreenshot(png: Data, name: String, window: NSWindow, result: @escaping FlutterResult) {
+    guard png.count <= 32 * 1024 * 1024, png.starts(with: [137, 80, 78, 71, 13, 10, 26, 10]) else {
+      result(FlutterError(code: "invalid_image", message: "Student returned an invalid PNG", details: nil)); return
+    }
+    desktop(window: window) { folder in
+      guard let folder = folder else {
+        result(FlutterError(code: "desktop_permission", message: "Select Desktop to allow screenshot saving", details: nil)); return
+      }
+      let clean = String(name.unicodeScalars.map { CharacterSet.alphanumerics.contains($0) || "-_".unicodeScalars.contains($0) ? String($0) : "_" }.joined().prefix(80))
+      let date = DateFormatter(); date.locale = Locale(identifier: "en_US_POSIX"); date.dateFormat = "yyyy-MM-dd_HH-mm-ss-SSS"
+      let stem = "\(clean)_\(date.string(from: Date()))"
+      DispatchQueue.global(qos: .utility).async {
+        defer { folder.stopAccessingSecurityScopedResource() }
+        do {
+          // Preserve the Student's encoded binary exactly; never capture Teacher UI.
+          var suffix = 0
+          var destination = folder.appendingPathComponent("\(stem).png")
+          while true {
+            do { try png.write(to: destination, options: .withoutOverwriting); break }
+            catch let error as NSError {
+              guard error.domain == NSCocoaErrorDomain && error.code == NSFileWriteFileExistsError else { throw error }
+              suffix += 1
+              destination = folder.appendingPathComponent("\(stem)-\(suffix).png")
+            }
+          }
+          DispatchQueue.main.async { result(destination.path) }
+        } catch {
+          DispatchQueue.main.async { result(FlutterError(code: "screenshot_save", message: error.localizedDescription, details: nil)) }
+        }
+      }
+    }
+  }
   static func screenshot(buffer: CVPixelBuffer?, name: String, window: NSWindow, result: @escaping FlutterResult) {
     guard let buffer = buffer else { result(FlutterError(code: "no_frame", message: "Wait for a live Student frame", details: nil)); return }
     desktop(window: window) { folder in
       guard let folder = folder else { result(FlutterError(code: "desktop_permission", message: "Select Desktop to allow screenshot saving", details: nil)); return }
       let clean = String(name.unicodeScalars.map { CharacterSet.alphanumerics.contains($0) || "-_".unicodeScalars.contains($0) ? String($0) : "_" }.joined().prefix(80))
       let date = DateFormatter(); date.locale = Locale(identifier: "en_US_POSIX"); date.dateFormat = "yyyy-MM-dd_HH-mm-ss-SSS"
-      let filename = "Classroom_\(clean)_\(date.string(from: Date()))"
+      let filename = "\(clean)_\(date.string(from: Date()))"
       DispatchQueue.global(qos: .utility).async {
         defer { folder.stopAccessingSecurityScopedResource() }
         do {

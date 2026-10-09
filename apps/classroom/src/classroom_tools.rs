@@ -31,6 +31,7 @@ mod file_tree;
 mod fs_jobs;
 mod launch;
 mod power;
+mod screenshot;
 mod vscode_jobs;
 fn packet(action: &str) -> ToolPacket {
     ToolPacket {
@@ -410,8 +411,8 @@ impl Hub {
             }
             Some(source)
         } else if action == "policy" {
-            let policy: crate::guard::Policy = serde_json::from_value(input["policy"].clone())
-                .context("Invalid access policy")?;
+            let policy: crate::guard::Policy =
+                serde_json::from_value(input["policy"].clone()).context("Invalid access policy")?;
             policy.validate()?;
             p.text = serde_json::to_string(&policy)?;
             anyhow::ensure!(
@@ -430,12 +431,26 @@ impl Hub {
                 p.text.len() <= 8000,
                 "The allowed extension list is too long to send (keep it under about 300 entries)"
             );
-            p.name = if policy.enabled { "vscode_block" } else { "vscode_open" }.into();
+            p.name = if policy.enabled {
+                "vscode_block"
+            } else {
+                "vscode_open"
+            }
+            .into();
             None
         } else if action == "power" {
             let op = input["op"].as_str().unwrap_or("");
             anyhow::ensure!(
-                ["lock", "unlock", "reboot", "shutdown", "logout", "clipboard_block", "clipboard_allow"].contains(&op),
+                [
+                    "lock",
+                    "unlock",
+                    "reboot",
+                    "shutdown",
+                    "logout",
+                    "clipboard_block",
+                    "clipboard_allow"
+                ]
+                .contains(&op),
                 "Unknown power action"
             );
             let message: String = input["message"]
@@ -447,6 +462,12 @@ impl Hub {
                 .collect();
             p.text = json!({"op":op,"message":message}).to_string();
             p.name = op.into();
+            None
+        } else if action == "website" {
+            let url = input["url"].as_str().unwrap_or("").trim();
+            launch::validate_website(url)?;
+            p.text = json!({"url":url}).to_string();
+            p.name = "Website".into();
             None
         } else if action == "launch" {
             let path = input["path"].as_str().unwrap_or("").trim();
@@ -493,6 +514,14 @@ impl Hub {
                 anyhow::ensure!(
                     s.capabilities.get(id).is_some_and(|c| c["power"] == 1),
                     "A selected Student runs an older build without power controls; update it via Classroom first"
+                );
+            }
+        }
+        if action == "website" {
+            for id in recipients {
+                anyhow::ensure!(
+                    s.capabilities.get(id).is_some_and(|c| c["website"] == 1),
+                    "Update selected Students to enable Open website"
                 );
             }
         }
@@ -662,7 +691,14 @@ impl Hub {
     }
     fn event(&self, student: &str, p: &ToolPacket) -> Result<()> {
         let mut s = self.0.lock().unwrap();
-        let State { jobs, locked, clipboard_blocked, internet, vscode_blocked, .. } = &mut *s;
+        let State {
+            jobs,
+            locked,
+            clipboard_blocked,
+            internet,
+            vscode_blocked,
+            ..
+        } = &mut *s;
         let Some(j) = jobs.iter_mut().find(|j| j.packet.id == p.id) else {
             // A Student can finish an old popup after Teacher restart/history
             // eviction. Acknowledge/discard that event, never poison current jobs.
@@ -989,7 +1025,10 @@ fn serve(
         st.generation += 1;
         let g = st.generation;
         st.peers.insert(hello.student.clone(), g);
-        if capability.as_ref().is_some_and(|c| c["clipboard_blocked"] == 1) {
+        if capability
+            .as_ref()
+            .is_some_and(|c| c["clipboard_blocked"] == 1)
+        {
             st.clipboard_blocked.insert(hello.student.clone());
         } else {
             st.clipboard_blocked.remove(&hello.student);
@@ -1007,13 +1046,16 @@ fn serve(
         } else {
             st.locked.remove(&hello.student);
         }
-        if capability.as_ref().is_some_and(|c| c["vscode_blocked"] == 1) {
+        if capability
+            .as_ref()
+            .is_some_and(|c| c["vscode_blocked"] == 1)
+        {
             st.vscode_blocked.insert(hello.student.clone());
         } else {
             st.vscode_blocked.remove(&hello.student);
         }
         if let Some(c) = &capability {
-            st.capabilities.insert(hello.student.clone(), json!({"dev_update":c["dev_update"],"connection_popup":c["connection_popup"],"fs":c["fs"],"launch":c["launch"],"power":c["power"],"guard":c["guard"],"activity":c["activity"],"vscode":c["vscode"],"os":c["os"],"arch":c["arch"],"build":c["build"],"pid":c["pid"]}));
+            st.capabilities.insert(hello.student.clone(), json!({"dev_update":c["dev_update"],"connection_popup":c["connection_popup"],"fs":c["fs"],"screenshot":c["screenshot"],"website":c["website"],"launch":c["launch"],"power":c["power"],"guard":c["guard"],"activity":c["activity"],"vscode":c["vscode"],"os":c["os"],"arch":c["arch"],"build":c["build"],"pid":c["pid"]}));
         }
         g
     };
@@ -1466,6 +1508,8 @@ pub fn student(
                     capabilities["vscode"] = json!(u8::from(super::vscode_control::supported()));
                     capabilities["vscode_blocked"] =
                         json!(u8::from(super::vscode_control::is_applied()));
+                    capabilities["screenshot"] = json!(1);
+                    capabilities["website"] = json!(1);
                     hello.text = capabilities.to_string();
                     send(&mut s, &hello)?;
                     let ack = read(&mut s)?;
@@ -1562,17 +1606,20 @@ pub fn student(
                                 activity_monitoring = p.status == "on";
                                 activity_lifecycle.set_enabled(activity_monitoring);
                             }
-                            "launch" => launch::run(p, Arc::clone(&inbox)),
+                            "launch" | "website" => launch::run(p, Arc::clone(&inbox)),
                             "power" => power::run(p, Arc::clone(&inbox)),
                             "policy" => {
                                 let (guard, inbox) = (Arc::clone(&guard), Arc::clone(&inbox));
                                 thread::spawn(move || {
-                                    let outcome = serde_json::from_str::<crate::guard::Policy>(&p.text)
-                                        .context("Invalid access policy")
-                                        .and_then(|policy| guard.apply(policy));
+                                    let outcome =
+                                        serde_json::from_str::<crate::guard::Policy>(&p.text)
+                                            .context("Invalid access policy")
+                                            .and_then(|policy| guard.apply(policy));
                                     match outcome {
                                         Ok(()) => inbox.event(&p.id, "complete", "", 0),
-                                        Err(error) => inbox.event(&p.id, "error", &format!("{error:#}"), 0),
+                                        Err(error) => {
+                                            inbox.event(&p.id, "error", &format!("{error:#}"), 0)
+                                        }
                                     }
                                 });
                             }
@@ -1582,20 +1629,23 @@ pub fn student(
                             "vscode_policy" => {
                                 let inbox = Arc::clone(&inbox);
                                 thread::spawn(move || {
-                                    let outcome =
-                                        serde_json::from_str::<crate::vscode_control::VsCodePolicy>(&p.text)
-                                            .context("Invalid VS Code policy")
-                                            .and_then(|policy| {
-                                                policy.validate()?;
-                                                crate::vscode_control::apply(&policy)
-                                            });
+                                    let outcome = serde_json::from_str::<
+                                        crate::vscode_control::VsCodePolicy,
+                                    >(&p.text)
+                                    .context("Invalid VS Code policy")
+                                    .and_then(|policy| {
+                                        policy.validate()?;
+                                        crate::vscode_control::apply(&policy)
+                                    });
                                     match outcome {
                                         Ok(()) => inbox.event(&p.id, "complete", "", 0),
-                                        Err(error) => inbox.event(&p.id, "error", &format!("{error:#}"), 0),
+                                        Err(error) => {
+                                            inbox.event(&p.id, "error", &format!("{error:#}"), 0)
+                                        }
                                     }
                                 });
                             }
-                            "fs_send" | "fs_receive" => {
+                            "fs_send" | "fs_receive" | "screenshot" => {
                                 if fs_run.is_none() {
                                     fs_run = Some(fs_jobs::start(
                                         address,
@@ -1669,7 +1719,10 @@ pub fn student(
                             // feature-status toggle). Ignoring it keeps the whole tools
                             // connection alive instead of tearing it down and looping.
                             other => {
-                                info!(action = other, "Student ignored an unrecognized classroom tool message");
+                                info!(
+                                    action = other,
+                                    "Student ignored an unrecognized classroom tool message"
+                                );
                             }
                         }
                         for _ in 0..10 {
@@ -1995,8 +2048,11 @@ fn real_home() -> Result<PathBuf> {
             buffer.len(),
             &mut result,
         );
-        (status == 0 && !result.is_null() && !entry.pw_dir.is_null())
-            .then(|| PathBuf::from(std::ffi::OsStr::from_bytes(CStr::from_ptr(entry.pw_dir).to_bytes())))
+        (status == 0 && !result.is_null() && !entry.pw_dir.is_null()).then(|| {
+            PathBuf::from(std::ffi::OsStr::from_bytes(
+                CStr::from_ptr(entry.pw_dir).to_bytes(),
+            ))
+        })
     };
     home.filter(|h| h.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
@@ -2005,7 +2061,11 @@ fn real_home() -> Result<PathBuf> {
 #[cfg(not(windows))]
 fn user_folder(name: &str) -> Result<PathBuf> {
     let home = real_home()?;
-    Ok(if name.is_empty() { home } else { home.join(name) })
+    Ok(if name.is_empty() {
+        home
+    } else {
+        home.join(name)
+    })
 }
 fn desktop_folder() -> Result<PathBuf> {
     user_folder("Desktop")

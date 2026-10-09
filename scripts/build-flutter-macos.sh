@@ -4,6 +4,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FLUTTER="${FLUTTER_BIN:-/Users/mvmanh/Development/flutter-sdk/bin/flutter}"
 cd "$ROOT"
 export CARGO_TARGET_DIR="$ROOT/target"
+export RUSTC="${RUSTC:-$(rustup which --toolchain stable rustc)}"
+export RUSTDOC="${RUSTDOC:-$(rustup which --toolchain stable rustdoc)}"
 SIGN_MODE="${CLASSROOM_MAC_SIGN_MODE:-adhoc}"
 case "$SIGN_MODE" in
   adhoc) SIGN_OPTIONS=(--development-ad-hoc --manifest "$ROOT/target/teacher-development-signing.json") ;;

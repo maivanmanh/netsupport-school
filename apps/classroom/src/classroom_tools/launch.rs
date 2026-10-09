@@ -77,6 +77,73 @@ fn is_url(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     lower.starts_with("http://") || lower.starts_with("https://")
 }
+
+pub(super) fn validate_website(url: &str) -> Result<()> {
+    anyhow::ensure!(
+        url.len() <= 4096
+            && is_url(url)
+            && !url.chars().any(|c| c.is_control() || c.is_whitespace()),
+        "Enter an http:// or https:// website URL"
+    );
+    let authority = url
+        .split_once("://")
+        .map(|(_, rest)| rest.split(['/', '?', '#']).next().unwrap_or(""))
+        .unwrap_or("");
+    anyhow::ensure!(
+        !authority.is_empty() && !authority.contains('@'),
+        "Website host is missing or contains credentials"
+    );
+    Ok(())
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn open_website(url: &str) -> Result<()> {
+    use windows::{
+        core::{w, PCWSTR},
+        Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL},
+    };
+    validate_website(url)?;
+    let wide: Vec<u16> = url.encode_utf16().chain(Some(0)).collect();
+    // All UTF-16 arguments are NUL terminated and remain alive for this call.
+    // ShellExecute routes directly to the user's default browser; no command
+    // interpreter or environment expansion touches URL query/percent escapes.
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            w!("open"),
+            PCWSTR(wide.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    anyhow::ensure!(
+        result.0 as isize > 32,
+        "Windows could not open the default browser (code {})",
+        result.0 as isize
+    );
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn open_website(url: &str) -> Result<()> {
+    validate_website(url)?;
+    let opener = if cfg!(target_os = "macos") {
+        "/usr/bin/open"
+    } else {
+        "xdg-open"
+    };
+    let status = Command::new(opener)
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .context("Could not open the default browser")?;
+    anyhow::ensure!(status.success(), "Default browser refused the website");
+    Ok(())
+}
 #[cfg(windows)]
 fn has_separator(path: &str) -> bool {
     path.contains(['/', '\\'])
@@ -109,7 +176,9 @@ fn spawn(path: &str, args: &str) -> Result<()> {
     } else {
         anyhow::bail!("Program not found: {expanded}");
     }
-    let mut child = command.spawn().with_context(|| format!("Could not start {expanded}"))?;
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("Could not start {expanded}"))?;
     thread::spawn(move || {
         let _ = child.wait();
     });
@@ -120,7 +189,10 @@ fn spawn(path: &str, args: &str) -> Result<()> {
 fn spawn(path: &str, args: &str) -> Result<()> {
     let expanded = expand_env(path);
     let expanded = match expanded.strip_prefix("~/") {
-        Some(rest) => super::user_folder("")?.join(rest).to_string_lossy().into_owned(),
+        Some(rest) => super::user_folder("")?
+            .join(rest)
+            .to_string_lossy()
+            .into_owned(),
         None => expanded,
     };
     let list = split_args(&expand_env(args))?;
@@ -145,7 +217,9 @@ fn spawn(path: &str, args: &str) -> Result<()> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    let mut child = command.spawn().with_context(|| format!("Could not start {expanded}"))?;
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("Could not start {expanded}"))?;
     thread::spawn(move || {
         let _ = child.wait();
     });
@@ -158,6 +232,9 @@ pub(super) fn run(p: ToolPacket, inbox: Arc<Inbox>) {
         let outcome = serde_json::from_str::<Value>(&p.text)
             .context("Invalid launch request")
             .and_then(|request| {
+                if p.action == "website" {
+                    return open_website(request["url"].as_str().unwrap_or(""));
+                }
                 spawn(
                     request["path"].as_str().unwrap_or(""),
                     request["args"].as_str().unwrap_or(""),
@@ -182,8 +259,14 @@ mod tests {
 
     #[test]
     fn names_and_arguments_are_parsed() {
-        assert_eq!(display_name(r"C:\Program Files\Google\chrome.exe"), "chrome.exe");
-        assert_eq!(display_name("/Applications/Google Chrome.app/"), "Google Chrome.app");
+        assert_eq!(
+            display_name(r"C:\Program Files\Google\chrome.exe"),
+            "chrome.exe"
+        );
+        assert_eq!(
+            display_name("/Applications/Google Chrome.app/"),
+            "Google Chrome.app"
+        );
         assert_eq!(
             split_args(r#"--new-window "https://a.b/c d" 'x y' ''"#).unwrap(),
             ["--new-window", "https://a.b/c d", "x y", ""]
@@ -214,12 +297,25 @@ mod tests {
             st.capabilities.insert("new".into(), json!({"launch":1}));
         }
         let input = json!({"path":"C:/Program Files/Google/Chrome/Application/chrome.exe","args":"https://example.org"});
-        let refused = hub.submit("launch", &["old".into()], &input, &folder).unwrap_err();
+        let refused = hub
+            .submit("launch", &["old".into()], &input, &folder)
+            .unwrap_err();
         assert!(refused.to_string().contains("older build"));
-        assert!(hub.submit("launch", &["new".into()], &json!({"path":"  "}), &folder).is_err());
-        let id = hub.submit("launch", &["new".into()], &input, &folder).unwrap();
+        assert!(hub
+            .submit("launch", &["new".into()], &json!({"path":"  "}), &folder)
+            .is_err());
+        let id = hub
+            .submit("launch", &["new".into()], &input, &folder)
+            .unwrap();
         let queued = hub.0.lock().unwrap().queues["new"][0].clone();
-        assert_eq!((queued.action.as_str(), queued.id.as_str(), queued.name.as_str()), ("launch", id.as_str(), "chrome.exe"));
+        assert_eq!(
+            (
+                queued.action.as_str(),
+                queued.id.as_str(),
+                queued.name.as_str()
+            ),
+            ("launch", id.as_str(), "chrome.exe")
+        );
         assert!(queued.text.contains("https://example.org"));
     }
 
@@ -241,13 +337,35 @@ mod tests {
         }
         let policy = json!({"policy":{"internet":{"mode":"allow_only","rules":["*.wikipedia.org"]},"lease_minutes":30}});
         let empty = json!({"policy":{"internet":{"mode":"allow_only","rules":[]}}});
-        assert!(hub.submit("policy", &["guarded".into()], &empty, &folder).is_err());
-        let id = hub.submit("policy", &["guarded".into()], &policy, &folder).unwrap();
+        assert!(hub
+            .submit("policy", &["guarded".into()], &empty, &folder)
+            .is_err());
+        let id = hub
+            .submit("policy", &["guarded".into()], &policy, &folder)
+            .unwrap();
         let queued = hub.0.lock().unwrap().queues["guarded"][0].clone();
-        assert_eq!((queued.action.as_str(), queued.id.as_str(), queued.name.as_str()), ("policy", id.as_str(), "allow_only"));
+        assert_eq!(
+            (
+                queued.action.as_str(),
+                queued.id.as_str(),
+                queued.name.as_str()
+            ),
+            ("policy", id.as_str(), "allow_only")
+        );
         // A completed "open" job clears the Teacher's restricted marker.
-        hub.0.lock().unwrap().internet.insert("guarded".into(), "allow_only".into());
-        let open = hub.submit("policy", &["guarded".into()], &json!({"policy":{"internet":{"mode":"open"}}}), &folder).unwrap();
+        hub.0
+            .lock()
+            .unwrap()
+            .internet
+            .insert("guarded".into(), "allow_only".into());
+        let open = hub
+            .submit(
+                "policy",
+                &["guarded".into()],
+                &json!({"policy":{"internet":{"mode":"open"}}}),
+                &folder,
+            )
+            .unwrap();
         let mut done = ToolPacket::default();
         done.id = open;
         done.status = "complete".into();
@@ -267,12 +385,20 @@ mod tests {
             st.capabilities.insert("guarded".into(), json!({"guard":1}));
         }
         let bad = json!({"policy":{"enabled":true,"allowed":["no-dot"]}});
-        assert!(hub.submit("vscode_policy", &["guarded".into()], &bad, &folder).is_err());
+        assert!(hub
+            .submit("vscode_policy", &["guarded".into()], &bad, &folder)
+            .is_err());
         let policy = json!({"policy":{"enabled":true,"allowed":["ms-python.python"]}});
-        let id = hub.submit("vscode_policy", &["guarded".into()], &policy, &folder).unwrap();
+        let id = hub
+            .submit("vscode_policy", &["guarded".into()], &policy, &folder)
+            .unwrap();
         let queued = hub.0.lock().unwrap().queues["guarded"][0].clone();
         assert_eq!(
-            (queued.action.as_str(), queued.id.as_str(), queued.name.as_str()),
+            (
+                queued.action.as_str(),
+                queued.id.as_str(),
+                queued.name.as_str()
+            ),
             ("vscode_policy", id.as_str(), "vscode_block")
         );
         let mut done = ToolPacket::default();
@@ -284,12 +410,17 @@ mod tests {
             .unwrap()
             .contains(&json!("guarded")));
         let clear = json!({"policy":{"enabled":false,"allowed":[]}});
-        let id2 = hub.submit("vscode_policy", &["guarded".into()], &clear, &folder).unwrap();
+        let id2 = hub
+            .submit("vscode_policy", &["guarded".into()], &clear, &folder)
+            .unwrap();
         let mut done2 = ToolPacket::default();
         done2.id = id2;
         done2.status = "complete".into();
         hub.event("guarded", &done2).unwrap();
-        assert!(hub.snapshot()["vscode_blocked"].as_array().unwrap().is_empty());
+        assert!(hub.snapshot()["vscode_blocked"]
+            .as_array()
+            .unwrap()
+            .is_empty());
     }
 
     #[cfg(unix)]

@@ -104,6 +104,52 @@ fn bounded(text: String) -> Result<String> {
 }
 
 impl Hub {
+    pub fn screenshot(&self, student: (&str, &str), dest: &Path) -> Result<String> {
+        self.fs_student_ready(&[student.0.to_owned()])?;
+        anyhow::ensure!(
+            self.0
+                .lock()
+                .unwrap()
+                .capabilities
+                .get(student.0)
+                .is_some_and(|c| c["screenshot"] == 1),
+            "Update this Student to enable direct screenshots"
+        );
+        anyhow::ensure!(
+            dest.is_absolute(),
+            "Screenshot staging path must be absolute"
+        );
+        let id = nonce()?;
+        let token = nonce()?;
+        let mut request = packet("screenshot");
+        request.id.clone_from(&id);
+        request.token.clone_from(&token);
+        request.name = "Screenshot.png".into();
+        request.text = "{}".into();
+        self.fs_add_job(FsJob {
+            id: id.clone(),
+            token,
+            kind: Kind::Fetch,
+            cancel: Arc::new(AtomicBool::new(false)),
+            flat: true,
+            dest: dest.to_owned(),
+            local: Vec::new(),
+            targets: HashMap::from([(
+                student.0.to_owned(),
+                FsTarget {
+                    name: student.1.to_owned(),
+                    folder: dest.to_owned(),
+                    status: "queued".into(),
+                    progress: Progress::default(),
+                    error: String::new(),
+                    changed: Instant::now(),
+                },
+            )]),
+        })?;
+        self.fs_enqueue(student.0, request);
+        Ok(id)
+    }
+
     fn fs_student_ready(&self, ids: &[String]) -> Result<()> {
         let st = self.0.lock().unwrap();
         for id in ids {
@@ -147,7 +193,12 @@ impl Hub {
 
     /// Bulk collection from `recipients` (`(id, display name)`) into one new
     /// Teacher folder `root`, one sub-folder per Student.
-    pub fn fs_collect(&self, recipients: &[(String, String)], input: &Value, root: &Path) -> Result<String> {
+    pub fn fs_collect(
+        &self,
+        recipients: &[(String, String)],
+        input: &Value,
+        root: &Path,
+    ) -> Result<String> {
         anyhow::ensure!(
             !recipients.is_empty() && recipients.len() <= 64,
             "Select online Students"
@@ -180,14 +231,17 @@ impl Hub {
                     folder = format!("{folder}-{}", &student[..student.len().min(4)]);
                     used.insert(folder.to_ascii_lowercase());
                 }
-                (student.clone(), FsTarget {
-                    name: name.clone(),
-                    folder: root.join(folder),
-                    status: "queued".into(),
-                    progress: Progress::default(),
-                    error: String::new(),
-                    changed: Instant::now(),
-                })
+                (
+                    student.clone(),
+                    FsTarget {
+                        name: name.clone(),
+                        folder: root.join(folder),
+                        status: "queued".into(),
+                        progress: Progress::default(),
+                        error: String::new(),
+                        changed: Instant::now(),
+                    },
+                )
             })
             .collect();
         self.fs_add_job(FsJob {
@@ -339,10 +393,23 @@ impl Hub {
         });
         Ok(id)
     }
-    pub(super) fn fs_register_list(&self, id: &str, student: &str, token: &str, body: Option<Value>) {
+    pub(super) fn fs_register_list(
+        &self,
+        id: &str,
+        student: &str,
+        token: &str,
+        body: Option<Value>,
+    ) {
         self.fs_register_slot(id, student, token, body, false);
     }
-    pub(super) fn fs_register_slot(&self, id: &str, student: &str, token: &str, body: Option<Value>, is_activity: bool) {
+    pub(super) fn fs_register_slot(
+        &self,
+        id: &str,
+        student: &str,
+        token: &str,
+        body: Option<Value>,
+        is_activity: bool,
+    ) {
         let mut st = self.3.lock().unwrap();
         if st.lists.len() >= MAX_LISTS {
             if let Some(oldest) = st
@@ -545,13 +612,11 @@ fn download(s: &mut TcpStream, hello: &ToolPacket, hub: &Hub) -> Result<()> {
         max_total_mb: 32 * 1024,
     };
     let outcome = match file_tree::plan(&local, &everything, true, &cancel) {
-        Ok(plan) => file_tree::send_tree(
-            s,
-            &plan,
-            file_tree::INTERACTIVE_DELAY,
-            &cancel,
-            &mut |p| hub.fs_progress(&hello.id, &hello.student, p),
-        ),
+        Ok(plan) => {
+            file_tree::send_tree(s, &plan, file_tree::INTERACTIVE_DELAY, &cancel, &mut |p| {
+                hub.fs_progress(&hello.id, &hello.student, p)
+            })
+        }
         Err(error) => {
             let mut abort = packet("abort");
             abort.text = file_tree::describe(&error);
@@ -622,7 +687,9 @@ fn connect(
         send(&mut s, &hello)?;
         match read(&mut s)?.action.as_str() {
             "ready" => return Ok(s),
-            "busy" => thread::sleep(Duration::from_millis(500 + u64::from(p.id.as_bytes()[0]) * 4)),
+            "busy" => thread::sleep(Duration::from_millis(
+                500 + u64::from(p.id.as_bytes()[0]) * 4,
+            )),
             _ => anyhow::bail!("Teacher rejected the file request"),
         }
     }
@@ -651,7 +718,31 @@ fn run(
     cancel: &AtomicBool,
     stop: &AtomicBool,
 ) -> Result<()> {
-    let params: Value = serde_json::from_str(&p.text).context("Invalid file request")?;
+    let mut params: Value = serde_json::from_str(&p.text).context("Invalid file request")?;
+    struct ScreenshotTemp(Option<PathBuf>);
+    impl Drop for ScreenshotTemp {
+        fn drop(&mut self) {
+            if let Some(path) = &self.0 {
+                let _ = std::fs::remove_dir_all(path);
+            }
+        }
+    }
+    let mut temporary = ScreenshotTemp(None);
+    if p.action == "screenshot" {
+        let dir = std::env::temp_dir().join(format!("classroom-screenshot-{}", nonce()?));
+        std::fs::create_dir(&dir)?;
+        temporary.0 = Some(dir.clone());
+        let path = dir.join("Screenshot.png");
+        if let Err(error) = super::screenshot::capture(&path, cancel) {
+            let mut s = connect(address, "fs_upload", p, identity, cancel, stop)?;
+            let mut abort = packet("abort");
+            abort.text = file_tree::describe(&error);
+            send(&mut s, &abort)?;
+            return Ok(());
+        }
+        params = json!({"paths":[path],"keep_root":true,"files_only":true,"fast":true,
+            "filter":{"exts":["png"],"recursive":false,"hidden":false,"max_file_mb":32,"max_total_mb":32}});
+    }
     if p.action == "fs_receive" {
         let dest = file_tree::resolve(params["dest"].as_str().unwrap_or(""))?;
         let mut s = connect(address, "fs_download", p, identity, cancel, stop)?;
@@ -799,7 +890,10 @@ mod tests {
             .unwrap();
         // The queued Student request carries a token for this job only.
         let request = hub.0.lock().unwrap().queues["stu1"][0].clone();
-        assert_eq!((request.action.as_str(), request.id.as_str()), ("fs_send", job.as_str()));
+        assert_eq!(
+            (request.action.as_str(), request.id.as_str()),
+            ("fs_send", job.as_str())
+        );
 
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = match listener.local_addr().unwrap() {
@@ -818,8 +912,14 @@ mod tests {
         server.join().unwrap();
 
         let folder = root.join("PC 01");
-        assert_eq!(fs::read_to_string(folder.join("essay.docx")).unwrap(), "words");
-        assert_eq!(fs::read_to_string(folder.join("sub/lab.docx")).unwrap(), "lab");
+        assert_eq!(
+            fs::read_to_string(folder.join("essay.docx")).unwrap(),
+            "words"
+        );
+        assert_eq!(
+            fs::read_to_string(folder.join("sub/lab.docx")).unwrap(),
+            "lab"
+        );
         assert!(!folder.join("notes.txt").exists());
         let snapshot = hub.fs_snapshot();
         let target = &snapshot[0]["targets"][0];
@@ -860,7 +960,12 @@ mod tests {
         ready_student(&hub, "s");
         let dir = temp("folder");
         let error = hub
-            .fs_transfer(true, ("s", "S"), &[dir.to_string_lossy().into_owned()], "~desktop")
+            .fs_transfer(
+                true,
+                ("s", "S"),
+                &[dir.to_string_lossy().into_owned()],
+                "~desktop",
+            )
             .unwrap_err();
         assert!(error.to_string().contains("Only existing files"));
         fs::remove_dir_all(dir).unwrap();

@@ -46,14 +46,14 @@ void SaveScreenshot(
     const auto ch = static_cast<unsigned char>(raw_ch);
     safe_student.push_back((ch >= 'a' && ch <= 'z') ||
                                    (ch >= 'A' && ch <= 'Z') ||
-                                   (ch >= '0' && ch <= '9')
+                                   (ch >= '0' && ch <= '9') || ch == '-' || ch == '_'
                                ? static_cast<wchar_t>(ch)
                                : L'_');
   }
   if (safe_student.empty())
     safe_student = L"Student";
   std::wostringstream stem;
-  stem << L"Classroom_" << safe_student << L"_" << std::setfill(L'0')
+  stem << safe_student << L"_" << std::setfill(L'0')
        << std::setw(4) << now.wYear << L"-" << std::setw(2) << now.wMonth
        << L"-" << std::setw(2) << now.wDay << L"_" << std::setw(2) << now.wHour
        << L"-" << std::setw(2) << now.wMinute << L"-" << std::setw(2)

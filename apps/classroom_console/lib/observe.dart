@@ -49,56 +49,6 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
   Map<String, dynamic> stats = {};
   final focus = FocusNode();
   final screenshotBoundary = GlobalKey();
-  int screenshotSequence = 0, screenshotFrame = 0;
-  DateTime? screenshotStarted;
-  bool screenshotPending = false;
-
-  void checkScreenshotRequest() {
-    if (!mounted || closing) return;
-    final request = widget.agent.state['screenshot_request'];
-    if (request is List &&
-        request.length == 2 &&
-        request[0] == widget.studentId &&
-        request[1] is num &&
-        (request[1] as num).toInt() > screenshotSequence) {
-      screenshotSequence = (request[1] as num).toInt();
-      screenshotFrame = (stats['sequence'] as num? ?? 0).toInt();
-      screenshotStarted = DateTime.now();
-      screenshotPending = true;
-    }
-    if (!screenshotPending) return;
-    final timedOut =
-        DateTime.now().difference(screenshotStarted!).inSeconds >= 15;
-    final ready =
-        live &&
-        path == view['surface'] &&
-        (stats['sequence'] as num? ?? 0).toInt() > screenshotFrame;
-    if (!ready && !timedOut) return;
-    screenshotPending = false;
-    unawaited(
-      widget.agent.command(
-        'screenshot_done',
-        [widget.studentId],
-        {'sequence': screenshotSequence},
-      ),
-    );
-    if (timedOut && !ready) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Screenshot failed: no fresh Student frame within 15 seconds.',
-          ),
-        ),
-      );
-      return;
-    }
-    unawaited(() async {
-      // Let Flutter paint the latest native texture before Windows captures it.
-      await WidgetsBinding.instance.endOfFrame;
-      if (mounted && !closing) await saveStudentScreenshot();
-    }());
-  }
-
   final viewportScroll = ScrollController();
   final horizontalScroll = ScrollController();
   Timer? chromeTimer;
@@ -423,16 +373,10 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
           ),
         ),
       );
-    } catch (e) {
+    } on PlatformException catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              e is PlatformException
-                  ? e.message ?? 'Could not save screenshot'
-                  : 'Could not save screenshot: $e',
-            ),
-          ),
+          SnackBar(content: Text(e.message ?? 'Could not save screenshot')),
         );
       }
     }
@@ -526,7 +470,6 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
   void changed() {
     syncCursor();
     if (closing) return;
-    checkScreenshotRequest();
     final request = widget.agent.state['observe_focus'] as List?;
     if (!closing &&
         request != null &&
@@ -750,7 +693,6 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
         startPolling(fast: false);
       }
       polling = false;
-      checkScreenshotRequest();
       restoreControlIfReady();
       syncSystemKeys();
     }

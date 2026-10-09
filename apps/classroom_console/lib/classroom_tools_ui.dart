@@ -128,6 +128,7 @@ class ToolActivity extends ChangeNotifier {
           !_hidden.contains(id) &&
           // Launch and power results are shown inside their own dialogs/menus.
           job['kind'] != 'launch' &&
+          job['kind'] != 'website' &&
           job['kind'] != 'power' &&
           job['kind'] != 'policy' &&
           ((job['kind'] == 'file' || job['kind'] == 'update') ||

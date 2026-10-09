@@ -1,3 +1,29 @@
+## 2026-10-09 — Open website and short screenshot filenames
+
+Added audience-aware Open website dialog with durable, one-click recent URLs
+(20, deduplicated), validation and per-Student delivery status. Student opens
+HTTP/HTTPS through the OS default browser. Screenshot names now omit Classroom
+prefix/random suffix on both platforms. Mac/Windows Rust checks and Flutter
+analyze passed; no tests run. Runtime browser/history restart verification and
+physical 35–40-machine launch remain pending. See
+[details](diagnostics/2026-10-09-open-websites.md).
+Paired `paired-websites-20261009` build and both Student updates completed;
+Teacher reopened at the same path. Mac Student log explicitly reports TCC
+capture denied after signing: owner must grant Screen Recording at
+`/Users/lolem/Classroom/Classroom Student.app`, then restart Student. No privacy
+automation performed. Open website does not require capture permission.
+
+## 2026-10-09 — Corrected direct Student Screenshot
+
+Owner clarified that Screenshot must request a new capture on Student and
+receive its binary, with no Observe/Control window. Removed the earlier bridge;
+implemented token-bound tools request, bounded Student capture/PNG file upload,
+and Teacher native Desktop save of the exact bytes. Rust check and Flutter
+analyze passed; paired build completed. Teacher restarted at the existing path.
+After owner deleted both home deployments, rebootstrap uses `/Users/lolem/Classroom`
+and `C:\Users\lolem\Classroom`. Manual menu-to-Desktop verification remains.
+See [details](diagnostics/2026-10-09-direct-student-screenshot.md).
+
 ## 2026-10-09 — Student context menu Screenshot
 
 Added icons to all student context items and Screenshot, which opens/focuses

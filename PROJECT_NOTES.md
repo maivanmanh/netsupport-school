@@ -3,6 +3,18 @@
 ## Dọn bản deploy cũ (09-10-2026)
 
 Giữ một đường dẫn triển khai đang dùng cho mỗi vai trò, cả Teacher và Student.
+Mỗi lần deploy Student: kill đúng process/helper cũ, xóa binary/deployment cũ,
+rồi chạy bản mới; không để hai bản chạy song song. Settings/profile/device ID/log
+phải được giữ riêng. Updater dùng cùng thư mục cài đặt và chỉ giữ backup tạm
+trong lúc chờ reconnect để còn rollback nếu bản mới lỗi.
+
+Sau khi owner tự xóa các thư mục deploy home ngày 09-10, hai Student đã bootstrap
+lại qua SSH và dùng đường dẫn cố định:
+- Mac `192.168.100.254`: `/Users/lolem/Classroom/Classroom Student.app`.
+- Windows `192.168.100.155`: `C:\Users\lolem\Classroom\ClassroomStudent.exe`,
+  interactive scheduled task `Classroom Student`.
+- Teacher giữ `target/present-recovery-build/Classroom Console.app`.
+
 Tái sử dụng đường dẫn đó cho các lượt triển khai tiếp theo; không tạo thêm thư mục
 phiên bản trong home khi không cần thiết. Dừng đúng app/helper trước khi thay.
 Giữ settings, profile, device ID và logs ngoài phần binary cần thay. Student
