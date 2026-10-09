@@ -291,6 +291,25 @@ capture teardown/start and no clearing of the last snapshot. Received image size
 still preserve aspect/even-pixel bounds and never upscale. Capture cost therefore
 stays at the existing maximum; smaller tiers save JPEG/network/decode work.
 
+### Sharper grid previews (2026-10-09)
+
+Grid titles/actions now overlay the bottom of the thumbnail on an 84%-opaque
+white background; cards no longer reserve a separate footer. Image fitting
+preserves the entire source aspect ratio.
+
+The three logical tiers above remain unchanged. New Students advertise a 960px
+thumbnail ceiling in the optional Protobuf `ThumbnailHello.max_width` field.
+Teacher requests 480×270 / 720×405 / 960×540 respectively from capable peers,
+or the previous dimensions from legacy peers. JPEG quality is requested at 85,
+with 4:4:4 color sampling initially and progressive bounded quality fallback.
+Requests larger than legacy bounds permit up to 192 KiB; legacy requests keep
+the 48 KiB limit. Native capture is bounded to 960×540 and remains stable across
+tier changes, preserving aspect ratio without upscaling. Refresh cadence stays
+unchanged; snapshots remain isolated from presentation media/control queues.
+Maximum thumbnail payload at 40 peers / two-second cadence is about 31.5 Mbps
+before framing overhead; this is a budget calculation, not a lab measurement.
+Additional capture/decode cost and readability need real classroom validation.
+
 ## Kéo thả lên máy trong danh sách (2026-10-06)
 
 Trong **Grid / List / Compact List**, kéo file hoặc folder từ Finder/Explorer lên

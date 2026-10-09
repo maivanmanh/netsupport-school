@@ -90,6 +90,9 @@ pub mod envelope {
 pub struct ThumbnailHello {
     #[prost(string, tag = "1")]
     pub instance_id: String,
+    /// Zero for legacy peers (480px / 48 KiB); current peers offer up to 960px.
+    #[prost(uint32, tag = "2")]
+    pub max_width: u32,
 }
 #[derive(Clone, PartialEq, Message)]
 pub struct ThumbnailRequest {

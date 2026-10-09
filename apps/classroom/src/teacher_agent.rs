@@ -179,8 +179,18 @@ async fn send_frame(socket: &mut TcpStream, value: &Value) -> Result<()> {
     Ok(())
 }
 fn state_json(state: &Snapshot, sent: &mut HashMap<String, u64>) -> Value {
+    // Base64 expands bytes by 4/3. Bound each publication well below the 8 MiB
+    // IPC frame limit even if 40 high-detail snapshots arrive together. Omitted
+    // sequences remain unsent, so the next publication can deliver their latest
+    // snapshot without introducing a per-frame queue.
+    let mut thumbnail_budget = 4 * 1024 * 1024_usize;
     let students: Vec<_> = state.rows.iter().map(|row| {
         let thumbnail = row.thumbnail.as_ref().filter(|t| sent.get(&row.instance_id) != Some(&t.sequence))
+            .filter(|t| {
+                if t.jpeg.len() > thumbnail_budget { return false; }
+                thumbnail_budget -= t.jpeg.len();
+                true
+            })
             .map(|t| { sent.insert(row.instance_id.clone(), t.sequence);
                 json!({"sequence":t.sequence,"width":t.width,"height":t.height,"jpeg":STANDARD.encode(&t.jpeg)}) });
         let expected = state.presentation.as_ref().is_some_and(|p| p.includes(&row.instance_id));

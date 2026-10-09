@@ -1,3 +1,16 @@
+## 2026-10-09 — Compact grid and sharper preview tiers
+
+Moved title/actions into a translucent white bottom overlay, removed footer
+height, and preserved full screen aspect ratio. Negotiated sharper 480/720/960px
+snapshots from capable Students, keeping legacy dimensions for older peers.
+Raised bounded JPEG budget for larger snapshots and requested quality85 with
+progressive fallback. Flutter analyze and native cargo check passed; no tests run.
+Paired build and Teacher/both Student updates completed; both endpoints online.
+Windows delivers expanded 860×540 previews. Mac TCC denies capture after signing:
+paused for manual Screen Recording grant to `/Users/lolem/Classroom/Classroom Student.app`
+on `.254`, then restart. Real classroom load/readability and visual review pending.
+See [details](diagnostics/2026-10-09-sharp-grid.md).
+
 ## 2026-10-09 — Website icon and saved URL suggestions
 
 Owner confirmed Open website working. Changed toolbar to matching icon-only

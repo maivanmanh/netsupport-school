@@ -133,7 +133,10 @@ pub struct ObserveJob {
     pub class_broadcast: bool,
 }
 
-const MAX_JPEG: usize = 48 * 1024;
+const MAX_JPEG: usize = 192 * 1024;
+const LEGACY_MAX_JPEG: usize = 48 * 1024;
+// Only the dedicated snapshot socket grows; control-plane framing stays 64 KiB.
+const MAX_MONITOR_FRAME: usize = MAX_JPEG + 1024;
 const MAX_PEERS: usize = 64;
 
 pub struct Worker {
@@ -196,7 +199,7 @@ fn envelope(payload: Payload) -> Envelope {
 fn send(socket: &mut TcpStream, payload: Payload) -> Result<()> {
     let data = envelope(payload).encode_to_vec();
     anyhow::ensure!(
-        data.len() <= protocol::MAX_CONTROL_FRAME_BYTES,
+        data.len() <= MAX_MONITOR_FRAME,
         "monitoring frame too large"
     );
     socket.write_all(&u32::try_from(data.len())?.to_be_bytes())?;
@@ -208,7 +211,7 @@ fn read(socket: &mut TcpStream) -> Result<Payload> {
     socket.read_exact(&mut prefix)?;
     let size = usize::try_from(u32::from_be_bytes(prefix))?;
     anyhow::ensure!(
-        size > 0 && size <= protocol::MAX_CONTROL_FRAME_BYTES,
+        size > 0 && size <= MAX_MONITOR_FRAME,
         "invalid monitoring frame length"
     );
     let mut bytes = vec![0; size];
@@ -387,8 +390,15 @@ fn serve(
             0 => settings.width,
             width => width,
         };
+        // Negotiate sharper snapshots without sending unsupported requests to
+        // legacy Students. Logical UI tiers remain 240/360/480.
+        let width = if hello.max_width >= 960 {
+            (width * 2).min(960)
+        } else {
+            width.min(480)
+        };
         let height = if tier == 0 {
-            settings.height
+            (u64::from(width) * u64::from(settings.height) / u64::from(settings.width)) as u32
         } else {
             width * 9 / 16
         };
@@ -399,7 +409,7 @@ fn serve(
                 width,
                 height,
                 interval_ms: settings.interval_ms,
-                quality: u32::from(settings.jpeg_quality),
+                quality: u32::from(settings.jpeg_quality.max(85)),
             }),
         )?;
         let Payload::ThumbnailFrame(frame) = read(socket)? else {
@@ -439,11 +449,11 @@ fn serve(
 }
 fn decode(frame: &ThumbnailFrame) -> Result<RoomThumbnail> {
     anyhow::ensure!(
-        frame.width > 0 && frame.width <= 480 && frame.height > 0 && frame.height <= 270,
+        frame.width > 0 && frame.width <= 960 && frame.height > 0 && frame.height <= 540,
         "thumbnail dimensions exceed budget"
     );
     let mut decoder = jpeg_decoder::Decoder::new(frame.jpeg.as_slice());
-    decoder.set_max_decoding_buffer_size(480 * 270 * 4);
+    decoder.set_max_decoding_buffer_size(960 * 540 * 4);
     decoder.read_info()?;
     let header = decoder.info().context("JPEG header missing")?;
     anyhow::ensure!(
@@ -525,6 +535,7 @@ fn capture_requests(
         socket,
         Payload::ThumbnailHello(ThumbnailHello {
             instance_id: identity.to_owned(),
+            max_width: 960,
         }),
     )?;
     let mut publisher: Option<super::observation::Publisher> = None;
@@ -581,8 +592,8 @@ fn capture_requests(
             anyhow::bail!("expected snapshot request")
         };
         anyhow::ensure!(
-            (2..=480).contains(&request.width)
-                && (2..=270).contains(&request.height)
+            (2..=960).contains(&request.width)
+                && (2..=540).contains(&request.height)
                 && (1000..=10000).contains(&request.interval_ms)
                 && (30..=85).contains(&request.quality),
             "invalid thumbnail request budget"
@@ -623,8 +634,8 @@ fn capture_requests(
                 let mut source = PlatformCapture::new();
                 match source.start_thumbnail(CaptureConfig {
                     display_index: 0,
-                    width: 480,
-                    height: 270,
+                    width: 960,
+                    height: 540,
                     max_fps: 1,
                 }) {
                     Ok(()) => {
@@ -686,7 +697,7 @@ fn capture_requests(
     Ok(())
 }
 // One stable native capture per thumbnail session. Tier changes only resample a
-// bounded480×270 snapshot; no teardown/startup or blank initial capture frame.
+// bounded 960×540 snapshot; no teardown/startup or blank initial capture frame.
 fn resize_thumbnail(source: Vec<u8>, sw: u32, sh: u32, limit: (u32, u32)) -> (Vec<u8>, u32, u32) {
     let scale = (f64::from(limit.0) / f64::from(sw))
         .min(f64::from(limit.1) / f64::from(sh))
@@ -725,7 +736,7 @@ fn encode(
     limits: (u32, u32),
 ) -> Result<ThumbnailFrame> {
     anyhow::ensure!(
-        pixels.width > 0 && pixels.width <= 480 && pixels.height > 0 && pixels.height <= 270,
+        pixels.width > 0 && pixels.width <= 960 && pixels.height > 0 && pixels.height <= 540,
         "capture thumbnail bounds invalid"
     );
     let pitch = usize::try_from(pixels.row_pitch)?;
@@ -742,22 +753,40 @@ fn encode(
         .collect();
     let (packed, width, height) = resize_thumbnail(packed, pixels.width, pixels.height, limits);
     let mut jpeg = Vec::new();
-    jpeg_encoder::Encoder::new(&mut jpeg, quality).encode(
+    let mut encoder = jpeg_encoder::Encoder::new(&mut jpeg, quality);
+    encoder.set_sampling_factor(jpeg_encoder::SamplingFactor::F_1_1);
+    encoder.encode(
         &packed,
         u16::try_from(width)?,
         u16::try_from(height)?,
         jpeg_encoder::ColorType::Bgra,
     )?;
-    if jpeg.len() > MAX_JPEG {
+    // Legacy Teachers accept only 48 KiB. Larger requests prove the Teacher
+    // understands the expanded bounded budget; never queue multiple snapshots.
+    let byte_budget = if limits.0 > 480 || limits.1 > 270 {
+        MAX_JPEG
+    } else {
+        LEGACY_MAX_JPEG
+    };
+    for fallback in [75, 65, 50, 30] {
+        if jpeg.len() <= byte_budget {
+            break;
+        }
+        if fallback >= quality {
+            continue;
+        }
         jpeg.clear();
-        jpeg_encoder::Encoder::new(&mut jpeg, 30).encode(
+        jpeg_encoder::Encoder::new(&mut jpeg, fallback).encode(
             &packed,
             u16::try_from(width)?,
             u16::try_from(height)?,
             jpeg_encoder::ColorType::Bgra,
         )?;
     }
-    anyhow::ensure!(jpeg.len() <= MAX_JPEG, "thumbnail JPEG exceeds byte budget");
+    anyhow::ensure!(
+        jpeg.len() <= byte_budget,
+        "thumbnail JPEG exceeds byte budget"
+    );
     Ok(ThumbnailFrame {
         width,
         height,
@@ -962,6 +991,7 @@ mod tests {
                 &mut tx,
                 Payload::ThumbnailHello(ThumbnailHello {
                     instance_id: "registered".into(),
+                    ..Default::default()
                 }),
             )
             .unwrap();

@@ -1545,7 +1545,7 @@ class _ConsoleState extends State<Console> with WindowListener {
       crossAxisCount: columns,
       crossAxisSpacing: 16,
       mainAxisSpacing: 16,
-      mainAxisExtent: itemWidth * 9 / 16 + 64,
+      mainAxisExtent: itemWidth * 9 / 16,
     );
   }
 
@@ -1553,7 +1553,7 @@ class _ConsoleState extends State<Console> with WindowListener {
     if (gridAuto) {
       var columns = ((width + 16) / 316).round().clamp(1, count.clamp(1, 12));
       // Avoid an oversized single card hiding its title/actions below the viewport.
-      final fittingWidth = (height - 64).clamp(100, double.infinity) * 16 / 9;
+      final fittingWidth = (height - 8).clamp(100, double.infinity) * 16 / 9;
       final fittingColumns = ((width + 16) / (fittingWidth + 16)).ceil().clamp(
         1,
         12,
@@ -1783,7 +1783,12 @@ class _ConsoleState extends State<Console> with WindowListener {
                     color: Colors.blueGrey,
                   ),
                 )
-              : Image.memory(bytes, fit: BoxFit.cover, gaplessPlayback: true),
+              : Image.memory(
+                  bytes,
+                  fit: BoxFit.contain,
+                  filterQuality: FilterQuality.high,
+                  gaplessPlayback: true,
+                ),
         ),
       ),
     );
@@ -1838,16 +1843,25 @@ class _ConsoleState extends State<Console> with WindowListener {
         ),
         IconButton(
           tooltip: 'Browse and collect files',
+          visualDensity: VisualDensity.compact,
+          constraints: const BoxConstraints(minWidth: 28, minHeight: 32),
+          padding: const EdgeInsets.all(4),
           icon: const Icon(Icons.folder_copy_outlined, size: 17),
           onPressed: r['online'] == true ? () => agent.openFiles(r) : null,
         ),
         IconButton(
           tooltip: 'Open windows, browser tabs and downloads',
+          visualDensity: VisualDensity.compact,
+          constraints: const BoxConstraints(minWidth: 28, minHeight: 32),
+          padding: const EdgeInsets.all(4),
           icon: const Icon(Icons.visibility_outlined, size: 17),
           onPressed: r['online'] == true ? () => agent.openActivity(r) : null,
         ),
         IconButton(
           tooltip: 'Inspect screen',
+          visualDensity: VisualDensity.compact,
+          constraints: const BoxConstraints(minWidth: 28, minHeight: 32),
+          padding: const EdgeInsets.all(4),
           icon: const Icon(Icons.open_in_full, size: 17),
           onPressed: () => inspect(r),
         ),
@@ -1878,12 +1892,21 @@ class _ConsoleState extends State<Console> with WindowListener {
                   ],
                 ),
               )
-            : Column(
+            : Stack(
+                fit: StackFit.expand,
                 children: [
-                  Expanded(child: image(r, flushTop: true)),
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(10, 6, 10, 4),
-                    child: SizedBox(height: 44, child: title),
+                  image(r, flushTop: true),
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    child: ColoredBox(
+                      color: Colors.white.withValues(alpha: 0.84),
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(8, 4, 8, 4),
+                        child: SizedBox(height: 44, child: title),
+                      ),
+                    ),
                   ),
                 ],
               ),
