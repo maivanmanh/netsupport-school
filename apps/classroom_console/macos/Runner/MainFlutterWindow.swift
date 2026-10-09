@@ -8,7 +8,17 @@ import ApplicationServices
 import Network
 
 class MainFlutterWindow: NSWindow {
+  private var controlKeyboard: ClassroomControlKeyboard?
   override func awakeFromNib() {
+    // Retain the seen marker when moving this standalone assistive app out of
+    // App Sandbox. This is our UI preference, never a system privacy grant.
+    let seenKey = "classroom.permissions.onboardingSeen"
+    if UserDefaults.standard.object(forKey: seenKey) == nil {
+      let legacy = NSHomeDirectory() + "/Library/Containers/com.classroom.classroomConsole/Data/Library/Preferences/com.classroom.classroomConsole.plist"
+      if let previous = NSDictionary(contentsOfFile: legacy), previous[seenKey] as? Bool == true {
+        UserDefaults.standard.set(true, forKey: seenKey)
+      }
+    }
     self.backgroundColor = NSColor(red: 0.953, green: 0.961, blue: 0.976, alpha: 1)
     let flutterViewController = FlutterViewController()
     let windowFrame = self.frame
@@ -21,8 +31,16 @@ class MainFlutterWindow: NSWindow {
     var texture: ObserveTexture?
     var textureID: Int64?
     var timer: Timer?
+    controlKeyboard = ClassroomControlKeyboard(window: self, channel: textureChannel)
     textureChannel.setMethodCallHandler { call, result in
       switch call.method {
+      case "captureSystemKeys":
+        guard let enabled = call.arguments as? Bool else { result(false); return }
+        if self.controlKeyboard?.setEnabled(enabled) == true {
+          result(nil)
+        } else {
+          result(FlutterError(code: "keyboard_permission", message: "Allow Accessibility for this Teacher app to forward macOS shortcuts.", details: Bundle.main.bundlePath))
+        }
       case "attach":
         guard let args = call.arguments as? [String: Any], let path = args["path"] as? String else {
           result(FlutterError(code: "invalid_path", message: "Observe surface missing", details: nil)); return
@@ -494,5 +512,87 @@ private enum ClassroomPermissions {
     queue.asyncAfter(deadline: .now() + 4) {
       finish("unverified", "No connection yet. Check Allow, address, service and firewall, then retry.")
     }
+  }
+}
+
+// Active Control only: capture before AppKit menus / Cmd-Tab act on Teacher.
+// No privacy request/reset, global key recording or input content logging.
+private final class ClassroomControlKeyboard {
+  private weak var window: NSWindow?
+  private let channel: FlutterMethodChannel
+  private var tap: CFMachPort?
+  private var source: CFRunLoopSource?
+  private var enabled = false
+  private var held: [Int64: String] = [:]
+  private var modifiers: Set<String> = []
+  private var events: [(String, Bool)] = []
+  private var flushing = false
+
+  init(window: NSWindow, channel: FlutterMethodChannel) {
+    self.window = window; self.channel = channel
+  }
+  deinit { _ = setEnabled(false) }
+
+  func setEnabled(_ value: Bool) -> Bool {
+    if !value {
+      enabled = false; held.removeAll(); modifiers.removeAll(); events.removeAll()
+      if let tap = tap { CGEvent.tapEnable(tap: tap, enable: false); CFMachPortInvalidate(tap) }
+      if let source = source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
+      tap = nil; source = nil
+      return true
+    }
+    if enabled { return true }
+    guard AXIsProcessTrusted() else { return false }
+    let mask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue) | (1 << CGEventType.flagsChanged.rawValue)
+    guard let next = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
+      eventsOfInterest: CGEventMask(mask), callback: { _, type, event, context in
+        guard let context = context else { return Unmanaged.passUnretained(event) }
+        return Unmanaged<ClassroomControlKeyboard>.fromOpaque(context).takeUnretainedValue().handle(type, event)
+      }, userInfo: Unmanaged.passUnretained(self).toOpaque()),
+      let runSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, next, 0) else { return false }
+    tap = next; source = runSource; enabled = true
+    CFRunLoopAddSource(CFRunLoopGetMain(), runSource, .commonModes)
+    CGEvent.tapEnable(tap: next, enable: true)
+    return true
+  }
+
+  private func lost() {
+    _ = setEnabled(false)
+    channel.invokeMethod("systemKeysLost", arguments: nil)
+  }
+  private func emit(_ key: String, _ down: Bool) -> Bool {
+    guard events.count < 256 else { lost(); return false }
+    events.append((key, down))
+    if !flushing {
+      flushing = true
+      DispatchQueue.main.async { [weak self] in
+        guard let self = self else { return }
+        let batch = self.events; self.events.removeAll(); self.flushing = false
+        for (key, down) in batch { self.channel.invokeMethod("systemKey", arguments: ["key": key, "down": down]) }
+      }
+    }
+    return true
+  }
+  private func handle(_ type: CGEventType, _ event: CGEvent) -> Unmanaged<CGEvent>? {
+    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput { lost(); return Unmanaged.passUnretained(event) }
+    guard enabled, NSApp.isActive, window?.isKeyWindow == true else { return Unmanaged.passUnretained(event) }
+    let flags = event.flags
+    for (name, flag) in [("Shift", CGEventFlags.maskShift), ("Control", .maskControl), ("Alt", .maskAlternate), ("Meta", .maskCommand)] {
+      let down = flags.contains(flag)
+      if down != modifiers.contains(name) {
+        guard emit(name, down) else { return Unmanaged.passUnretained(event) }
+        if down { modifiers.insert(name) } else { modifiers.remove(name) }
+      }
+    }
+    if type == .flagsChanged { return nil }
+    let code = event.getIntegerValueField(.keyboardEventKeycode)
+    let named: [Int64: String] = [36:"Enter", 51:"Backspace", 48:"Tab", 53:"Escape", 123:"ArrowLeft", 124:"ArrowRight", 126:"ArrowUp", 125:"ArrowDown", 117:"Delete", 115:"Home", 119:"End", 116:"PageUp", 121:"PageDown"]
+    let character = NSEvent(cgEvent: event)?.charactersIgnoringModifiers?.lowercased()
+    let label = held[code] ?? named[code] ?? (character?.count == 1 ? character : nil)
+    guard let label = label else { return Unmanaged.passUnretained(event) }
+    let down = type == .keyDown
+    guard emit(label, down) else { return Unmanaged.passUnretained(event) }
+    if down { held[code] = label } else { held.removeValue(forKey: code) }
+    return nil
   }
 }

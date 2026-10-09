@@ -336,15 +336,28 @@ class _ConsoleState extends State<Console> with WindowListener {
     final choice = await showMenu<String>(
       context: context,
       position: RelativeRect.fromLTRB(at.dx, at.dy, at.dx, at.dy),
-      items: const [
-        PopupMenuItem(value: 'files', child: Text('Collect files…')),
-        PopupMenuItem(value: 'observe', child: Text('Observe screen')),
+      items: [
+        const PopupMenuItem(value: 'files', child: Text('Collect files…')),
+        const PopupMenuItem(value: 'observe', child: Text('Observe screen')),
+        PopupMenuItem(
+          value: 'present',
+          enabled:
+              agent.connected &&
+              !agent.commandBusy &&
+              ['idle', 'sharing'].contains(agent.state['phase']) &&
+              agent.state['source_id'] != row['id'],
+          child: const Text('Control & present Student'),
+        ),
       ],
     );
     if (choice == 'files') {
       await agent.openFiles(row);
     } else if (choice == 'observe') {
       await inspect(row);
+    } else if (choice == 'present') {
+      // The context target is independent of checkbox selection. The backend
+      // revalidates online/current/busy state before stopping any old source.
+      await agent.command('switch_source', [row['id'] as String]);
     }
   }
 
@@ -690,18 +703,28 @@ class _ConsoleState extends State<Console> with WindowListener {
                       children: [
                         if (agent.connected &&
                             (phase == 'idle' || phase == 'sharing')) ...[
-                          if (onlineSelected.length == 1) ...[
-                            OutlinedButton.icon(
-                              style: toolbarButton(),
-                              onPressed:
-                                  canSwitch && onlineSelected.single != sourceId
-                                  ? () => agent.command(
-                                      'switch_source',
-                                      onlineSelected,
-                                    )
-                                  : null,
-                              icon: const Icon(Icons.present_to_all, size: 16),
-                              label: const Text('Control & present Student'),
+                          if (selected.length == 1) ...[
+                            Tooltip(
+                              message: onlineSelected.isEmpty
+                                  ? 'Selected Student is offline'
+                                  : 'Control this Student and present its screen to the class',
+                              child: OutlinedButton.icon(
+                                style: toolbarButton(),
+                                onPressed:
+                                    canSwitch &&
+                                        onlineSelected.length == 1 &&
+                                        onlineSelected.single != sourceId
+                                    ? () => agent.command(
+                                        'switch_source',
+                                        onlineSelected,
+                                      )
+                                    : null,
+                                icon: const Icon(
+                                  Icons.present_to_all,
+                                  size: 16,
+                                ),
+                                label: const Text('Control & present Student'),
+                              ),
                             ),
                             const SizedBox(width: 8),
                           ],

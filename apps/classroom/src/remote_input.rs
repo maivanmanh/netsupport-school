@@ -4,7 +4,9 @@
 use anyhow::{Context, Result};
 #[cfg(not(any(windows, target_os = "macos")))]
 use enigo::Coordinate;
-use enigo::{Axis, Button, Direction, Enigo, Key, Keyboard, Mouse, Settings};
+#[cfg(not(target_os = "macos"))]
+use enigo::Keyboard;
+use enigo::{Axis, Button, Direction, Enigo, Key, Mouse, Settings};
 use protocol::ObserveMessage;
 use std::{
     collections::HashSet,
@@ -14,6 +16,8 @@ use tracing::{info, warn};
 #[derive(Default)]
 pub struct Controller {
     device: Option<Enigo>,
+    #[cfg(target_os = "macos")]
+    keyboard: mac_keyboard::Keyboard,
     enabled: bool,
     exclusive: bool,
     lease: Option<Instant>,
@@ -116,6 +120,9 @@ impl Controller {
                     !m.down || self.keys.contains(&m.key) || self.keys.len() < 128,
                     "Too many held remote keys"
                 );
+                #[cfg(target_os = "macos")]
+                self.keyboard.apply(d, &m.key, key, direction)?;
+                #[cfg(not(target_os = "macos"))]
                 d.key(key, direction)?;
                 if m.down {
                     self.keys.insert(m.key.clone());
@@ -196,6 +203,12 @@ impl Controller {
     }
     pub fn release(&mut self) {
         if let Some(d) = self.device.as_mut() {
+            #[cfg(target_os = "macos")]
+            {
+                self.keyboard.release(d);
+                self.keys.clear();
+            }
+            #[cfg(not(target_os = "macos"))]
             for k in self.keys.drain() {
                 if let Some(k) = key(&k) {
                     let _ = d.key(k, Direction::Release);
@@ -221,6 +234,100 @@ impl Controller {
         self.lease = None;
         self.bounds = None;
         self.display = None;
+    }
+}
+
+/// HIToolbox keyboard-layout lookup asserts the main dispatch queue on current
+/// macOS. Only lookup runs there; CGEvent injection stays with the input owner.
+/// One outstanding lookup per session, a short deadline and no late injection
+/// prevent a stalled UI/shutdown from building an input queue or hanging join.
+#[cfg(target_os = "macos")]
+mod mac_keyboard {
+    use super::*;
+    use enigo::Keyboard as _;
+    use std::{
+        collections::HashMap,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            mpsc, Arc,
+        },
+    };
+
+    #[derive(Default)]
+    pub struct Keyboard {
+        held: HashMap<String, u16>,
+        pending: Arc<AtomicBool>,
+    }
+    impl Keyboard {
+        fn resolve(&self, key: Key) -> Result<u16> {
+            // Named keys use constant native keycodes, without HIToolbox.
+            if !matches!(key, Key::Unicode(_)) || objc2::MainThreadMarker::new().is_some() {
+                return u16::try_from(key).map_err(|()| anyhow::anyhow!("Unsupported macOS key"));
+            }
+            anyhow::ensure!(
+                !self.pending.swap(true, Ordering::AcqRel),
+                "macOS keyboard layout lookup still pending"
+            );
+            let pending = Arc::clone(&self.pending);
+            let (send, receive) = mpsc::sync_channel(1);
+            let budget = Duration::from_millis(250);
+            let deadline = Instant::now() + budget;
+            dispatch2::DispatchQueue::main().exec_async(move || {
+                if Instant::now() < deadline {
+                    let _ = send.try_send(u16::try_from(key));
+                }
+                pending.store(false, Ordering::Release);
+            });
+            receive
+                .recv_timeout(budget)
+                .context("macOS keyboard layout lookup timed out")?
+                .map_err(|()| anyhow::anyhow!("Unsupported macOS key"))
+        }
+        pub fn apply(
+            &mut self,
+            device: &mut Enigo,
+            name: &str,
+            key: Key,
+            direction: Direction,
+        ) -> Result<()> {
+            // Retain the keycode chosen at key-down, even if the user changes
+            // layouts before key-up. Release/Drop never calls HIToolbox.
+            let code = match self.held.get(name) {
+                Some(code) => *code,
+                None if direction == Direction::Release => return Ok(()),
+                None => self.resolve(key)?,
+            };
+            device.raw(code, direction)?;
+            if direction == Direction::Press {
+                self.held.insert(name.to_owned(), code);
+            } else if direction == Direction::Release {
+                self.held.remove(name);
+            }
+            Ok(())
+        }
+        pub fn release(&mut self, device: &mut Enigo) {
+            for (_, code) in self.held.drain() {
+                let _ = device.raw(code, Direction::Release);
+            }
+        }
+    }
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        #[test]
+        fn named_keys_do_not_need_a_main_queue_lookup() {
+            let keyboard = Keyboard::default();
+            assert_eq!(keyboard.resolve(Key::Return).unwrap(), 36);
+            assert!(!keyboard.pending.load(Ordering::Acquire));
+        }
+        #[test]
+        fn only_one_layout_lookup_can_be_pending() {
+            let keyboard = Keyboard::default();
+            keyboard.pending.store(true, Ordering::Release);
+            let began = Instant::now();
+            assert!(keyboard.resolve(Key::Unicode('a')).is_err());
+            assert!(began.elapsed() < Duration::from_millis(100));
+        }
     }
 }
 impl Drop for Controller {

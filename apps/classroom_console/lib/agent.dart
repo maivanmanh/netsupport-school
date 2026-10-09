@@ -7,6 +7,30 @@ import 'package:path_provider/path_provider.dart';
 import 'package:window_manager/window_manager.dart';
 import 'process_liveness.dart';
 
+// The standalone Mac Teacher needs assistive system-control APIs. Reuse its
+// previous sandbox container data rather than creating a second room/profile.
+Future<Directory> existingMacConsoleDirectory(
+  Directory suggested,
+  String? home,
+) async {
+  if (home == null || home.isEmpty) return suggested;
+  const suffix = '/Library/Containers/com.classroom.classroomConsole/Data';
+  final actualHome = home.endsWith(suffix)
+      ? home.substring(0, home.length - suffix.length)
+      : home;
+  final legacy = Directory(
+    '$actualHome$suffix/Library/Application Support/com.classroom.classroomConsole',
+  );
+  for (final name in [
+    'teacher-profile.toml',
+    'teacher-settings.toml',
+    'console-settings.json',
+  ]) {
+    if (await File('${legacy.path}/$name').exists()) return legacy;
+  }
+  return suggested;
+}
+
 class Agent extends ChangeNotifier {
   Agent(this.args, {this.closeApplication});
   final List<String> args;
@@ -277,7 +301,13 @@ class Agent extends ChangeNotifier {
   Future<void> start() async {
     if (disposed || shutdownReceived) return;
     try {
-      final dir = await getApplicationSupportDirectory();
+      var dir = await getApplicationSupportDirectory();
+      if (Platform.isMacOS) {
+        dir = await existingMacConsoleDirectory(
+          dir,
+          Platform.environment['HOME'],
+        );
+      }
       await dir.create(recursive: true);
       if (dataDirectory == null) {
         if (!dependent) {

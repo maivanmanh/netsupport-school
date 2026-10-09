@@ -106,24 +106,46 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
   final pressedKeys = <String>{};
   bool windowFocused = true;
   bool? capturingSystemKeys;
+  bool systemKeyCaptureFailed = false;
   int lastFocusRequest = 0;
 
   void syncSystemKeys() {
-    if (!Platform.isWindows) return;
+    if (!Platform.isWindows && !Platform.isMacOS) return;
     final enabled = !closing && controls;
+    if (!enabled) systemKeyCaptureFailed = false;
+    if (enabled && systemKeyCaptureFailed) return;
     if (capturingSystemKeys == enabled) return;
     capturingSystemKeys = enabled;
     unawaited(
       native.invokeMethod<void>('captureSystemKeys', enabled).catchError((
         Object error,
       ) {
-        capturingSystemKeys = null;
-        unawaited(widget.agent.log('Windows shortcut capture failed: $error'));
+        capturingSystemKeys = false;
+        systemKeyCaptureFailed = true;
+        if (mounted && Platform.isMacOS) {
+          setState(
+            () => modeError =
+                'Allow Teacher Accessibility to forward macOS shortcuts',
+          );
+        }
+        unawaited(widget.agent.log('Native shortcut capture failed: $error'));
       }),
     );
   }
 
   Future<void> nativeKey(MethodCall call) async {
+    if (call.method == 'systemKeysLost') {
+      releaseHeldInput();
+      capturingSystemKeys = false;
+      systemKeyCaptureFailed = true;
+      if (mounted) {
+        setState(
+          () =>
+              modeError = 'Shortcut capture stopped · Refocus Control to retry',
+        );
+      }
+      return;
+    }
     if (call.method != 'systemKey' || !controls) return;
     final value = Map<String, dynamic>.from(call.arguments as Map);
     final label = value['key'] as String;
@@ -425,7 +447,9 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
   void initState() {
     super.initState();
     toolActivity;
-    if (Platform.isWindows) native.setMethodCallHandler(nativeKey);
+    if (Platform.isWindows || Platform.isMacOS) {
+      native.setMethodCallHandler(nativeKey);
+    }
     windowManager.addListener(this);
     windowManager.setPreventClose(true);
     widget.agent.addListener(changed);
@@ -777,6 +801,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
   @override
   void onWindowFocus() {
     windowFocused = true;
+    systemKeyCaptureFailed = false;
     syncSystemKeys();
     if (mode != 'observe') focus.requestFocus();
     if (mounted) setState(() {});
@@ -784,7 +809,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
 
   @override
   void dispose() {
-    if (Platform.isWindows) {
+    if (Platform.isWindows || Platform.isMacOS) {
       unawaited(native.invokeMethod<void>('captureSystemKeys', false));
       native.setMethodCallHandler(null);
     }
@@ -807,6 +832,11 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
 
   KeyEventResult key(FocusNode _, KeyEvent event) {
     if (!controls) return KeyEventResult.ignored;
+    // The macOS event tap forwards all supported keys before AppKit/system
+    // shortcuts can act locally. Do not also send Flutter modifier repairs.
+    if (Platform.isMacOS && capturingSystemKeys == true) {
+      return KeyEventResult.handled;
+    }
     // Native hook owns Windows keys; ignore Flutter synthetic modifier repairs.
     if (Platform.isWindows &&
         (event.logicalKey == LogicalKeyboardKey.metaLeft ||

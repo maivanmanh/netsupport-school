@@ -89,6 +89,12 @@ done''')
             assert 'Signature=adhoc' in mac_result, 'Remote signature differs'
         if win:
             win.copy(win_file, win.address + ':' + win_root + '/bin/Classroom.exe')
+            # Remove an unrelated stale installed Student/Guard only after the
+            # replacement has been copied and its checksum can be verified.
+            expected = hashlib.sha256(win_file.read_bytes()).hexdigest()
+            migration = win.remove_old_student(win_root + '/bin/Classroom.exe', expected)
+            (folder / 'windows-old-install-removal.txt').write_text(migration)
+
         mac_sha = hashlib.sha256(mac_file.read_bytes()).hexdigest()
         win_sha = hashlib.sha256(win_file.read_bytes()).hexdigest() if win else None
         assert mac_sha in mac.ssh(f'shasum -a 256 {shlex.quote(installed_binary)}')
@@ -110,6 +116,7 @@ done''')
             # when its LSUIElement window is hidden.
             'ProcessType': 'Interactive',
             'LegacyTimers': True,
+            'KeepAlive': {'SuccessfulExit': False},
         }))
         mac.copy(plist, mac.address + ':' + mac_root + '/student.plist')
         mac.ssh(f'launchctl bootstrap gui/$(id -u) {mac_root}/student.plist')

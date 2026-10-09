@@ -4053,3 +4053,37 @@ apply unchanged. Exact next step: physical Windows x64 Ethernet ladder1/5/10/20/
 35–40, fixed1080p workload, optical/source-switch latency and source-upload/preview
 load, cooperative input and soak; retain deferred sleep/DPI/Defender cases. Current
 VM/mixed-LAN functional pass is not Phase1 40-PC performance acceptance.
+
+## 2026-10-09 — manual class-Control faults, active corrective milestone
+
+Owner manual Windows-source and Mac-source runs collected without restart. Mac
+crash report SIGTRAP at HIToolbox TISGetInputSourceProperty -> Enigo Unicode key
+lookup on Publisher input worker confirms a native thread-affinity failure.
+Teacher all Mac TCP channels EOF/offline together; toolbar excludes offline targets,
+explaining missing button after checkbox reselection. Correct lookup on main queue
+with bounded deadline/capacity and native-code key releases; no media buffer change.
+Windows installed Guard/Student/task targeted172.16.48.237 removed with settings/logs
+preserved; current new Student and Defender realtime remain. Old dev autostart also
+removed. Migration added to development deploy/prepare paths, hash-before-removal.
+
+Owner explicitly requests Cmd+Tab/Cmd+Space as well as app shortcuts. Current Mac
+Teacher App Sandbox/inherited helper entitlements conflict with assistive system
+control (Apple Protecting user data with App Sandbox documents unavailable APIs).
+Proposed implementation: standalone native Teacher build without App Sandbox,
+foreground Control-only event tap requiring manual Accessibility. Keep signed app
+identities and exact legacy container data path; no TCC edits, no privacy bypass,
+no suppression of OS permission checks. Record this packaging deviation before
+changing entitlements. Local app-only monitoring would not cover the requested
+system shortcuts. New paired build/native permission handoff pending.
+
+Corrective build completes at target/source-control-fix-build; both embedded
+Student ZIP hashes/version verified, deep Teacher signature verified. Rust203
+pass/2 ignored, final focused Flutter11 pass, analyzer clean, Python compile and
+whitespace checks pass. Windows old install + dev autostart removal audited with
+Defender realtime still enabled. Replaced only stopped Mac Student test bundle;
+GUI-session permission probe screen:false. Native tests now paused for manual
+Recording/Accessibility grants; no privacy automation or further runtime test.
+Full evidence/limitations: diagnostics/2026-10-09-manual-source-control.md.
+Next after grants: restart both roles, actual Mac character/system shortcuts,
+repeated handoff + controlled motion/pacing comparison. 35–40 wired x64 lab and
+optical latency remain deferred; no claimed FPS improvement or native key pass.

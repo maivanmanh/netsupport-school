@@ -75,7 +75,7 @@ BUILD_NUMBER="$(sed -n 's/^version: .*+//p' pubspec.yaml)"
 /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $APP_VERSION" "$AGENT_APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$AGENT_APP/Contents/Info.plist"
 cat > "$ROOT/target/flutter-helper.entitlements" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>com.apple.security.app-sandbox</key><true/><key>com.apple.security.inherit</key><true/></dict></plist>
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict/></plist>
 PLIST
 # These packages were rebuilt above; missing packages are fatal, never optional.
 mkdir -p "$BUILD_APP/Contents/Resources/student-packages"

@@ -14,8 +14,11 @@ class ClassControlAgent extends Agent {
     Iterable<String> selected = const [],
     Map<String, dynamic>? input,
   ]) async {}
+  final inputs = <Map<String, dynamic>>[];
   @override
-  void observeInput(String id, Map<String, dynamic> input) {}
+  void observeInput(String id, Map<String, dynamic> input) {
+    inputs.add(input);
+  }
 }
 
 void main() {
@@ -27,6 +30,7 @@ void main() {
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final messenger =
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final nativeCalls = <MethodCall>[];
     messenger.setMockMethodCallHandler(
       const MethodChannel('window_manager'),
       (_) async => null,
@@ -34,6 +38,7 @@ void main() {
     messenger.setMockMethodCallHandler(
       const MethodChannel('classroom/observe'),
       (call) async {
+        nativeCalls.add(call);
         if (call.method == 'attach') return 4;
         if (call.method == 'stats') {
           return {
@@ -73,6 +78,34 @@ void main() {
     );
     expect(selector.selected, {'control'});
     expect(selector.onSelectionChanged, isNull);
+    expect(
+      nativeCalls.where(
+        (c) => c.method == 'captureSystemKeys' && c.arguments == true,
+      ),
+      isNotEmpty,
+    );
+    Future<void> systemKey(String label, bool down) async {
+      final data = const StandardMethodCodec().encodeMethodCall(
+        MethodCall('systemKey', {'key': label, 'down': down}),
+      );
+      await messenger.handlePlatformMessage('classroom/observe', data, (_) {});
+    }
+
+    await systemKey('Meta', true);
+    await systemKey('c', true);
+    await systemKey('c', false);
+    await systemKey('Meta', false);
+    expect(
+      agent.inputs
+          .where((x) => x['action'] == 'key')
+          .map((x) => [x['key'], x['down']]),
+      [
+        ['Meta', true],
+        ['c', true],
+        ['c', false],
+        ['Meta', false],
+      ],
+    );
     await tester.pumpWidget(const SizedBox());
     agent.dispose();
     messenger.setMockMethodCallHandler(

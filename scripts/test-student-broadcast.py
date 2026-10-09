@@ -2,7 +2,7 @@
 """Two native Windows endpoints, Flutter-parented Teacher, isolated test tasks.
 
 Functional relay/health/diagnostic evidence only; not 40-PC acceptance.
-Passwords stay in memory. Installed Students, Guard and settings are preserved.
+Passwords stay in memory. Stale installed Students/Guard are migrated; settings and logs are preserved.
 """
 import argparse
 import getpass
@@ -114,6 +114,9 @@ def main():
             remote.ps(f"New-Item -ItemType Directory -Force '{root}' | Out-Null")
             owned.append((name, remote, address))
             remote.copy(binary, f'{address}:{root}/Classroom.exe')
+            replacement_hash = hashlib.sha256(binary.read_bytes()).hexdigest()
+            removal = remote.remove_old_student(f'{root}/Classroom.exe', replacement_hash)
+            (output / f'{name}-old-install-removal.txt').write_text(removal)
             if args.workload_seconds:
                 for script in ('phase1-windows-workload.ps1', 'phase1-display-modes.ps1'):
                     remote.copy(ROOT / 'scripts' / script, f'{address}:{root}/{script}')

@@ -329,6 +329,7 @@ dependencies = [
  "codec-windows-mf",
  "control-transport",
  "core-graphics",
+ "dispatch2",
  "enigo",
  "flate2",
  "fontdue",

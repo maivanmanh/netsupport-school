@@ -74,6 +74,9 @@ def main():
         (output / 'manifest.json').write_text(json.dumps(manifest, indent=2))
         # Read-only check from the GUI login session. It neither requests nor
         # changes Recording/Accessibility/Local Network permissions.
+        # Owner requests removing a stale installed Student before new LAN builds.
+        migration_result = windows.remove_old_student(f'{win_root}/Classroom.exe', manifest['packages']['student-windows-x64.zip']['sha256'])
+        (output / 'windows-old-install-removal.txt').write_text(migration_result)
         check_label = 'com.classroom.test.source-switch.permission-check'
         check = {'Label': check_label, 'ProgramArguments': [mac_exe, '--permission-probe-network', args.local_ip + ':48900'],
                  'RunAtLoad': True, 'StandardOutPath': mac_root + '/permission-status.json',
@@ -143,6 +146,8 @@ def main():
                   '--control-port', '48900', '--media-port', '48910', '--feedback-port', '48911',
                   '--config', mac_root + '/config.toml', '--launch-profile', mac_root + '/profile.toml',
                   '--log-file', mac_root + '/student.log'], 'RunAtLoad': True,
+                  'ProcessType': 'Interactive', 'LegacyTimers': True,
+                  'KeepAlive': {'SuccessfulExit': False},
                   'StandardOutPath': mac_root + '/stdout.log', 'StandardErrorPath': mac_root + '/stderr.log'}
         (output / 'student.plist').write_bytes(plistlib.dumps(launch))
         mac.copy(output / 'student.plist', f'{args.mac}:{mac_root}/student.plist')

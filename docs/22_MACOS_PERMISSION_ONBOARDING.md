@@ -28,10 +28,11 @@ does not trigger automatic onboarding.
   must connect before the indicator says "Connected (last test)". This verifies
   that endpoint, not UDP or every classroom service. Offline service, wrong port,
   firewall, timeout and EHOSTUNREACH remain unverified, not a claimed denial.
-- Teacher does not request Full Disk Access or require Accessibility just to
-  broadcast or control a Windows Student. Mac Student remote input needs that
-  Student's own Accessibility grant; this Teacher dialog explains the distinction.
-  Files use existing explicit system pickers.
+- Teacher does not require Full Disk Access. Full keyboard forwarding, including
+  Cmd+Tab and Cmd+Space, now requires Teacher Console Accessibility for a native
+  event tap. Mac Student input also requires its own Accessibility grant. Files
+  use existing explicit system pickers. Missing Teacher access is reported in the
+  Control window; grant it manually and restart Teacher.
 
 OS status checks run every 2 seconds while the dialog is open and refresh on
 resume. After the user starts a LAN probe, it repeats every 10 seconds until
@@ -66,3 +67,17 @@ are distinct from real macOS prompts, privacy cache behavior and media acceptanc
 
 Apple reference:
 https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy
+
+## Full keyboard forwarding — 2026-10-09
+
+The standalone macOS Teacher and bundled Agent no longer use App Sandbox. Apple's
+[App Sandbox limitations](https://developer.apple.com/documentation/security/protecting-user-data-with-app-sandbox)
+exclude assistive APIs needed for system shortcuts. This does not grant Accessibility
+or Screen Recording; both remain controlled by macOS and the owner. Existing
+container profiles/settings are reused without deleting or duplicating them. The
+old onboarding-seen UI marker is retained; it is never treated as a privacy grant.
+
+The event tap consumes keys only while the Teacher Control window is active and
+key. On blur, disable, tap loss or bounded queue overflow, remote held keys are
+released. It does not intercept background typing. Native runtime validation of
+Cmd+Tab/Cmd+Space is pending manual permissions for this build.

@@ -2,6 +2,7 @@ import 'package:classroom_console/agent.dart';
 import 'package:classroom_console/main.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 class SwitchAgent extends Agent {
@@ -64,6 +65,13 @@ void main() {
       await tester.pumpWidget(ClassroomApp(agent: agent));
       await tester.pumpAndSettle();
       expect(find.text('Set up macOS permissions'), findsNothing);
+      // Context-menu target works without enabling checkbox selection.
+      await tester.tap(find.text('Student B'), buttons: kSecondaryMouseButton);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Control & present Student'));
+      await tester.pumpAndSettle();
+      expect(agent.commands.last.$1, 'switch_source');
+      expect(agent.commands.last.$2, ['B']);
       await tester.tap(find.byTooltip('Select computers for presentation'));
       await tester.pumpAndSettle();
       await tester.tap(find.byType(Checkbox).first);
@@ -100,6 +108,18 @@ void main() {
       await tester.tap(find.text('Back to Teacher'));
       expect(agent.commands.last.$1, 'switch_source');
       expect(agent.commands.last.$2, isEmpty);
+      (agent.state['students'] as List)[1]['online'] = false;
+      agent.notifyListeners();
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('Selected Student is offline'), findsOneWidget);
+      expect(
+        tester
+            .widget<OutlinedButton>(
+              find.widgetWithText(OutlinedButton, 'Control & present Student'),
+            )
+            .onPressed,
+        isNull,
+      );
       await tester.binding.setSurfaceSize(const Size(740, 520));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);

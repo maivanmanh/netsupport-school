@@ -97,6 +97,28 @@ class Remote:
     def ps(self, source):
         encoded=base64.b64encode(source.encode('utf-16-le')).decode()
         return self.ssh('powershell -NoProfile -NonInteractive -EncodedCommand '+encoded)
+    def remove_old_student(self, replacement, sha256):
+        if len(sha256) != 64 or any(c not in '0123456789abcdefABCDEF' for c in sha256):
+            raise ValueError('Expected replacement SHA-256')
+        # The host permits interactive commands but may prohibit .ps1 files.
+        # Send our reviewed migration commands through the existing PS channel;
+        # do not change ExecutionPolicy or use -ExecutionPolicy Bypass.
+        script = Path(__file__).resolve().parent / 'remove-old-classroom-student.ps1'
+        remote_script = replacement.replace('\\', '/').rsplit('/', 1)[0] + '/remove-old-student.ps1'
+        self.copy(script, self.address + ':' + remote_script)
+        digest = hashlib.sha256(script.read_bytes()).hexdigest()
+        script_path = remote_script.replace("'", "''")
+        quoted = replacement.replace("'", "''")
+        return self.ps("$ErrorActionPreference='Stop'; if ((Get-FileHash '" + script_path +
+                       "').Hash -ne '" + digest + "') { throw 'Migration script checksum mismatch' }; " +
+                       "$migration=[scriptblock]::Create([IO.File]::ReadAllText('" + script_path +
+                       "')); & $migration -ReplacementExecutable '" + quoted +
+                       "' -ReplacementSha256 '" + sha256 + "' -Confirm:$false; " +
+                       "$legacy=Join-Path $env:USERPROFILE 'Classroom-Student-dev'; " +
+                       "if ((Test-Path (Join-Path $legacy 'ClassroomStudent.exe')) -and " +
+                       "([IO.Path]::GetFullPath((Split-Path '" + quoted + "')).TrimEnd('\\') -ne $legacy)) { " +
+                       "& $migration -OldInstallPath $legacy -ReplacementExecutable '" + quoted +
+                       "' -ReplacementSha256 '" + sha256 + "' -Confirm:$false }")
     def copy(self, source, destination, recursive=False):
         return RemoteProcess(['scp',*OPTS,*(['-r'] if recursive else []),str(source),str(destination)],self.password).finish(90)
 
