@@ -164,7 +164,14 @@ pub fn show(
     let mut items = fields(config, teacher);
     let mut page = 0;
     let mut focused = None;
-    let mut selected = false;
+    let mut editors: Vec<_> = items
+        .iter()
+        .map(|f| {
+            let mut editor = super::text_editor::Editor::default();
+            editor.end(&f.value);
+            editor
+        })
+        .collect();
     let mut level = config.app.log_level.clone();
     let mut error = String::new();
     let chars = Arc::new(Mutex::new(Vec::new()));
@@ -195,6 +202,31 @@ pub fn show(
             return Ok(None);
         }
         let down = window.get_mouse_down(MouseButton::Left);
+        if down && !previous_down {
+            if let Some((x, y)) = window.get_mouse_pos(MouseMode::Discard) {
+                for (row, (i, field)) in items
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, f)| f.page == page)
+                    .enumerate()
+                {
+                    let top = 165 + row * 76;
+                    if (212.0..790.0).contains(&x) && (top as f32..(top + 40) as f32).contains(&y) {
+                        focused = Some(i);
+                        editors[i].click(
+                            &canvas,
+                            &field.value,
+                            [224, top + 11, 554, 26],
+                            2,
+                            (x, y),
+                            window.is_key_down(Key::LeftShift)
+                                || window.is_key_down(Key::RightShift),
+                        );
+                        editors[i].start_drag();
+                    }
+                }
+            }
+        }
         let clicked = window.left_click().or_else(|| {
             (!down && previous_down)
                 .then(|| window.get_mouse_pos(MouseMode::Discard))
@@ -222,7 +254,16 @@ pub fn show(
                     let top = 165.0 + f32::from(u16::try_from(row).unwrap_or(0)) * 76.0;
                     if (top..top + 40.0).contains(&y) {
                         focused = Some(i);
-                        selected = true;
+                        editors[i].click(
+                            &canvas,
+                            &items[i].value,
+                            [224, top as usize + 11, 554, 26],
+                            2,
+                            (x, y),
+                            window.is_key_down(Key::LeftShift)
+                                || window.is_key_down(Key::RightShift),
+                        );
+                        editors[i].start_drag();
                     }
                 }
                 if page == 1 && (350.0..393.0).contains(&y) {
@@ -275,29 +316,31 @@ pub fn show(
                         }
                     });
                 focused = Some(indices[next]);
-                selected = true;
+                editors[indices[next]].select_all(&items[indices[next]].value);
             }
         }
         if let Some(i) = focused {
-            if keys.contains(&Key::Backspace) || keys.contains(&Key::Delete) {
-                if selected {
-                    items[i].value.clear();
-                    selected = false;
+            let typed: Vec<_> = chars.lock().unwrap().drain(..).collect();
+            editors[i].input(
+                &mut items[i].value,
+                &mut window,
+                &keys,
+                &typed,
+                15,
+                if i == 0 {
+                    super::text_editor::address
                 } else {
-                    items[i].value.pop();
-                }
-            }
-            if let Ok(mut buffer) = chars.lock() {
-                for c in buffer.drain(..) {
-                    if selected {
-                        items[i].value.clear();
-                        selected = false;
-                    }
-                    if items[i].value.len() < 15 {
-                        items[i].value.push(c);
-                    }
-                }
-            }
+                    super::text_editor::digits
+                },
+            );
+            let row = items.iter().take(i).filter(|f| f.page == page).count();
+            editors[i].drag(
+                &canvas,
+                &items[i].value,
+                [224, 176 + row * 76, 554, 26],
+                2,
+                &window,
+            );
         } else if let Ok(mut buffer) = chars.lock() {
             buffer.clear();
         }
@@ -331,11 +374,14 @@ pub fn show(
             canvas.button(rect, 0x00ff_ffff, false, false);
             if focused == Some(i) {
                 canvas.focus_ring(rect);
-                if selected {
-                    canvas.fill_rect([223, rect[1] + 9, field.value.len() * 12, 23], 0x00da_e9fd);
-                }
             }
-            canvas.text(224, rect[1] + 11, &field.value, 0x0024_3348, 2);
+            editors[i].draw(
+                &mut canvas,
+                &field.value,
+                [224, rect[1] + 11, 554, 26],
+                2,
+                focused == Some(i),
+            );
         }
         match page {
             0 => {

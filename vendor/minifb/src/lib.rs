@@ -551,6 +551,13 @@ impl Window {
         #[cfg(not(any(windows, target_os = "macos")))]
         { let _ = text; Err(Error::UpdateFailed("Clipboard unavailable".into())) }
     }
+    /// Read bounded plain text from the native clipboard on the UI thread.
+    pub fn paste_text(&mut self) -> Result<String> {
+        #[cfg(any(windows, target_os = "macos"))]
+        { self.0.paste_text() }
+        #[cfg(not(any(windows, target_os = "macos")))]
+        { Err(Error::UpdateFailed("Clipboard unavailable".into())) }
+    }
     /// Clip a passive diagnostic window to an ellipse on Windows/macOS.
     pub fn set_round_overlay(&mut self) {
         #[cfg(any(target_os = "windows", target_os = "macos"))]

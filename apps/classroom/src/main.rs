@@ -76,6 +76,7 @@ mod student_settings;
 mod student_tools_ui;
 mod teacher_agent;
 mod teacher_dashboard;
+mod text_editor;
 mod teacher_repair;
 mod udp_ingress;
 mod udp_sender;

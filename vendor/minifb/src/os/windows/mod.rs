@@ -1004,6 +1004,31 @@ impl Window {
         }
         Ok(())
     }
+    pub fn paste_text(&mut self) -> Result<String> {
+        use winapi::um::winbase;
+        // SAFETY: clipboard handle is borrowed only while OpenClipboard holds
+        // access. Bound GlobalSize, copy before unlock and always close it.
+        unsafe {
+            if winuser::OpenClipboard(self.hwnd) == 0 {
+                return Err(Error::UpdateFailed("Clipboard busy".into()));
+            }
+            let result = (|| {
+                let memory = winuser::GetClipboardData(winuser::CF_UNICODETEXT);
+                if memory.is_null() { return Ok(String::new()); }
+                let count = winbase::GlobalSize(memory as _) / 2;
+                if count > 65536 { return Err(Error::UpdateFailed("Clipboard text too large".into())); }
+                let data = winbase::GlobalLock(memory as _) as *const u16;
+                if data.is_null() { return Err(Error::UpdateFailed("Clipboard unavailable".into())); }
+                let wide = std::slice::from_raw_parts(data, count);
+                let len = wide.iter().position(|c| *c == 0).unwrap_or(count);
+                let value = String::from_utf16_lossy(&wide[..len]);
+                winbase::GlobalUnlock(memory as _);
+                Ok(value)
+            })();
+            winuser::CloseClipboard();
+            result
+        }
+    }
     pub fn set_round_overlay(&mut self) {
         // SAFETY: owned HWND; Windows owns the region on success, otherwise release it.
         unsafe {

@@ -166,6 +166,7 @@ extern "C" {
     fn mfb_passive_overlay(window: *mut c_void, alpha: u8);
     fn mfb_round_overlay(window: *mut c_void);
     fn mfb_copy_text(bytes: *const u8, length: usize) -> bool;
+    fn mfb_paste_text(bytes: *mut u8, capacity: usize) -> usize;
     fn mfb_resize_notification(window: *mut c_void, width: u32, height: u32);
     fn mfb_is_visible(window: *mut c_void) -> bool;
     fn mfb_set_close_to_hide(window: *mut c_void, enabled: bool);
@@ -368,6 +369,15 @@ impl Window {
         // SAFETY: borrowed UTF-8 bytes live through synchronous Cocoa call.
         if unsafe { mfb_copy_text(text.as_ptr(), text.len()) } { Ok(()) }
         else { Err(Error::UpdateFailed("Could not copy message".into())) }
+    }
+    pub fn paste_text(&mut self) -> Result<String> {
+        let mut bytes = vec![0_u8; 65536];
+        // SAFETY: UI-thread Cocoa call writes at most capacity bytes into owned
+        // storage. Oversized paste is rejected rather than splitting UTF-8.
+        let count = unsafe { mfb_paste_text(bytes.as_mut_ptr(), bytes.len()) };
+        if count > bytes.len() { return Err(Error::UpdateFailed("Clipboard text too large".into())); }
+        bytes.truncate(count);
+        String::from_utf8(bytes).map_err(|_| Error::UpdateFailed("Invalid clipboard text".into()))
     }
     pub fn set_round_overlay(&mut self) { unsafe { mfb_round_overlay(self.window_handle); } }
     pub fn set_passive_overlay(&mut self, alpha: u8) { unsafe { mfb_passive_overlay(self.window_handle, alpha); } }

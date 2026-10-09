@@ -122,6 +122,7 @@ struct Popup {
     message: ToolPacket,
     characters: Arc<Mutex<Vec<char>>>,
     reply: String,
+    editor: super::text_editor::Editor,
     replying: bool,
     lines: Vec<String>,
     layout: Layout,
@@ -267,6 +268,7 @@ impl Popup {
             message,
             characters: chars,
             reply: String::new(),
+            editor: super::text_editor::Editor::default(),
             replying: false,
             lines,
             layout,
@@ -340,14 +342,28 @@ impl Popup {
             self.focus = order[next];
         }
         if self.focus == Focus::Input {
-            for c in typed {
-                if self.reply.chars().count() < MAX_REPLY {
-                    self.reply.push(c);
-                }
-            }
-            if self.window.is_key_pressed(Key::Backspace, KeyRepeat::Yes) {
-                self.reply.pop();
-            }
+            let keys = self.window.get_keys_pressed(KeyRepeat::Yes);
+            self.editor.input(
+                &mut self.reply,
+                &mut self.window,
+                &keys,
+                &typed,
+                MAX_REPLY,
+                super::text_editor::plain,
+            );
+            self.editor.vertical(
+                &self.canvas,
+                &self.reply,
+                [
+                    PAD + 10,
+                    self.layout.reply_top + 28,
+                    self.layout.width - 2 * PAD - 20,
+                    REPLY_LINES * LINE,
+                ],
+                1,
+                &self.window,
+                &keys,
+            );
         }
         let enter = self.window.is_key_pressed(Key::Enter, KeyRepeat::No)
             || self.window.is_key_pressed(Key::NumPadEnter, KeyRepeat::No);
@@ -394,6 +410,28 @@ impl Popup {
         };
         self.hover = at(self.window.get_mouse_pos(MouseMode::Discard));
         let down = self.window.get_mouse_down(MouseButton::Left);
+        if down && !self.previous_down && self.replying {
+            if let Some(p) = self.window.get_mouse_pos(MouseMode::Discard) {
+                if self.in_reply_box(p.0, p.1) {
+                    self.focus = Focus::Input;
+                    self.editor.click(
+                        &self.canvas,
+                        &self.reply,
+                        [
+                            PAD + 10,
+                            self.layout.reply_top + 28,
+                            self.layout.width - 2 * PAD - 20,
+                            REPLY_LINES * LINE,
+                        ],
+                        1,
+                        p,
+                        self.window.is_key_down(Key::LeftShift)
+                            || self.window.is_key_down(Key::RightShift),
+                    );
+                    self.editor.start_drag();
+                }
+            }
+        }
         let click = self.window.left_click().or_else(|| {
             (!down && self.previous_down)
                 .then(|| self.window.get_mouse_pos(MouseMode::Discard))
@@ -405,9 +443,37 @@ impl Popup {
         }
         if self.replying && click.is_some_and(|(x, y)| self.in_reply_box(x, y)) {
             self.focus = Focus::Input;
+            self.editor.click(
+                &self.canvas,
+                &self.reply,
+                [
+                    PAD + 10,
+                    self.layout.reply_top + 28,
+                    self.layout.width - 2 * PAD - 20,
+                    REPLY_LINES * LINE,
+                ],
+                1,
+                click.unwrap(),
+                self.window.is_key_down(Key::LeftShift) || self.window.is_key_down(Key::RightShift),
+            );
+            self.editor.start_drag();
         } else if click.is_some_and(|(x, y)| copy_hit(&self.layout, self.replying, x, y)) {
             self.copy_pending =
                 Some(std::time::Instant::now() + std::time::Duration::from_millis(400));
+        }
+        if self.replying && self.focus == Focus::Input {
+            self.editor.drag(
+                &self.canvas,
+                &self.reply,
+                [
+                    PAD + 10,
+                    self.layout.reply_top + 28,
+                    self.layout.width - 2 * PAD - 20,
+                    REPLY_LINES * LINE,
+                ],
+                1,
+                &self.window,
+            );
         }
         if let Some(deadline) = self.copy_pending {
             match self.window.copy_text(&self.message.text) {
@@ -514,13 +580,13 @@ impl Popup {
                 ],
                 0x00ff_ffff,
             );
-            let caret = if input_focused { "|" } else { "" };
-            let mut lines = wrap(&self.canvas, &format!("{}{caret}", self.reply), box_w - 20);
-            let start = lines.len().saturating_sub(REPLY_LINES);
-            for (i, line) in lines.drain(start..).enumerate() {
-                self.canvas
-                    .text(PAD + 10, box_top + 6 + i * LINE, &line, 0x0022_3342, 1);
-            }
+            self.editor.draw(
+                &mut self.canvas,
+                &self.reply,
+                [PAD + 10, box_top + 6, box_w - 20, REPLY_LINES * LINE],
+                1,
+                input_focused,
+            );
         }
         if !self.replying {
             let notice = if self

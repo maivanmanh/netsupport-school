@@ -91,7 +91,9 @@ fn show_impl(
         load_teacher_ip(initial_ip)
     }
     .to_string();
-    let mut input_selected = false;
+    let input_selected = false;
+    let mut editor = super::text_editor::Editor::default();
+    editor.end(&ip_text);
     // Enter starts/saves immediately; Tab moves between roles, address, button.
     let mut focus = Focus::Submit;
     let mut error = String::new();
@@ -162,6 +164,22 @@ fn show_impl(
             return Ok(None);
         }
         let mouse_down = window.get_mouse_down(MouseButton::Left);
+        if mouse_down && !previous_mouse_down {
+            if let Some(p) = window.get_mouse_pos(MouseMode::Discard) {
+                if (64.0..536.0).contains(&p.0) && (285.0..335.0).contains(&p.1) {
+                    focus = Focus::Address;
+                    editor.click(
+                        &canvas,
+                        &ip_text,
+                        [82, 299, 432, 26],
+                        2,
+                        p,
+                        window.is_key_down(Key::LeftShift) || window.is_key_down(Key::RightShift),
+                    );
+                    editor.start_drag();
+                }
+            }
+        }
         let click = window.left_click();
         let clicked = click.is_some() || (!mouse_down && previous_mouse_down);
         previous_mouse_down = mouse_down;
@@ -170,7 +188,6 @@ fn show_impl(
                 click.or_else(|| window.get_mouse_pos(MouseMode::Discard))
             {
                 let (x, y) = pointer_pixel(mouse_x, mouse_y);
-                let was_input_focused = focus == Focus::Address;
                 if (64..=286).contains(&x) && (142..=200).contains(&y) {
                     role = Role::Teacher;
                     focus = Focus::Teacher;
@@ -179,9 +196,15 @@ fn show_impl(
                     focus = Focus::Student;
                 } else if (64..=536).contains(&x) && (285..=335).contains(&y) {
                     focus = Focus::Address;
-                }
-                if focus == Focus::Address && !was_input_focused {
-                    input_selected = true;
+                    editor.click(
+                        &canvas,
+                        &ip_text,
+                        [82, 299, 432, 26],
+                        2,
+                        (mouse_x, mouse_y),
+                        window.is_key_down(Key::LeftShift) || window.is_key_down(Key::RightShift),
+                    );
+                    editor.start_drag();
                     error.clear();
                 }
                 if (225..=375).contains(&x) && (356..=407).contains(&y) {
@@ -204,7 +227,7 @@ fn show_impl(
             let back = window.is_key_down(Key::LeftShift) || window.is_key_down(Key::RightShift);
             focus = next_focus(focus, back);
             if focus == Focus::Address {
-                input_selected = true;
+                editor.select_all(&ip_text);
                 error.clear();
             }
         }
@@ -243,15 +266,6 @@ fn show_impl(
         }
         let input_focused = focus == Focus::Address;
         if input_focused {
-            if keys.contains(&Key::Backspace) || keys.contains(&Key::Delete) {
-                if input_selected {
-                    ip_text.clear();
-                    input_selected = false;
-                } else {
-                    ip_text.pop();
-                }
-                error.clear();
-            }
             if keys.contains(&Key::Enter) || keys.contains(&Key::NumPadEnter) {
                 match ip_text.parse::<Ipv4Addr>() {
                     Ok(teacher_ip) => {
@@ -261,18 +275,18 @@ fn show_impl(
                     Err(_) => "Enter a valid IPv4 address".clone_into(&mut error),
                 }
             }
-            if let Ok(mut input) = callback_buffer.lock() {
-                for character in input.drain(..) {
-                    if character.is_ascii_digit() || character == '.' {
-                        if input_selected {
-                            ip_text.clear();
-                            input_selected = false;
-                        }
-                        ip_text.push(character);
-                        error.clear();
-                    }
-                }
-                ip_text.truncate(15);
+            let typed: Vec<_> = callback_buffer.lock().unwrap().drain(..).collect();
+            editor.input(
+                &mut ip_text,
+                &mut window,
+                &keys,
+                &typed,
+                15,
+                super::text_editor::address,
+            );
+            editor.drag(&canvas, &ip_text, [82, 299, 432, 26], 2, &window);
+            if !typed.is_empty() || keys.contains(&Key::Backspace) || keys.contains(&Key::Delete) {
+                error.clear();
             }
         } else if let Ok(mut input) = callback_buffer.lock() {
             input.clear();
@@ -291,6 +305,9 @@ fn show_impl(
             settings,
             Some(focus),
         );
+        if input_focused {
+            editor.draw(&mut canvas, &ip_text, [82, 299, 432, 26], 2, true);
+        }
         window
             .update_with_buffer(&canvas.pixels, canvas.pixel_width(), canvas.pixel_height())
             .context("cannot update Classroom launch window")?;
@@ -414,13 +431,9 @@ fn draw_screen(
     if selected {
         canvas.fill_rect([80, 296, ip.len() * 12 + 4, 28], 0x00dc_eafb);
     }
-    canvas.text(
-        82,
-        299,
-        &format!("{ip}{}", if focused && !selected { "|" } else { "" }),
-        0x0024_3348,
-        2,
-    );
+    if !focused {
+        canvas.text(82, 299, ip, 0x0024_3348, 2);
+    }
     if !error.is_empty() {
         canvas.text(64, 338, error, 0x00b4_2309, 1);
     }

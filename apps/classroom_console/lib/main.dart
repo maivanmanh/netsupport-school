@@ -940,7 +940,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                           ),
                       ],
                     );
-                    final tools = Row(
+                    final businessTools = Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         if (agent.connected) ...[
@@ -1180,6 +1180,11 @@ class _ConsoleState extends State<Console> with WindowListener {
                             ),
                           ),
                         ],
+                      ],
+                    );
+                    final rosterTools = Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
                         SizedBox(
                           width: constraints.maxWidth < 900 ? 170 : 220,
                           height: 32,
@@ -1305,6 +1310,18 @@ class _ConsoleState extends State<Console> with WindowListener {
                         ),
                       ],
                     );
+                    final tools = Row(
+                      children: [
+                        Expanded(
+                          child: SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            child: businessTools,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        rosterTools,
+                      ],
+                    );
                     if (constraints.maxWidth < 1500) {
                       return Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1314,14 +1331,17 @@ class _ConsoleState extends State<Console> with WindowListener {
                             child: actions,
                           ),
                           const SizedBox(height: 6),
-                          SingleChildScrollView(
-                            scrollDirection: Axis.horizontal,
-                            child: tools,
-                          ),
+                          tools,
                         ],
                       );
                     }
-                    return Row(children: [actions, const Spacer(), tools]);
+                    return Row(
+                      children: [
+                        actions,
+                        const SizedBox(width: 12),
+                        Expanded(child: tools),
+                      ],
+                    );
                   },
                 ),
               ),

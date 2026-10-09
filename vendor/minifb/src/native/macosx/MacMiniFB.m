@@ -973,6 +973,16 @@ void mfb_resize_notification(void* ptr, uint32_t width, uint32_t height) {
     [window setContentSize:NSMakeSize(width * window->scale, height * window->scale)];
 }
 
+size_t mfb_paste_text(unsigned char* bytes, size_t capacity) {
+    @autoreleasepool {
+        NSString* text = [[NSPasteboard generalPasteboard] stringForType:NSPasteboardTypeString];
+        if (!text) return 0;
+        NSData* data = [text dataUsingEncoding:NSUTF8StringEncoding];
+        if (data.length > capacity) return capacity + 1;
+        if (data.length) memcpy(bytes, data.bytes, data.length);
+        return data.length;
+    }
+}
 bool mfb_copy_text(const unsigned char* bytes, size_t length) {
     @autoreleasepool {
         NSString* text = [[NSString alloc] initWithBytes:bytes length:length encoding:NSUTF8StringEncoding];

@@ -1,3 +1,24 @@
+## 2026-10-09 — Editable native Rust textboxes
+
+Audited all three Rust input UIs and replaced append/replace-on-focus handling
+with shared cursor/selection editing, native clipboard shortcuts and bounded
+undo/redo. IP/numeric validation and reply limits retained. Mac cargo check and
+Flutter analyze passed; no tests run. Paired build and all three deployments completed;
+both Students confirmed new builds and are online. Embedded ZIPs match outputs;
+manual Windows/Mac input checks remain. Also includes right-aligned toolbar.
+Mac capture requires owner to regrant Screen Recording after signing to
+`/Users/lolem/Classroom/Classroom Student.app` on `.254`, then restart Student.
+See [details](diagnostics/2026-10-09-native-text-editing.md).
+
+## 2026-10-09 — Align roster toolbar to the right
+
+Owner requested the filter textbox, Rescan, selection and view icons stay flush
+right. Split business tools from roster controls, with the former in an expanded
+horizontal scroller and the latter anchored at the right edge in both wide and
+two-row layouts. Flutter format/analyze and diff checks passed; no tests run.
+Included in paired native-editor build and deployed to Teacher. Both Students
+also updated for native text editing. Visual review remains manual.
+
 ## 2026-10-09 — Observe 15s wait and distinct initial loading
 
 Owner confirmed reconnect works. Increased wait/auto-close to 15s and separated
