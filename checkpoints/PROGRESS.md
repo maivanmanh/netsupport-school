@@ -1,3 +1,23 @@
+## 2026-10-09 — Control & present Student admission fix
+
+Confirmed the apparently inert toolbar/context action was rejected because an
+already-ended Observe view still occupied the admission guard. Completed/error
+views now retire before an explicit new Student presentation; active views stay
+protected. Both UI actions retain rejection feedback in a SnackBar, and Teacher
+logs rejection reasons. Rust coordinator regressions 4 passed; Flutter focused
+regressions 7 passed; analyze clean. Grouped paired build
+`paired-present-recovery-20261009` verified and launched from
+`target/present-recovery-build/Classroom Console.app`, with fresh embedded Mac
+and Windows Student packages.
+
+Windows source → Mac receiver passed functional Control acknowledgement and
+rendering after a retained failed Observe session. Mac source reached the input
+initialization path but failed on missing Accessibility for
+`/Users/lolem/Classroom-control-recovery-20261009/Classroom Student.app`.
+Pause native Mac testing for the owner's manual grant, restart Student after
+grant, then retry. Both Students remain connected; Teacher is idle.
+See diagnostics/2026-10-09-present-recovery.md for evidence and limitations.
+
 ## 2026-10-02 — Flutter build bundle missing helper fixed
 
 - Fixed `scripts/build-flutter-macos.sh` to embed and sign Rust helper in the Flutter build product before copying the completed bundle into target. Both app paths now include `Contents/Helpers/Classroom`.
@@ -4132,3 +4152,28 @@ Exact next step: same workload UDP/depacketize sink without decode vs decode,
 relay residence/burst and freshness recovery instrumentation; then patch/A/B if
 proven.30-minute soak, optical/fixed1080p and wired35–40 physical x64 deferred.
 Full methods/limits/evidence: diagnostics/2026-10-09-source-motion-measurement.md.
+## 2026-10-09 — Control recovery and shifted Windows keys
+
+- Fixed the independent Observe window losing the teacher's cooperative Control
+  intent after a transient receiver restart or a Student input lease expiry.
+  The intent is retained only after the teacher explicitly selected Control;
+  recovery sends one fresh Control request after a live frame is attached and
+  waits for the Student acknowledgement before forwarding input. Held keys and
+  mouse buttons are not replayed, and an explicit Observe selection cancels the
+  retained intent.
+- Fixed Windows character injection for shifted punctuation. `VkKeyScanExW`
+  returns a virtual key in its low byte and modifier state in its high byte;
+  the previous Unicode path passed the combined value to Enigo, so `Shift+1`
+  could be rejected. The low-byte virtual key is now used while the existing
+  Shift press/release events remain authoritative.
+- Focused Flutter recovery tests passed 8/8 and Flutter analyze reported no
+  issues. Rust Classroom tests passed 204/204 with 2 ignored, including the
+  new virtual-key masking tests. A paired Teacher/Mac Student/Windows x64
+  Student build was produced at `target/control-recovery-build` with embedded
+  package version `paired-control-recovery-20261009`; codesign verification and
+  package hash checks passed. Windows `.155` was updated through the supported
+  updater and confirmed the new version.
+- Runtime keyboard typing through a temporary Windows text sink remains pending:
+  the external command approval service hit its usage limit while trying to
+  launch the bounded sink. The current Teacher endpoint also became unavailable
+  after the isolated GUI restart, so no runtime result is claimed for Shift+1.

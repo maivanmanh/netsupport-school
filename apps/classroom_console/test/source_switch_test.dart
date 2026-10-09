@@ -8,6 +8,17 @@ import 'package:flutter_test/flutter_test.dart';
 class SwitchAgent extends Agent {
   SwitchAgent() : super([]);
   final commands = <(String, List<String>)>[];
+  String? rejection;
+  @override
+  Future<void> commandChecked(
+    String action,
+    Iterable<String> selected,
+    Map<String, dynamic>? input,
+  ) async {
+    await command(action, selected, input);
+    if (rejection != null) throw StateError(rejection!);
+  }
+
   @override
   bool get connected => true;
   @override
@@ -80,6 +91,16 @@ void main() {
       await tester.pumpAndSettle();
       expect(agent.commands.last.$1, 'switch_source');
       expect(agent.commands.last.$2, ['A']);
+      agent.rejection =
+          'Close Observe/Control windows before presenting a Student';
+      await tester.tap(find.text('Control & present Student'));
+      await tester.pump();
+      // Even an immediate authoritative state update cannot erase the feedback.
+      agent.error = null;
+      agent.notifyListeners();
+      await tester.pump();
+      expect(find.textContaining('Cannot present Student:'), findsOneWidget);
+      agent.rejection = null;
       agent.state.addAll({'phase': 'switching', 'next_source': 'A'});
       agent.notifyListeners();
       await tester.pumpAndSettle();

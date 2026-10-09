@@ -540,13 +540,52 @@ fn key(s: &str) -> Option<Key> {
             if c.next().is_some() {
                 return None;
             }
-            Key::Unicode(c1)
+            character_key(c1)
         }
     })
+}
+
+fn character_key(c: char) -> Key {
+    #[cfg(windows)]
+    {
+        use windows::Win32::UI::{
+            Input::KeyboardAndMouse::{GetKeyboardLayout, VkKeyScanExW},
+            WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId},
+        };
+        if u32::from(c) <= u32::from(u16::MAX) {
+            // SAFETY: query the foreground Student application's keyboard layout;
+            // these APIs borrow no memory and retain no pointers.
+            let scan = unsafe {
+                let thread = GetWindowThreadProcessId(GetForegroundWindow(), None);
+                VkKeyScanExW(c as u16, GetKeyboardLayout(thread))
+            };
+            if let Some(vk) = virtual_key_from_scan(scan) {
+                // The high byte describes required modifiers, NOT part of VK.
+                // Shift/Alt/Ctrl already arrive as owned press/release events.
+                // Enigo's Unicode mapping otherwise passes e.g. 0x0131 for '!'
+                // into MapVirtualKeyExW, which rejects the key and drops Control.
+                return Key::Other(u32::from(vk));
+            }
+        }
+    }
+    Key::Unicode(c)
+}
+
+#[cfg(any(windows, test))]
+fn virtual_key_from_scan(scan: i16) -> Option<u16> {
+    (scan >= 0).then_some((scan as u16) & 0xff)
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn windows_shift_state_is_not_part_of_the_virtual_key() {
+        assert_eq!(virtual_key_from_scan(0x0131), Some(0x31)); // Shift+1
+        assert_eq!(virtual_key_from_scan(0x0141), Some(0x41)); // Shift+A
+        assert_eq!(virtual_key_from_scan(0x06ba), Some(0xba)); // Ctrl+Alt
+        assert_eq!(virtual_key_from_scan(0x0031), Some(0x31));
+        assert_eq!(virtual_key_from_scan(-1), None);
+    }
     #[test]
     fn normalized_pointer_uses_logical_retina_bounds_and_display_origin() {
         // A 2x backing surface does not double macOS input coordinates.

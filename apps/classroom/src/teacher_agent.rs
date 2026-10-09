@@ -1294,6 +1294,7 @@ pub(super) fn run(
                         Ok(())
                     }
                     "switch_source" => {
+                        super::observe_coordinator::View::retire_finished(&mut observe);
                         let target = SourceTarget::parse(&command.selected);
                         let rows = roster.lock().unwrap().snapshot();
                         match target {
@@ -1352,6 +1353,7 @@ pub(super) fn run(
                         }
                     }
                     "share_student" if session.is_none() => {
+                        super::observe_coordinator::View::retire_finished(&mut observe);
                         observe_windows.retain(|_, child| matches!(child.try_wait(), Ok(None)));
                         let rows = roster.lock().unwrap().snapshot();
                         let source = rows.iter().find(|r| {
@@ -1535,6 +1537,11 @@ pub(super) fn run(
                         snapshot.phase = "idle".into();
                         snapshot.error =
                             Some(format!("Cannot switch presentation source: {error}"));
+                    }
+                }
+                if matches!(command.action.as_str(), "switch_source" | "share_student") {
+                    if let Err(error) = &response {
+                        warn!(id, action = %command.action, error, "Student presentation command rejected");
                     }
                 }
                 let _ = request.reply.send(

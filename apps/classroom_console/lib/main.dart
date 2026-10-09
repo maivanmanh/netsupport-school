@@ -357,7 +357,18 @@ class _ConsoleState extends State<Console> with WindowListener {
     } else if (choice == 'present') {
       // The context target is independent of checkbox selection. The backend
       // revalidates online/current/busy state before stopping any old source.
-      await agent.command('switch_source', [row['id'] as String]);
+      await presentStudent([row['id'] as String]);
+    }
+  }
+
+  Future<void> presentStudent(Iterable<String> ids) async {
+    try {
+      await agent.commandChecked('switch_source', ids, const {});
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Cannot present Student: $error')));
     }
   }
 
@@ -714,10 +725,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                                     canSwitch &&
                                         onlineSelected.length == 1 &&
                                         onlineSelected.single != sourceId
-                                    ? () => agent.command(
-                                        'switch_source',
-                                        onlineSelected,
-                                      )
+                                    ? () => presentStudent(onlineSelected)
                                     : null,
                                 icon: const Icon(
                                   Icons.present_to_all,

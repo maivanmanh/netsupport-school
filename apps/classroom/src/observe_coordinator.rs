@@ -101,6 +101,15 @@ impl View {
     pub fn is_live(&self) -> bool {
         self.status.lock().unwrap().value["phase"] == "live"
     }
+    /// A completed receiver is retained for UI diagnostics/reconnect, but must
+    /// not block a new presentation explicitly requested by the teacher.
+    pub fn retire_finished(view: &mut Option<Self>) {
+        if view.as_ref().is_some_and(|view| {
+            matches!(view.state()["phase"].as_str(), Some("ended" | "error"))
+        }) {
+            view.take();
+        }
+    }
     pub fn send(&self, v: Value) -> Result<()> {
         if v["action"] == "keepalive" {
             self.status.lock().unwrap().lease = Instant::now();
@@ -136,6 +145,23 @@ fn receiver_failure(path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn finished_observe_does_not_block_a_new_presentation_but_live_view_does() {
+        for phase in ["starting", "live", "ended", "error"] {
+            let mut view = Some(View {
+                id: "student".into(),
+                status: Arc::new(Mutex::new(Status {
+                    value: json!({"phase": phase}),
+                    lease: Instant::now(),
+                })),
+                stop: Arc::new(AtomicBool::new(false)),
+                input: Arc::new(Mutex::new(VecDeque::new())),
+                worker: None,
+            });
+            View::retire_finished(&mut view);
+            assert_eq!(view.is_some(), matches!(phase, "starting" | "live"));
+        }
+    }
     #[test]
     fn class_view_does_not_restart_or_remove_the_relays_publisher_request() {
         let jobs = Arc::new(super::super::monitoring::ObserveRequests::default());

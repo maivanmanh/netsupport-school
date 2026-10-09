@@ -10,6 +10,7 @@ import 'package:flutter/rendering.dart';
 import 'package:window_manager/window_manager.dart';
 import 'agent.dart';
 import 'observe_stats.dart';
+import 'observe_control_recovery.dart';
 import 'classroom_tools_ui.dart';
 import 'file_transfer.dart';
 
@@ -38,6 +39,8 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
   bool started = false, closing = false, attaching = false;
   String? path, nativeError, requestedMode;
   String? modeError;
+  String modeRequestError = '';
+  final controlRecovery = ObserveControlRecovery();
   Timer? reconnectTimer, modeRequestTimer;
   int reconnectAttempts = 0;
   bool reconnecting = false;
@@ -502,8 +505,9 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
       attach(source);
     }
     final viewError = view['error'] as String? ?? '';
-    final modeAcknowledged = requestedMode == mode;
-    if (modeAcknowledged || viewError.isNotEmpty) {
+    final modeAcknowledged = requestedMode == mode && viewError.isEmpty;
+    if (modeAcknowledged ||
+        (viewError.isNotEmpty && viewError != modeRequestError)) {
       modeRequestTimer?.cancel();
       requestedMode = null;
       // Session errors are rendered directly from view, never latched as a mode error.
@@ -527,7 +531,28 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
     } else if (phase == 'live') {
       reconnecting = false;
     }
+    restoreControlIfReady();
     if (mounted) setState(() {});
+  }
+
+  void restoreControlIfReady() {
+    if (closing || classControl) return;
+    if (controlRecovery.update(
+      connected: widget.agent.connected,
+      phase: view['phase'] as String?,
+      surface: view['surface'] as String?,
+      mode: mode,
+      error: view['error'] as String? ?? '',
+      ready: live && path == view['surface'],
+      requestPending: requestedMode != null,
+    )) {
+      unawaited(
+        widget.agent.log(
+          'Observe restoring cooperative Control after interruption',
+        ),
+      );
+      switchMode('control', recovery: true);
+    }
   }
 
   Future<void> openObserve() async {
@@ -550,12 +575,12 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
   void recordState() {
     final current = view;
     final signature =
-        '${current['id']}|${current['phase']}|${current['surface'] != null}|${current['error'] ?? ''}';
+        '${current['id']}|${current['phase']}|${current['mode']}|${current['surface']}|${current['error'] ?? ''}';
     if (signature == lastStateSignature) return;
     lastStateSignature = signature;
     unawaited(
       widget.agent.log(
-        'Observe state phase=${current['phase'] ?? 'none'} surface=${current['surface'] != null} error=${current['error'] ?? ''}',
+        'Observe state phase=${current['phase'] ?? 'none'} mode=${current['mode'] ?? 'observe'} surface=${current['surface'] != null} error=${current['error'] ?? ''}',
       ),
     );
   }
@@ -668,6 +693,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
         startPolling(fast: false);
       }
       polling = false;
+      restoreControlIfReady();
       syncSystemKeys();
     }
   }
@@ -676,9 +702,11 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
     if (controls) widget.agent.observeInput(widget.studentId, value);
   }
 
-  void switchMode(String value) {
+  void switchMode(String value, {bool recovery = false}) {
     if (classControl && value == 'observe') return;
     if (!canSwitchMode || requestedMode != null) return;
+    if (!recovery) controlRecovery.choose(value);
+    modeRequestError = view['error'] as String? ?? '';
     modeRequestTimer?.cancel();
     modeError = null;
     releaseHeldInput();

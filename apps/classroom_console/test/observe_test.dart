@@ -32,6 +32,91 @@ class ObserveAgent extends Agent {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  for (final leaseExpiry in [false, true]) {
+    testWidgets(
+      'Control restores after ${leaseExpiry ? 'lease expiry' : 'receiver reconnect'} only after acknowledgement',
+      (t) async {
+        await t.binding.setSurfaceSize(const Size(1200, 800));
+        addTearDown(() => t.binding.setSurfaceSize(null));
+        final messenger =
+            TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+        messenger.setMockMethodCallHandler(
+          const MethodChannel('window_manager'),
+          (_) async => null,
+        );
+        messenger.setMockMethodCallHandler(
+          const MethodChannel('classroom/observe'),
+          (c) async => c.method == 'attach'
+              ? 4
+              : c.method == 'stats'
+              ? {
+                  'width': 1920,
+                  'height': 1080,
+                  'sequence': 2,
+                  'native_frames': 2,
+                }
+              : null,
+        );
+        final a = ObserveAgent()
+          ..state = {
+            'observe': {
+              'id': 'pc',
+              'phase': 'live',
+              'mode': 'control',
+              'surface': '/private/tmp/first-frame',
+            },
+          };
+        await t.pumpWidget(
+          MaterialApp(
+            home: ObserveWindow(agent: a, studentId: 'pc', name: 'PC'),
+          ),
+        );
+        a.notifyListeners();
+        await t.pump(const Duration(milliseconds: 100));
+        await t.pump();
+        a.inputs.clear();
+        if (!leaseExpiry) {
+          a.state['observe']['phase'] = 'error';
+          a.state['observe']['error'] = 'Observe receiver exited';
+          a.notifyListeners();
+          await t.pump();
+        }
+        a.state['observe'] = {
+          'id': 'pc',
+          'phase': 'live',
+          'mode': 'observe',
+          'surface': leaseExpiry
+              ? '/private/tmp/first-frame'
+              : '/private/tmp/new-frame',
+          'error': leaseExpiry
+              ? 'Input lease expired; Student input released'
+              : '',
+        };
+        a.notifyListeners();
+        await t.pump(const Duration(milliseconds: 600));
+        await t.pump();
+        expect(a.inputs.where((v) => v['action'] == 'control').length, 1);
+        expect(find.text('Changing input mode…'), findsOneWidget);
+        a.notifyListeners(); // Repeated old error must not cancel the mode request.
+        await t.pump();
+        expect(find.text('Changing input mode…'), findsOneWidget);
+        final mouse = await t.createGesture(kind: PointerDeviceKind.mouse);
+        await mouse.addPointer(location: const Offset(400, 300));
+        await mouse.moveTo(const Offset(450, 300));
+        expect(a.inputs.any((v) => v['action'] == 'move'), isFalse);
+        a.state['observe']['mode'] = 'control';
+        a.state['observe']['error'] = '';
+        a.notifyListeners();
+        await t.pump();
+        expect(find.text('Changing input mode…'), findsNothing);
+        await mouse.moveTo(const Offset(500, 300));
+        expect(a.inputs.any((v) => v['action'] == 'move'), isTrue);
+        await mouse.removePointer();
+        await t.pumpWidget(const SizedBox());
+        a.dispose();
+      },
+    );
+  }
   test(
     'Only an explicit console click activates the matching owned window',
     () async {
