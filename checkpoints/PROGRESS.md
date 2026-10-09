@@ -1,3 +1,12 @@
+## 2026-10-09 — Observe 15s wait and distinct initial loading
+
+Owner confirmed reconnect works. Increased wait/auto-close to 15s and separated
+initial dark-blue/white Connecting screen from interrupted-session reconnect panel
+and countdown. Flutter format/analyze passed; no tests run. Paired build and
+Teacher-only update completed; both Students online, fresh packages embedded.
+Manual revised UI/15s expiry verification pending.
+See [details](diagnostics/2026-10-09-observe-deadline.md).
+
 ## 2026-10-09 — Observe 10s recovery deadline and thinner crop grid
 
 Replaced two-shot Observe reconnect with online-aware bounded retry and a

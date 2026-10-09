@@ -33,3 +33,17 @@ reopened at its fixed path. Both embedded Student packages byte-match fresh
 outputs; existing compatible Students were not redeployed. Both `.254` and
 `.155` are online. Real Windows logout/login, cable/Wi-Fi interruption below 10s,
 timeout above 10s, and Control restoration need owner runtime verification.
+
+## Owner-confirmed recovery and revised UI/timeout
+
+Owner confirmed reconnect works, then requested a 15s wait instead of 10s.
+Updated the single recoveryTimeout constant and countdown/log wording to 15s.
+Before the first fresh source frame, show only a solid dark-blue background and
+white Connecting to student text. Reconnecting state, amber warning panel and
+countdown are reserved for interruptions after the first frame; retry mechanics
+still work during initial connection without labelling it a reconnection.
+Flutter format/analyze passed; no tests added or run. Paired
+`paired-observe-15s-20261009` build and Teacher-only deployment completed.
+Embedded Student ZIPs byte-match fresh outputs. Both Students online, retaining
+their running compatible build. Revised initial-loading UI and 15s expiry still
+need manual interaction verification.

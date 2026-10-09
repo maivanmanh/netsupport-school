@@ -33,6 +33,7 @@ class ObserveWindow extends StatefulWidget {
 class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
   static const native = MethodChannel('classroom/observe');
   static const files = MethodChannel('classroom/files');
+  static const recoveryTimeout = Duration(seconds: 15);
   Timer? tick, inputHeartbeat;
   late final ToolActivity toolActivity = ToolActivity(widget.agent);
   bool checkingFocus = false;
@@ -589,9 +590,10 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
     previouslyOnline = online;
     // An acknowledgement, new surface or stale cached frame never extends the
     // deadline. Only a fresh source frame can finish recovery before expiry.
-    if (interruptedAt != null &&
-        now - interruptedAt! >= const Duration(seconds: 10)) {
-      unawaited(widget.agent.log('Observe interruption exceeded 10s; closing'));
+    if (interruptedAt != null && now - interruptedAt! >= recoveryTimeout) {
+      unawaited(
+        widget.agent.log('Observe connection wait exceeded 15s; closing'),
+      );
       unawaited(onWindowClose());
       return;
     }
@@ -622,9 +624,15 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
       if (interruptedAt == null) {
         interruptedAt = lastFreshFrame ?? now;
         releaseHeldInput();
-        unawaited(widget.agent.log('Observe interrupted; waiting at most 10s'));
+        unawaited(
+          widget.agent.log(
+            lastFreshFrame == null
+                ? 'Observe initial connection; waiting at most 15s'
+                : 'Observe interrupted; waiting at most 15s',
+          ),
+        );
       }
-      reconnecting = true;
+      reconnecting = lastFreshFrame != null;
       final attemptMature =
           lastOpenAt == null || now - lastOpenAt! >= const Duration(seconds: 3);
       if (widget.agent.connected &&
@@ -1157,7 +1165,22 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                         ),
                       ),
                     ),
-                  if (!live)
+                  if (!live && lastFreshFrame == null)
+                    const ColoredBox(
+                      color: Color(0xff17212b),
+                      child: Center(
+                        child: Text(
+                          'Connecting to student…',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 24,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                  if (!live && lastFreshFrame != null)
                     ColoredBox(
                       color: Colors.black.withValues(alpha: 0.48),
                       child: Center(
@@ -1198,7 +1221,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                               if (interruptedAt != null && !classControl) ...[
                                 const SizedBox(height: 10),
                                 Text(
-                                  'Window closes in ${(10 - (recoveryClock.elapsed - interruptedAt!).inSeconds).clamp(0, 10)}s if the connection does not recover',
+                                  'Window closes in ${(recoveryTimeout.inSeconds - (recoveryClock.elapsed - interruptedAt!).inSeconds).clamp(0, recoveryTimeout.inSeconds)}s if the connection does not recover',
                                   textAlign: TextAlign.center,
                                   style: const TextStyle(
                                     color: Color(0xffffc857),
