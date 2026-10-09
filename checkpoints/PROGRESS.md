@@ -1,5 +1,12 @@
 ## 2026-10-09 — Control & present Student admission fix
 
+Follow-up after Accessibility grant: direct LaunchAgent restart still failed
+input permission. Opened the same Mac Student bundle through LaunchServices
+with the same explicit arguments; cooperative Control and Windows recipient
+rendering passed. Both Student source directions now have functional evidence.
+Teacher and both Students left online/idle; Mac's direct LaunchAgent unloaded.
+See the report's follow-up section for the runtime launch requirement.
+
 Confirmed the apparently inert toolbar/context action was rejected because an
 already-ended Observe view still occupied the admission guard. Completed/error
 views now retire before an explicit new Student presentation; active views stay

@@ -57,3 +57,20 @@ idle for the owner. No 35–40 physical PC or optical latency acceptance is clai
 
 Evidence: `target/control-recovery-20261009/present-*`,
 `teacher-present-fixed.log`, and current Mac Student `student.log`.
+
+## Follow-up after the owner's Accessibility grant
+
+Restarting the executable directly through the graphical LaunchAgent still
+returned the input permission error. Stopped that owned job and opened the
+same signed bundle with LaunchServices (`open -n ... --args`), retaining the
+explicit Teacher `.171`, ports and config/profile/log paths. No TCC edits.
+
+This launch recognized the grant: Mac source acknowledged cooperative Control,
+and Windows `.155` reported receiving/rendering the stream (sample render FPS
+11.76). Stop returned Teacher to idle and both Students remained online. This
+is functional validation, not sustained performance or physical lab acceptance.
+Evidence: `present-runtime-mac-launchservices.log` and
+`present-runtime-192.168.100.254.json` in the same evidence directory.
+The direct test LaunchAgent is unloaded; Mac Student remains open via
+LaunchServices. Future manual restarts should open that exact bundle with the
+explicit classroom arguments rather than directly kickstarting the executable.
