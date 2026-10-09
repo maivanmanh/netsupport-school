@@ -58,6 +58,34 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
   bool applied = false;
   String? error;
   List<Map<String, String>> skipped = [];
+  bool copilot = false;
+  bool copilotBusy = false;
+  String? copilotError;
+  int scanGeneration = 0;
+  int scanTotal = 0, scanDone = 0;
+  bool firstScan = true;
+  final newIds = <String>{};
+  final scanJobs = <String>{};
+
+  List<String> get onlineIds => [
+    for (final s in agent.students)
+      if (s['online'] == true) '${s['id']}',
+  ];
+  List<String> get copilotEligible {
+    final caps =
+        (agent.state['tools'] as Map?)?['capabilities'] as Map? ?? const {};
+    return onlineIds
+        .where((id) => (caps[id] as Map?)?['copilot_network'] == 1)
+        .toList();
+  }
+
+  Set<String> get copilotApplied {
+    final ids = (agent.state['tools'] as Map?)?['copilot_blocked'];
+    return {
+      if (ids is List)
+        for (final id in ids) '$id',
+    };
+  }
 
   @override
   void initState() {
@@ -85,6 +113,9 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
   void applyPreferences() {
     final enabledPref = agent.preferences['vscode_enabled'];
     if (enabledPref is bool) enabled = enabledPref;
+    copilot = agent.preferences['copilot_network_block'] == true;
+    final previous = agent.preferences['vscode_allowed'];
+    if (previous is List) selected = previous.map((v) => '$v').toSet();
   }
 
   void waitForAgent() {
@@ -96,78 +127,190 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
 
   @override
   void dispose() {
+    stopScan(notify: false);
     agent.removeListener(refreshStatus);
     agent.removeListener(waitForAgent);
     search.dispose();
     super.dispose();
   }
 
-  Future<Map<String, dynamic>?> fetchOne(String studentId) async {
+  Future<Map<String, dynamic>?> fetchOne(
+    String studentId,
+    int generation,
+  ) async {
     final started = await agent.request(
       'vscode_list',
       input: {'student': studentId},
     );
     final id = started['job_id'];
-    if (started['ok'] != true || id == null) {
-      fetchErrors.add(
-        Agent.failure(
-          started,
-        ).replaceFirst('Operation failed', 'A computer could not be reached'),
-      );
+    if (!mounted || generation != scanGeneration) {
+      if (id != null) unawaited(agent.request('fs_cancel', input: {'id': id}));
       return null;
     }
-    final deadline = DateTime.now().add(const Duration(seconds: 15));
-    while (DateTime.now().isBefore(deadline)) {
-      if (!mounted) return null;
-      await Future<void>.delayed(const Duration(milliseconds: 250));
+    if (started['ok'] != true || id == null) {
+      return null;
+    }
+    scanJobs.add('$id');
+    while (mounted && generation == scanGeneration) {
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      if (!mounted || generation != scanGeneration) return null;
       final answer = await agent.request('fs_result', input: {'id': id});
+      if (!mounted || generation != scanGeneration) return null;
       if (answer['ok'] != true) {
-        fetchErrors.add(Agent.failure(answer));
+        scanJobs.remove('$id');
+        unawaited(agent.request('fs_cancel', input: {'id': id}));
         return null;
       }
       final body = answer['result'];
       if (body is Map && body['pending'] != true) {
+        scanJobs.remove('$id');
+        if (body['error'] != null) return null;
         return Map<String, dynamic>.from(body);
       }
     }
-    fetchErrors.add('A computer did not answer in time.');
     return null;
   }
 
+  void stopScan({bool notify = true}) {
+    scanGeneration++;
+    for (final id in scanJobs) {
+      unawaited(agent.request('fs_cancel', input: {'id': id}));
+    }
+    scanJobs.clear();
+    if (notify && mounted) {
+      setState(() {
+        loading = false;
+      });
+    }
+  }
+
   Future<void> load() async {
+    if (loading && scanTotal > 0) return;
+    final generation = ++scanGeneration;
+    final ids = onlineIds; // Snapshot: later arrivals belong to the next scan.
+    final baseline = extensions.map((e) => e.id).toSet();
+    final initial = firstScan;
+    firstScan = false;
     setState(() {
       loading = true;
       error = null;
       fetchErrors = [];
+      scanTotal = ids.length;
+      scanDone = 0;
+      newIds.clear();
     });
-    final results = await Future.wait(widget.studentIds.map(fetchOne));
-    if (!mounted) return;
-    final byId = <String, _Extension>{};
-    final notes = <String>{};
-    for (final report in results) {
-      if (report == null) continue;
-      for (final raw in (report['extensions'] as List? ?? const [])) {
-        if (raw is! Map) continue;
-        final ext = _Extension.fromJson(raw);
-        if (_copilotIds.contains(ext.id)) continue;
-        byId.putIfAbsent(ext.id, () => ext);
-      }
-      for (final note in (report['notes'] as List? ?? const [])) {
-        notes.add('$note');
-      }
-    }
-    final list = byId.values.toList()
-      ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
-    final persisted = agent.preferences['vscode_allowed'];
-    final previous = {
-      if (persisted is List)
-        for (final v in persisted) '$v',
-    };
+    await Future.wait(
+      ids.map((id) async {
+        Map<String, dynamic>? report;
+        while (mounted && generation == scanGeneration && report == null) {
+          report = await fetchOne(id, generation);
+          if (report == null) {
+            await Future<void>.delayed(const Duration(seconds: 3));
+          }
+        }
+        if (!mounted || generation != scanGeneration || report == null) return;
+        final additions = <_Extension>[];
+        for (final raw in (report['extensions'] as List? ?? const [])) {
+          if (raw is! Map) continue;
+          final ext = _Extension.fromJson(raw);
+          if (_copilotIds.contains(ext.id)) continue;
+          if (!extensions.any((e) => e.id == ext.id) &&
+              !additions.any((e) => e.id == ext.id)) {
+            additions.add(ext);
+          }
+        }
+        setState(() {
+          scanDone++;
+          fetchErrors.addAll([
+            for (final note in report!['notes'] as List? ?? const []) '$note',
+          ]);
+          if (initial) {
+            extensions.addAll(additions);
+          } else {
+            newIds.addAll(
+              additions.where((e) => !baseline.contains(e.id)).map((e) => e.id),
+            );
+            extensions.insertAll(0, additions);
+          }
+        });
+      }),
+    );
+    if (!mounted || generation != scanGeneration) return;
     setState(() {
       loading = false;
-      extensions = list;
-      selected = previous.intersection(list.map((e) => e.id).toSet());
-      fetchErrors = [...fetchErrors, ...notes];
+      if (initial) {
+        extensions.sort((a, b) {
+          final rank =
+              (selected.contains(b.id) ? 1 : 0) -
+              (selected.contains(a.id) ? 1 : 0);
+          return rank != 0
+              ? rank
+              : a.name.toLowerCase().compareTo(b.name.toLowerCase());
+        });
+      }
+    });
+  }
+
+  Future<String?> waitForJob(dynamic id) async {
+    final deadline = DateTime.now().add(const Duration(seconds: 60));
+    while (mounted && DateTime.now().isBefore(deadline)) {
+      final jobs = (agent.state['tools'] as Map?)?['jobs'];
+      if (jobs is List) {
+        for (final job in jobs.whereType<Map>()) {
+          if (job['id'] != id) continue;
+          final targets = (job['targets'] as List? ?? [])
+              .whereType<Map>()
+              .toList();
+          if (targets.isNotEmpty &&
+              targets.every(
+                (t) => [
+                  'complete',
+                  'error',
+                  'cancelled',
+                  'disconnected',
+                ].contains(t['status']),
+              )) {
+            final failures = targets.where((t) => t['status'] != 'complete');
+            return failures.isEmpty
+                ? null
+                : failures
+                      .map((t) => '${t['error'] ?? t['status']}')
+                      .join('\n');
+          }
+        }
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+    }
+    return 'No completion confirmation received. Check the computers and retry.';
+  }
+
+  Future<void> changeCopilot(bool value) async {
+    if (copilotBusy) return;
+    setState(() {
+      copilot = value;
+      copilotBusy = true;
+      copilotError = null;
+    });
+    agent.savePreferences({'copilot_network_block': value});
+    final ids = copilotEligible;
+    String? failure;
+    if (ids.isEmpty) {
+      failure =
+          'No connected computer supports this. Windows administrator + updated Student required.';
+    } else {
+      final response = await agent.request(
+        'tool_copilot_policy',
+        selected: ids,
+        input: {'enabled': value},
+      );
+      failure = response['ok'] == true
+          ? await waitForJob(response['job_id'])
+          : Agent.failure(response);
+    }
+    if (!mounted) return;
+    setState(() {
+      copilotBusy = false;
+      copilotError = failure;
     });
   }
 
@@ -187,6 +330,26 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
       );
       return;
     }
+    final confirmedByTeacher = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Apply VS Code extension policy?'),
+        content: const Text(
+          'Applying restrictions will close and reopen VS Code on the selected Windows computers. Ask students to save their work first. The Copilot network checkbox is applied separately.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Apply'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || confirmedByTeacher != true) return;
     save();
     setState(() {
       busy = true;
@@ -261,8 +424,8 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
   Widget build(BuildContext context) {
     final blockedIds = vscodeBlockedStudents(agent);
     final blocked = widget.studentIds.where(blockedIds.contains).length;
-    final copilotActive =
-        widget.studentIds.isNotEmpty && blocked == widget.studentIds.length;
+    final eligible = copilotEligible;
+    final copilotCount = eligible.where(copilotApplied.contains).length;
     final filter = search.text.trim().toLowerCase();
     final shown = filter.isEmpty
         ? extensions
@@ -320,123 +483,196 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
                 absorbing: busy,
                 child: Opacity(
                   opacity: busy ? 0.6 : 1,
-                  child: loading
-                      ? const Center(child: CircularProgressIndicator())
-                      : Padding(
-                          padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _CopilotRow(
+                          value: copilot,
+                          onChanged: copilotBusy
+                              ? null
+                              : (v) => changeCopilot(v ?? false),
+                          busy: copilotBusy,
+                          applied: copilotCount,
+                          eligible: eligible.length,
+                          unsupported: onlineIds.length - eligible.length,
+                        ),
+                        if (copilotError != null)
+                          Row(
                             children: [
-                              _CopilotRow(active: copilotActive),
-                              const SizedBox(height: 12),
-                              Row(
-                                children: [
-                                  Switch(
-                                    value: enabled,
-                                    onChanged: (v) => setState(() {
-                                      enabled = v;
-                                      applied = false;
-                                    }),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  const Text(
-                                    'Enforce an allowlist: only checked extensions below may run',
-                                    style: TextStyle(
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                  const Spacer(),
-                                  if (extensions.isNotEmpty)
-                                    Text(
-                                      '${selected.length}/${extensions.length} allowed',
-                                      style: const TextStyle(
-                                        fontSize: 12,
-                                        color: Colors.blueGrey,
-                                      ),
-                                    ),
-                                ],
-                              ),
-                              const SizedBox(height: 10),
-                              TextField(
-                                controller: search,
-                                onChanged: (_) => setState(() {}),
-                                decoration: const InputDecoration(
-                                  isDense: true,
-                                  prefixIcon: Icon(Icons.search, size: 18),
-                                  hintText: 'Search installed extensions…',
-                                  border: OutlineInputBorder(),
-                                ),
-                              ),
-                              if (fetchErrors.isNotEmpty) ...[
-                                const SizedBox(height: 8),
-                                Text(
-                                  fetchErrors.toSet().join(' · '),
-                                  style: const TextStyle(
-                                    fontSize: 11.5,
-                                    color: Colors.blueGrey,
-                                  ),
-                                ),
-                              ],
-                              const SizedBox(height: 8),
                               Expanded(
-                                child: extensions.isEmpty
-                                    ? Center(
-                                        child: Text(
-                                          !agent.connected
-                                              ? 'Connecting to the Teacher agent…'
-                                              : 'No user-installed extensions were found on the selected computers.',
-                                          style: const TextStyle(
-                                            color: Colors.blueGrey,
-                                          ),
-                                        ),
-                                      )
-                                    : ListView.separated(
-                                        itemCount: shown.length,
-                                        separatorBuilder: (_, _) =>
-                                            const Divider(height: 1),
-                                        itemBuilder: (context, i) {
-                                          final e = shown[i];
-                                          final checked = selected.contains(
-                                            e.id,
-                                          );
-                                          return CheckboxListTile(
-                                            dense: true,
-                                            value: checked,
-                                            onChanged: (v) => setState(() {
-                                              applied = false;
-                                              if (v == true) {
-                                                selected.add(e.id);
-                                              } else {
-                                                selected.remove(e.id);
-                                              }
-                                            }),
-                                            title: Text(
+                                child: Text(
+                                  copilotError!,
+                                  style: const TextStyle(
+                                    color: _danger,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ),
+                              TextButton(
+                                onPressed: copilotBusy
+                                    ? null
+                                    : () => changeCopilot(copilot),
+                                child: const Text('Retry'),
+                              ),
+                            ],
+                          ),
+                        const SizedBox(height: 12),
+                        Row(
+                          children: [
+                            Switch(
+                              value: enabled,
+                              onChanged: (v) => setState(() {
+                                enabled = v;
+                                applied = false;
+                              }),
+                            ),
+                            const SizedBox(width: 4),
+                            const Text(
+                              'Enforce an allowlist: only checked extensions below may run',
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const Spacer(),
+                            if (extensions.isNotEmpty)
+                              Text(
+                                '${selected.length}/${extensions.length} allowed',
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.blueGrey,
+                                ),
+                              ),
+                          ],
+                        ),
+                        const SizedBox(height: 10),
+                        Row(
+                          children: [
+                            if (loading) ...[
+                              const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Text('Scanning $scanDone/$scanTotal computers…'),
+                            ] else
+                              Text('Extensions · ${extensions.length} unique'),
+                            const Spacer(),
+                            if (loading)
+                              TextButton.icon(
+                                onPressed: stopScan,
+                                icon: const Icon(
+                                  Icons.stop_circle_outlined,
+                                  size: 18,
+                                ),
+                                label: const Text('Stop'),
+                              )
+                            else
+                              TextButton.icon(
+                                onPressed: load,
+                                icon: const Icon(Icons.refresh, size: 18),
+                                label: const Text('Rescan all connected'),
+                              ),
+                          ],
+                        ),
+                        TextField(
+                          controller: search,
+                          onChanged: (_) => setState(() {}),
+                          decoration: const InputDecoration(
+                            isDense: true,
+                            prefixIcon: Icon(Icons.search, size: 18),
+                            hintText: 'Search installed extensions…',
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                        if (fetchErrors.isNotEmpty) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            fetchErrors.toSet().join(' · '),
+                            style: const TextStyle(
+                              fontSize: 11.5,
+                              color: Colors.blueGrey,
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: 8),
+                        Expanded(
+                          child: extensions.isEmpty
+                              ? Center(
+                                  child: Text(
+                                    !agent.connected
+                                        ? 'Connecting to the Teacher agent…'
+                                        : 'No user-installed extensions were found on the selected computers.',
+                                    style: const TextStyle(
+                                      color: Colors.blueGrey,
+                                    ),
+                                  ),
+                                )
+                              : ListView.separated(
+                                  itemCount: shown.length,
+                                  separatorBuilder: (_, _) =>
+                                      const Divider(height: 1),
+                                  itemBuilder: (context, i) {
+                                    final e = shown[i];
+                                    final checked = selected.contains(e.id);
+                                    return CheckboxListTile(
+                                      tileColor: newIds.contains(e.id)
+                                          ? const Color(0xffe0f3ed)
+                                          : null,
+                                      dense: true,
+                                      value: checked,
+                                      onChanged: (v) => setState(() {
+                                        applied = false;
+                                        if (v == true) {
+                                          selected.add(e.id);
+                                        } else {
+                                          selected.remove(e.id);
+                                        }
+                                      }),
+                                      title: Row(
+                                        children: [
+                                          Expanded(
+                                            child: Text(
                                               e.name,
                                               style: const TextStyle(
                                                 fontSize: 13,
                                                 fontWeight: FontWeight.w600,
                                               ),
                                             ),
-                                            subtitle: Text(
-                                              e.description.isEmpty
-                                                  ? e.id
-                                                  : '${e.description}  ·  ${e.id}',
-                                              style: const TextStyle(
-                                                fontSize: 11.5,
+                                          ),
+                                          if (newIds.contains(e.id))
+                                            const Text(
+                                              'NEW',
+                                              style: TextStyle(
+                                                fontSize: 10,
+                                                fontWeight: FontWeight.w800,
+                                                color: Color(0xff167452),
                                               ),
-                                              maxLines: 2,
-                                              overflow: TextOverflow.ellipsis,
                                             ),
-                                            controlAffinity:
-                                                ListTileControlAffinity.leading,
-                                          );
-                                        },
+                                        ],
                                       ),
-                              ),
-                            ],
-                          ),
+                                      subtitle: Text(
+                                        e.description.isEmpty
+                                            ? e.id
+                                            : '${e.description}  ·  ${e.id}',
+                                        style: const TextStyle(fontSize: 11.5),
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      controlAffinity:
+                                          ListTileControlAffinity.leading,
+                                    );
+                                  },
+                                ),
                         ),
+                      ],
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -531,7 +767,7 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
                     mainAxisAlignment: MainAxisAlignment.end,
                     children: [
                       TextButton(
-                        onPressed: busy
+                        onPressed: busy || copilotBusy
                             ? null
                             : () {
                                 save();
@@ -541,7 +777,7 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
                       ),
                       const SizedBox(width: 8),
                       FilledButton.icon(
-                        onPressed: busy || loading ? null : apply,
+                        onPressed: busy || copilotBusy || loading ? null : apply,
                         icon: busy
                             ? const SizedBox(
                                 width: 16,
@@ -566,19 +802,18 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
   }
 }
 
-/// GitHub Copilot is never a normal checkbox: VS Code's own
-/// `AllowedExtensions` policy denies anything not explicitly listed, so
-/// Copilot is always left out of the allowlist this window sends —
-/// regardless of what the Teacher checks below.
 class _CopilotRow extends StatelessWidget {
-  const _CopilotRow({required this.active});
-
-  /// Whether the allowlist is actually enforced right now for at least one
-  /// of the selected computers — not just configured in this window. The
-  /// badge must never claim Copilot is blocked when nothing has been
-  /// applied yet, since an un-applied policy changes nothing on the real
-  /// machine.
-  final bool active;
+  const _CopilotRow({
+    required this.value,
+    required this.onChanged,
+    required this.busy,
+    required this.applied,
+    required this.eligible,
+    required this.unsupported,
+  });
+  final bool value, busy;
+  final int applied, eligible, unsupported;
+  final ValueChanged<bool?>? onChanged;
   @override
   Widget build(BuildContext context) => Container(
     padding: const EdgeInsets.all(10),
@@ -589,6 +824,7 @@ class _CopilotRow extends StatelessWidget {
     ),
     child: Row(
       children: [
+        Checkbox(value: value, onChanged: onChanged),
         const Icon(Icons.smart_toy_outlined, size: 18, color: Colors.blueGrey),
         const SizedBox(width: 10),
         Expanded(
@@ -599,41 +835,34 @@ class _CopilotRow extends StatelessWidget {
                 'GitHub Copilot / Copilot Chat',
                 style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
               ),
-              Text(
-                active
-                    ? 'Copilot extensions are excluded. Built-in AI Chat is not independently verified as blocked.'
-                    : 'Always excluded from the allowlist — but only once you turn the switch below on and press Apply.',
-                style: const TextStyle(fontSize: 11, color: Colors.blueGrey),
+              const Text(
+                'Block GitHub Copilot connections · applies immediately to all supported online computers, independently of the extension allowlist.',
+                style: TextStyle(fontSize: 11, color: Colors.blueGrey),
               ),
-            ],
-          ),
-        ),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-          decoration: BoxDecoration(
-            color: (active ? _danger : Colors.blueGrey).withValues(alpha: 0.12),
-            borderRadius: BorderRadius.circular(20),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                active ? Icons.lock_outline : Icons.schedule,
-                size: 13,
-                color: active ? _danger : Colors.blueGrey,
-              ),
-              const SizedBox(width: 4),
-              Text(
-                active ? 'Allowlist applied' : 'Not applied to all',
-                style: TextStyle(
-                  fontSize: 11.5,
-                  fontWeight: FontWeight.w700,
-                  color: active ? _danger : Colors.blueGrey,
+              if (unsupported > 0)
+                Text(
+                  '$unsupported connected computer(s) unsupported or need an update',
+                  style: const TextStyle(fontSize: 11, color: Colors.blueGrey),
                 ),
-              ),
             ],
           ),
         ),
+        const SizedBox(width: 8),
+        if (busy)
+          const SizedBox(
+            width: 14,
+            height: 14,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          )
+        else
+          Text(
+            '$applied/$eligible applied',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: applied > 0 ? _danger : Colors.blueGrey,
+            ),
+          ),
       ],
     ),
   );

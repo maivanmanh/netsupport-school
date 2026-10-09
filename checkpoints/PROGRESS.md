@@ -1,3 +1,17 @@
+## 2026-10-09 — Independent Copilot network block and extension Rescan
+
+Added independent all-capable-online Copilot checkbox with confirmed X/Y, shared
+Guard DNS + WFP IPv4/IPv6 blocking, policy coexistence/persistence, bounded endpoint
+refresh and transactional filter replacement. Rescan snapshots all online Students,
+supports Stop, deduplicates IDs, highlights newly found rows at the top; initial
+load puts checked rows first. Extension Apply now confirms VS Code restart.
+Mac extension listing is separate from Windows-only enforcement. Cargo check and
+Flutter analyze and paired build passed, no automated tests run. Teacher updated;
+both Student updates pending because `.155` and `.254` are unreachable via
+ping/TCP22/SSH. Owner was asked to confirm power/network/IPs. Inline Chat blocking
+and scan interactions are not yet runtime-verified. See
+[implementation, limits and deferred lab cases](diagnostics/2026-10-09-copilot-network-and-extension-rescan.md).
+
 ## 2026-10-09 — Editable native Rust textboxes
 
 Audited all three Rust input UIs and replaced append/replace-on-focus handling

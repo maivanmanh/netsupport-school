@@ -267,6 +267,12 @@ mod windows_impl {
                 map.insert(id, Value::Bool(true));
             }
         }
+        // Explicit denial avoids treating an empty allowlist as unrestricted
+        // and makes Copilot's exclusion unambiguous to VS Code policy readers.
+        map.insert("*".into(), Value::Bool(false));
+        for id in COPILOT_IDS {
+            map.insert(id.into(), Value::Bool(false));
+        }
         let json = serde_json::to_string(&Value::Object(map))?;
         reg(&[
             "add",
@@ -280,6 +286,20 @@ mod windows_impl {
             "/f",
         ])
         .context("Could not write the extension allowlist (run as administrator?)")?;
+        let readback = Command::new("reg.exe")
+            .args(["query", &format!("HKLM\\{REG_PATH}"), "/v", REG_VALUE])
+            .creation_flags(NO_WINDOW)
+            .output()
+            .context("Could not read back VS Code policy")?;
+        let text = String::from_utf8_lossy(&readback.stdout);
+        let stored = text
+            .split_once("REG_SZ")
+            .and_then(|(_, v)| serde_json::from_str::<Value>(v.trim()).ok());
+        anyhow::ensure!(
+            readback.status.success()
+                && stored.as_ref() == Some(&serde_json::from_str::<Value>(&json)?),
+            "VS Code machine policy readback did not match the requested allowlist"
+        );
         set_disable_ai(true)?;
         // VS Code only resolves `AllowedExtensions` at process start (seen
         // directly in its own log: PolicyConfiguration#initialize runs once
@@ -387,7 +407,53 @@ pub fn is_applied() -> bool {
 }
 #[cfg(not(windows))]
 pub fn list_extensions() -> ExtensionReport {
-    ExtensionReport::default()
+    let mut report = ExtensionReport {
+        supported: cfg!(target_os = "macos"),
+        ..Default::default()
+    };
+    let Some(home) = std::env::var_os("HOME") else {
+        return report;
+    };
+    let dir = std::path::PathBuf::from(home).join(".vscode/extensions");
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return report,
+        Err(error) => {
+            report
+                .notes
+                .push(format!("Could not read extensions: {error}"));
+            return report;
+        }
+    };
+    let mut by_id = std::collections::BTreeMap::new();
+    for entry in entries.flatten().take(2000) {
+        let Ok(bytes) = std::fs::read(entry.path().join("package.json")) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        let (Some(name), Some(publisher)) = (v["name"].as_str(), v["publisher"].as_str()) else {
+            continue;
+        };
+        let id = format!("{publisher}.{name}").to_ascii_lowercase();
+        if COPILOT_IDS.contains(&id.as_str()) {
+            continue;
+        }
+        by_id.entry(id.clone()).or_insert_with(|| ExtensionInfo {
+            id,
+            name: v["displayName"].as_str().unwrap_or(name).to_owned(),
+            description: v["description"]
+                .as_str()
+                .unwrap_or("")
+                .chars()
+                .take(300)
+                .collect(),
+            publisher: publisher.to_owned(),
+        });
+    }
+    report.extensions = by_id.into_values().collect();
+    report
 }
 
 #[cfg(test)]

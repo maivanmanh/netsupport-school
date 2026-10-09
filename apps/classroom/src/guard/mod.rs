@@ -58,6 +58,7 @@ pub struct InternetPolicy {
 #[serde(default)]
 pub struct Policy {
     pub internet: InternetPolicy,
+    pub copilot_block: bool,
     /// Minutes the policy survives without hearing from the Teacher.
     pub lease_minutes: u32,
 }
@@ -65,6 +66,7 @@ impl Default for Policy {
     fn default() -> Self {
         Self {
             internet: InternetPolicy::default(),
+            copilot_block: false,
             lease_minutes: 240,
         }
     }
@@ -79,9 +81,10 @@ impl Policy {
         rules::RuleSet::parse(&self.internet.rules)?;
         if matches!(self.internet.mode, Mode::AllowOnly | Mode::BlockOnly) {
             anyhow::ensure!(
-                self.internet.rules.iter().any(|r| {
-                    matches!(rules::parse_line(r), Ok(Some(_)))
-                }),
+                self.internet
+                    .rules
+                    .iter()
+                    .any(|r| { matches!(rules::parse_line(r), Ok(Some(_))) }),
                 "Add at least one site to the list"
             );
         }
@@ -121,7 +124,11 @@ pub struct Guard {
     supported: bool,
 }
 impl Guard {
-    pub fn new(state_dir: &std::path::Path, enforcers: Vec<Box<dyn Enforcer>>, supported: bool) -> Self {
+    pub fn new(
+        state_dir: &std::path::Path,
+        enforcers: Vec<Box<dyn Enforcer>>,
+        supported: bool,
+    ) -> Self {
         Self {
             state: Mutex::new(State {
                 enforcers,
@@ -166,28 +173,93 @@ impl Guard {
         }
     }
     pub fn apply(&self, policy: Policy) -> Result<()> {
+        self.apply_change(policy, None)
+    }
+    /// Internet UI updates must not lift the independently selected AI block.
+    pub fn apply_internet(&self, policy: Policy) -> Result<()> {
+        self.apply_change(policy, Some(false))
+    }
+    pub fn set_copilot(&self, enabled: bool) -> Result<()> {
+        let mut policy = Policy::default();
+        policy.copilot_block = enabled;
+        self.apply_change(policy, Some(true))
+    }
+    pub fn copilot_blocked(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap()
+            .applied
+            .as_ref()
+            .is_some_and(|p| p.copilot_block)
+    }
+    fn apply_change(&self, mut policy: Policy, change: Option<bool>) -> Result<()> {
         anyhow::ensure!(
             self.supported,
             "This Student cannot enforce policies (needs Windows and administrator rights)"
         );
-        policy.validate()?;
         let mut state = self.state.lock().unwrap();
-        let open = policy.internet.mode == Mode::Open;
+        if let Some(copilot_only) = change {
+            let current = state.applied.clone().unwrap_or_default();
+            if copilot_only {
+                policy.internet = current.internet;
+                policy.lease_minutes = current.lease_minutes;
+            } else {
+                policy.copilot_block = current.copilot_block;
+            }
+        }
+        policy.validate()?;
+        let open = policy.internet.mode == Mode::Open && !policy.copilot_block;
         if open {
             for e in &mut state.enforcers {
                 e.clear();
             }
             state.applied = None;
         } else {
+            let previous = state.applied.clone();
+            let mut failure = None;
             for e in &mut state.enforcers {
-                e.apply(&policy)
-                    .with_context(|| format!("{} enforcement failed", e.name()))?;
+                if let Err(error) = e
+                    .apply(&policy)
+                    .with_context(|| format!("{} enforcement failed", e.name()))
+                {
+                    failure = Some(error);
+                    break;
+                }
+            }
+            if let Some(error) = failure {
+                let mut restored = true;
+                for e in &mut state.enforcers {
+                    if let Some(old) = &previous {
+                        if let Err(restore_error) = e.apply(old) {
+                            warn!(%restore_error, "Could not restore prior Guard policy after failure");
+                            restored = false;
+                        }
+                    } else {
+                        e.clear();
+                    }
+                }
+                if !restored {
+                    for e in &mut state.enforcers {
+                        e.clear();
+                    }
+                    state.applied = None;
+                    self.save(&mut state);
+                    return Err(error)
+                        .context("Prior Guard policy could not be restored; restrictions cleared");
+                }
+                return Err(error);
             }
             state.applied = Some(policy);
         }
         state.last_seen = std::time::Instant::now();
         self.save(&mut state);
-        info!(mode = state.applied.as_ref().map_or("open", |p| p.internet.mode.name()), "Guard policy applied");
+        info!(
+            mode = state
+                .applied
+                .as_ref()
+                .map_or("open", |p| p.internet.mode.name()),
+            "Guard policy applied"
+        );
         Ok(())
     }
     /// Start-up: resume a still-valid persisted policy, otherwise remove any
@@ -200,8 +272,7 @@ impl Guard {
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok());
         let live = saved.filter(|s| {
-            unix_secs().saturating_sub(s.last_seen_unix)
-                < u64::from(s.policy.lease_minutes) * 60
+            unix_secs().saturating_sub(s.last_seen_unix) < u64::from(s.policy.lease_minutes) * 60
         });
         match live {
             Some(saved) => {
@@ -285,7 +356,10 @@ mod tests {
             "recorder"
         }
         fn apply(&mut self, policy: &Policy) -> Result<()> {
-            self.0.lock().unwrap().push(format!("apply {}", policy.internet.mode.name()));
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("apply {}", policy.internet.mode.name()));
             Ok(())
         }
         fn clear(&mut self) {
@@ -293,25 +367,40 @@ mod tests {
         }
     }
     fn temp() -> PathBuf {
-        let p = std::env::temp_dir().join(format!("guard-test-{}-{}", std::process::id(), media_core::unix_us()));
+        let p = std::env::temp_dir().join(format!(
+            "guard-test-{}-{}",
+            std::process::id(),
+            media_core::unix_us()
+        ));
         std::fs::create_dir_all(&p).unwrap();
         p
     }
     fn policy(mode: Mode, rules: &[&str], lease: u32) -> Policy {
         Policy {
-            internet: InternetPolicy { mode, rules: rules.iter().map(|s| (*s).into()).collect() },
+            internet: InternetPolicy {
+                mode,
+                rules: rules.iter().map(|s| (*s).into()).collect(),
+            },
             lease_minutes: lease,
+            copilot_block: false,
         }
     }
 
     #[test]
     fn policies_validate_and_documents_stay_forward_compatible() {
         assert!(policy(Mode::AllowOnly, &[], 60).validate().is_err());
-        assert!(policy(Mode::AllowOnly, &["# only a comment"], 60).validate().is_err());
-        assert!(policy(Mode::BlockOnly, &["bad host"], 60).validate().is_err());
+        assert!(policy(Mode::AllowOnly, &["# only a comment"], 60)
+            .validate()
+            .is_err());
+        assert!(policy(Mode::BlockOnly, &["bad host"], 60)
+            .validate()
+            .is_err());
         assert!(policy(Mode::BlockAll, &[], 0).validate().is_err());
-        assert!(policy(Mode::BlockOnly, &["a.com", "*.b.com"], 60).validate().is_ok());
-        let future: Policy = serde_json::from_str(r#"{"internet":{"mode":"block_all"},"protect":{"x":1}}"#).unwrap();
+        assert!(policy(Mode::BlockOnly, &["a.com", "*.b.com"], 60)
+            .validate()
+            .is_ok());
+        let future: Policy =
+            serde_json::from_str(r#"{"internet":{"mode":"block_all"},"protect":{"x":1}}"#).unwrap();
         assert_eq!(future.internet.mode, Mode::BlockAll);
     }
 
@@ -338,8 +427,15 @@ mod tests {
     #[test]
     fn expired_saved_policy_is_cleared_and_unsupported_students_refuse() {
         let dir = temp();
-        let saved = Saved { policy: policy(Mode::BlockAll, &[], 1), last_seen_unix: unix_secs() - 3600 };
-        std::fs::write(dir.join("guard-policy.json"), serde_json::to_vec(&saved).unwrap()).unwrap();
+        let saved = Saved {
+            policy: policy(Mode::BlockAll, &[], 1),
+            last_seen_unix: unix_secs() - 3600,
+        };
+        std::fs::write(
+            dir.join("guard-policy.json"),
+            serde_json::to_vec(&saved).unwrap(),
+        )
+        .unwrap();
         let log = std::sync::Arc::new(Mutex::new(Vec::new()));
         let guard = Guard::new(&dir, vec![Box::new(Recorder(log.clone()))], true);
         guard.restore();

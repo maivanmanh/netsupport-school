@@ -769,8 +769,15 @@ pub(super) fn run(
                         publish_due = Instant::now();
                         Ok(())
                     }
-                    "tool_message" | "tool_file" | "tool_update" | "tool_launch"
-                    | "tool_website" | "tool_power" | "tool_policy" | "tool_vscode_policy" => {
+                    "tool_message"
+                    | "tool_file"
+                    | "tool_update"
+                    | "tool_launch"
+                    | "tool_website"
+                    | "tool_power"
+                    | "tool_policy"
+                    | "tool_vscode_policy"
+                    | "tool_copilot_policy" => {
                         if command.action == "tool_update"
                             && (session.is_some() || observe.is_some())
                         {
@@ -791,12 +798,14 @@ pub(super) fn run(
                         // up-to-date Student; apply to every computer that qualifies rather
                         // than refusing the whole batch for one that does not, and report
                         // exactly which were skipped and why.
-                        if command.action == "tool_policy" || command.action == "tool_vscode_policy"
+                        if command.action == "tool_policy"
+                            || command.action == "tool_vscode_policy"
+                            || command.action == "tool_copilot_policy"
                         {
                             let caps = tools_hub.snapshot()["capabilities"].clone();
                             let mut skipped = Vec::new();
                             recipients.retain(|id| {
-                                if caps[id]["guard"] == 1 {
+                                if caps[id]["guard"] == 1 && (command.action != "tool_copilot_policy" || caps[id]["copilot_network"] == 1) {
                                     true
                                 } else {
                                     if let Some(row) = rows.iter().find(|r| &r.instance_id == id) {
@@ -845,6 +854,8 @@ pub(super) fn run(
                                 "policy"
                             } else if command.action == "tool_vscode_policy" {
                                 "vscode_policy"
+                            } else if command.action == "tool_copilot_policy" {
+                                "copilot_policy"
                             } else {
                                 "message"
                             },

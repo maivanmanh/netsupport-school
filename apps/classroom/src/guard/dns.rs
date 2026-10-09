@@ -140,10 +140,62 @@ pub fn a_records(resp: &[u8]) -> Vec<(Ipv4Addr, u32)> {
     found
 }
 
+/// Resolve dedicated blocked endpoints through original upstream DNS, including
+/// IPv6. Answers never pass through the local policy proxy.
+pub fn resolve_addresses(upstream: &[SocketAddr], host: &str) -> Vec<std::net::IpAddr> {
+    let mut ips: Vec<std::net::IpAddr> = Vec::new();
+    for kind in [TYPE_A, TYPE_AAAA] {
+        let mut query = vec![0x43, 0x50, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+        for label in host.split('.') {
+            query.push(label.len() as u8);
+            query.extend_from_slice(label.as_bytes());
+        }
+        query.push(0);
+        query.extend_from_slice(&kind.to_be_bytes());
+        query.extend_from_slice(&[0, 1]);
+        for server in upstream.iter().take(2) {
+            let Ok(response) = forward_udp(*server, &query) else {
+                continue;
+            };
+            if response.get(..2) != query.get(..2) {
+                continue;
+            }
+            ips.extend(
+                a_records(&response)
+                    .into_iter()
+                    .map(|(ip, _)| std::net::IpAddr::V4(ip)),
+            );
+            let mut pos = parse_query(&query).map_or(response.len(), |q| q.question_end);
+            for _ in 0..read_u16(&response, 6).unwrap_or(0) {
+                let Some((_, after)) = read_name(&response, pos) else {
+                    break;
+                };
+                let Some(len) = read_u16(&response, after + 8) else {
+                    break;
+                };
+                let data = after + 10;
+                if read_u16(&response, after) == Some(TYPE_AAAA) && len == 16 {
+                    if let Some(bytes) = response.get(data..data + 16) {
+                        let mut octets = [0u8; 16];
+                        octets.copy_from_slice(bytes);
+                        ips.push(std::net::Ipv6Addr::from(octets).into());
+                    }
+                }
+                pos = data + usize::from(len);
+            }
+            break;
+        }
+    }
+    ips
+}
+
 pub enum Decision {
     /// Ask the real resolver. `private_only` turns answers that point at public
     /// addresses into NXDOMAIN; `learn` reports the addresses to the Guard.
-    Forward { learn: bool, private_only: bool },
+    Forward {
+        learn: bool,
+        private_only: bool,
+    },
     NxDomain,
     Empty,
 }
@@ -188,7 +240,10 @@ impl Shared {
         match self.decider.decide(&q.name, q.qtype) {
             Decision::NxDomain => nxdomain(query),
             Decision::Empty => empty(query),
-            Decision::Forward { learn, private_only } => {
+            Decision::Forward {
+                learn,
+                private_only,
+            } => {
                 let response = self.forward(query, tcp)?;
                 let ips = a_records(&response);
                 if private_only && ips.iter().any(|(ip, _)| !super::rules::is_private(*ip)) {
@@ -217,7 +272,11 @@ impl Shared {
     }
 }
 fn forward_udp(server: SocketAddr, query: &[u8]) -> Result<Vec<u8>> {
-    let socket = UdpSocket::bind(if server.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" })?;
+    let socket = UdpSocket::bind(if server.is_ipv4() {
+        "0.0.0.0:0"
+    } else {
+        "[::]:0"
+    })?;
     socket.set_read_timeout(Some(UPSTREAM_TIMEOUT))?;
     socket.send_to(query, server)?;
     let mut buf = vec![0; 4096];
@@ -387,11 +446,23 @@ mod tests {
     fn queries_answers_and_synthetic_replies_round_trip() {
         let query = build_query(0x1234, "WWW.Example.com", TYPE_A);
         let parsed = parse_query(&query).unwrap();
-        assert_eq!((parsed.name.as_str(), parsed.qtype), ("www.example.com", TYPE_A));
+        assert_eq!(
+            (parsed.name.as_str(), parsed.qtype),
+            ("www.example.com", TYPE_A)
+        );
         let nx = nxdomain(&query).unwrap();
-        assert_eq!((&nx[..2], nx[3] & 0x0f, nx[3] & 0x80), (&query[..2], 3, 0x80));
+        assert_eq!(
+            (&nx[..2], nx[3] & 0x0f, nx[3] & 0x80),
+            (&query[..2], 3, 0x80)
+        );
         assert_eq!(empty(&query).unwrap()[3] & 0x0f, 0);
-        let answer = build_answer(&query, &[("93.184.216.34".parse().unwrap(), 300), ("10.0.0.1".parse().unwrap(), 5)]);
+        let answer = build_answer(
+            &query,
+            &[
+                ("93.184.216.34".parse().unwrap(), 300),
+                ("10.0.0.1".parse().unwrap(), 5),
+            ],
+        );
         let found = a_records(&answer);
         assert_eq!(found.len(), 2);
         assert_eq!(found[0], ("93.184.216.34".parse().unwrap(), 300));
@@ -405,9 +476,15 @@ mod tests {
             if qtype == TYPE_AAAA {
                 Decision::Empty
             } else if name.ends_with("allowed.test") {
-                Decision::Forward { learn: true, private_only: false }
+                Decision::Forward {
+                    learn: true,
+                    private_only: false,
+                }
             } else if name.ends_with("local.test") {
-                Decision::Forward { learn: false, private_only: true }
+                Decision::Forward {
+                    learn: false,
+                    private_only: true,
+                }
             } else {
                 Decision::NxDomain
             }
@@ -425,12 +502,24 @@ mod tests {
             let mut buf = [0; 512];
             while let Ok((n, from)) = upstream.recv_from(&mut buf) {
                 let q = parse_query(&buf[..n]).unwrap();
-                let ip = if q.name.starts_with("lan") { "192.168.1.5" } else { "93.184.216.34" };
-                let _ = upstream.send_to(&build_answer(&buf[..n], &[(ip.parse().unwrap(), 120)]), from);
+                let ip = if q.name.starts_with("lan") {
+                    "192.168.1.5"
+                } else {
+                    "93.184.216.34"
+                };
+                let _ = upstream.send_to(
+                    &build_answer(&buf[..n], &[(ip.parse().unwrap(), 120)]),
+                    from,
+                );
             }
         });
         let decider = Arc::new(Rules(Mutex::new(Vec::new())));
-        let proxy = Proxy::start("127.0.0.1:0".parse().unwrap(), vec![upstream_addr], decider.clone()).unwrap();
+        let proxy = Proxy::start(
+            "127.0.0.1:0".parse().unwrap(),
+            vec![upstream_addr],
+            decider.clone(),
+        )
+        .unwrap();
         let ask = |name: &str, qtype: u16| {
             let s = UdpSocket::bind("127.0.0.1:0").unwrap();
             s.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
@@ -441,12 +530,22 @@ mod tests {
             buf[..n].to_vec()
         };
         let ok = ask("www.allowed.test", TYPE_A);
-        assert_eq!(a_records(&ok)[0].0, "93.184.216.34".parse::<Ipv4Addr>().unwrap());
+        assert_eq!(
+            a_records(&ok)[0].0,
+            "93.184.216.34".parse::<Ipv4Addr>().unwrap()
+        );
         assert_eq!(decider.0.lock().unwrap()[0].0, "www.allowed.test");
         assert_eq!(ask("blocked.example", TYPE_A)[3] & 0x0f, 3, "NXDOMAIN");
         assert_eq!(ask("www.allowed.test", TYPE_AAAA)[3] & 0x0f, 0, "no AAAA");
-        assert_eq!(a_records(&ask("lan.local.test", TYPE_A))[0].0, "192.168.1.5".parse::<Ipv4Addr>().unwrap());
-        assert_eq!(ask("wan.local.test", TYPE_A)[3] & 0x0f, 3, "public answer refused");
+        assert_eq!(
+            a_records(&ask("lan.local.test", TYPE_A))[0].0,
+            "192.168.1.5".parse::<Ipv4Addr>().unwrap()
+        );
+        assert_eq!(
+            ask("wan.local.test", TYPE_A)[3] & 0x0f,
+            3,
+            "public answer refused"
+        );
         // The same decision applies over TCP.
         let mut tcp = TcpStream::connect(proxy.tcp_addr).unwrap();
         let q = build_query(9, "nope.example", TYPE_A);

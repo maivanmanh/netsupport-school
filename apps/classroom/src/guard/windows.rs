@@ -24,12 +24,12 @@ use windows::{
         Foundation::{CloseHandle, HANDLE},
         NetworkManagement::WindowsFilteringPlatform::{
             FwpmEngineClose0, FwpmEngineOpen0, FwpmFilterAdd0, FwpmFilterDeleteById0,
-            FwpmSubLayerAdd0, FWPM_ACTION0, FWPM_CONDITION_IP_REMOTE_ADDRESS,
-            FWPM_DISPLAY_DATA0, FWPM_FILTER0, FWPM_FILTER_CONDITION0,
-            FWPM_LAYER_ALE_AUTH_CONNECT_V4, FWPM_LAYER_ALE_AUTH_CONNECT_V6, FWPM_SESSION0,
-            FWPM_SESSION_FLAG_DYNAMIC, FWPM_SUBLAYER0, FWP_ACTION_BLOCK, FWP_ACTION_PERMIT,
-            FWP_ACTION_TYPE, FWP_MATCH_EQUAL, FWP_UINT8, FWP_V4_ADDR_AND_MASK, FWP_V4_ADDR_MASK,
-            FWP_V6_ADDR_AND_MASK, FWP_V6_ADDR_MASK, FWP_VALUE0, FWP_VALUE0_0,
+            FwpmSubLayerAdd0, FwpmTransactionAbort0, FwpmTransactionBegin0, FwpmTransactionCommit0,
+            FWPM_ACTION0, FWPM_CONDITION_IP_REMOTE_ADDRESS, FWPM_DISPLAY_DATA0, FWPM_FILTER0,
+            FWPM_FILTER_CONDITION0, FWPM_LAYER_ALE_AUTH_CONNECT_V4, FWPM_LAYER_ALE_AUTH_CONNECT_V6,
+            FWPM_SESSION0, FWPM_SESSION_FLAG_DYNAMIC, FWPM_SUBLAYER0, FWP_ACTION_BLOCK,
+            FWP_ACTION_PERMIT, FWP_ACTION_TYPE, FWP_MATCH_EQUAL, FWP_UINT8, FWP_V4_ADDR_AND_MASK,
+            FWP_V4_ADDR_MASK, FWP_V6_ADDR_AND_MASK, FWP_V6_ADDR_MASK, FWP_VALUE0, FWP_VALUE0_0,
         },
         Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY},
         System::{
@@ -123,7 +123,10 @@ impl WfpFirewall {
                 &mut handle,
             )
         };
-        anyhow::ensure!(status == 0, "FwpmEngineOpen0 failed (0x{status:08x}); run the Student as administrator");
+        anyhow::ensure!(
+            status == 0,
+            "FwpmEngineOpen0 failed (0x{status:08x}); run the Student as administrator"
+        );
         let engine = Engine(handle);
         let sublayer = FWPM_SUBLAYER0 {
             subLayerKey: SUBLAYER,
@@ -226,28 +229,70 @@ enum NetCondition {
     V6([u8; 16], u8),
 }
 fn v6(address: &str, prefix: u8) -> NetCondition {
-    NetCondition::V6(address.parse::<std::net::Ipv6Addr>().map_or([0; 16], |a| a.octets()), prefix)
+    NetCondition::V6(
+        address
+            .parse::<std::net::Ipv6Addr>()
+            .map_or([0; 16], |a| a.octets()),
+        prefix,
+    )
 }
 
 impl Firewall for WfpFirewall {
     fn set_plan(&mut self, plan: &Plan) -> Result<()> {
-        for id in std::mem::take(&mut self.plan_ids) {
-            self.delete(id);
-        }
+        let engine = self.engine()?;
+        // SAFETY: engine is an open WFP session, exclusively held by this
+        // firewall's mutex. Atomic replacement keeps old blocks effective
+        // throughout periodic endpoint refresh, including on failure.
+        let status = unsafe { FwpmTransactionBegin0(engine, 0) };
+        anyhow::ensure!(status == 0, "WFP transaction begin failed (0x{status:08x})");
         let result = (|| -> Result<Vec<u64>> {
+            for id in &self.plan_ids {
+                let status = unsafe { FwpmFilterDeleteById0(engine, *id) };
+                anyhow::ensure!(
+                    status == 0,
+                    "WFP filter replacement failed (0x{status:08x})"
+                );
+            }
             let mut ids = Vec::new();
             // Teacher and upstream resolvers first: they must always get through.
             for cidr in &plan.permit {
                 let essential = cidr.prefix == 32;
-                let w = if essential { weight::ESSENTIAL } else { weight::PERMIT };
+                let w = if essential {
+                    weight::ESSENTIAL
+                } else {
+                    weight::PERMIT
+                };
                 ids.push(self.add(false, w, FWP_ACTION_PERMIT, Some(NetCondition::V4(*cidr)))?);
             }
             for cidr in &plan.block {
-                ids.push(self.add(false, weight::BLOCK_LISTED, FWP_ACTION_BLOCK, Some(NetCondition::V4(*cidr)))?);
+                ids.push(self.add(
+                    false,
+                    weight::BLOCK_LISTED,
+                    FWP_ACTION_BLOCK,
+                    Some(NetCondition::V4(*cidr)),
+                )?);
+            }
+            for ip in &plan.endpoints {
+                let (v6, net) = match ip {
+                    std::net::IpAddr::V4(ip) => (
+                        false,
+                        NetCondition::V4(Cidr {
+                            ip: *ip,
+                            prefix: 32,
+                        }),
+                    ),
+                    std::net::IpAddr::V6(ip) => (true, NetCondition::V6(ip.octets(), 128)),
+                };
+                ids.push(self.add(v6, 16, FWP_ACTION_BLOCK, Some(net))?);
             }
             // IPv6: local scopes stay open, everything else follows the mode.
             for (address, prefix) in [("::1", 128), ("fe80::", 10), ("fc00::", 7), ("ff00::", 8)] {
-                ids.push(self.add(true, weight::PERMIT, FWP_ACTION_PERMIT, Some(v6(address, prefix)))?);
+                ids.push(self.add(
+                    true,
+                    weight::PERMIT,
+                    FWP_ACTION_PERMIT,
+                    Some(v6(address, prefix)),
+                )?);
             }
             if plan.default_block {
                 ids.push(self.add(false, weight::DEFAULT_BLOCK, FWP_ACTION_BLOCK, None)?);
@@ -257,18 +302,32 @@ impl Firewall for WfpFirewall {
         })();
         match result {
             Ok(ids) => {
+                let status = unsafe { FwpmTransactionCommit0(engine) };
+                if status != 0 {
+                    unsafe {
+                        let _ = FwpmTransactionAbort0(engine);
+                    }
+                    anyhow::bail!("WFP transaction commit failed (0x{status:08x})");
+                }
                 self.plan_ids = ids;
                 Ok(())
             }
             Err(error) => {
-                self.clear();
+                unsafe {
+                    let _ = FwpmTransactionAbort0(engine);
+                }
                 Err(error)
             }
         }
     }
     fn set_learned(&mut self, ips: &[Ipv4Addr]) -> Result<()> {
         let wanted: std::collections::HashSet<Ipv4Addr> = ips.iter().copied().collect();
-        let stale: Vec<Ipv4Addr> = self.learned.keys().filter(|ip| !wanted.contains(ip)).copied().collect();
+        let stale: Vec<Ipv4Addr> = self
+            .learned
+            .keys()
+            .filter(|ip| !wanted.contains(ip))
+            .copied()
+            .collect();
         for ip in stale {
             for id in self.learned.remove(&ip).unwrap_or_default() {
                 self.delete(id);
@@ -276,7 +335,12 @@ impl Firewall for WfpFirewall {
         }
         for ip in wanted {
             if !self.learned.contains_key(&ip) {
-                let id = self.add(false, weight::PERMIT, FWP_ACTION_PERMIT, Some(NetCondition::V4(Cidr { ip, prefix: 32 })))?;
+                let id = self.add(
+                    false,
+                    weight::PERMIT,
+                    FWP_ACTION_PERMIT,
+                    Some(NetCondition::V4(Cidr { ip, prefix: 32 })),
+                )?;
                 self.learned.insert(ip, vec![id]);
             }
         }
@@ -292,7 +356,14 @@ impl Firewall for WfpFirewall {
 
 fn powershell(script: &str) -> Result<String> {
     let output = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script])
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+        ])
         .creation_flags(NO_WINDOW)
         .output()
         .context("Could not run PowerShell")?;
@@ -309,6 +380,10 @@ const NRPT_REMOVE: &str = "Get-DnsClientNrptRule | Where-Object { $_.Comment -eq
 
 pub struct NrptRedirect;
 impl DnsRedirect for NrptRedirect {
+    fn copilot_cached_addresses(&self) -> Vec<std::net::IpAddr> {
+        powershell("Get-DnsClientCache | Where-Object { $_.Entry -match '(^|\\.)githubcopilot\\.com$|^copilot-proxy\\.githubusercontent\\.com$|^origin-tracker\\.githubusercontent\\.com$' } | ForEach-Object { $_.Data }")
+            .unwrap_or_default().lines().filter_map(|s| s.trim().parse().ok()).take(256).collect()
+    }
     fn upstream_servers(&self) -> Result<Vec<SocketAddr>> {
         let text = powershell(
             "Get-DnsClientServerAddress -AddressFamily IPv4 | ForEach-Object { $_.ServerAddresses } | Select-Object -Unique",
@@ -319,7 +394,10 @@ impl DnsRedirect for NrptRedirect {
             .filter(|ip| !ip.is_loopback() && !ip.is_unspecified())
             .map(|ip| SocketAddr::new(ip.into(), 53))
             .collect();
-        anyhow::ensure!(!servers.is_empty(), "No DNS server is configured on this computer");
+        anyhow::ensure!(
+            !servers.is_empty(),
+            "No DNS server is configured on this computer"
+        );
         Ok(servers)
     }
     fn install(&mut self) -> Result<()> {

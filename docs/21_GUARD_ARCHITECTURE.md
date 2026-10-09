@@ -1,5 +1,15 @@
 # Guard: kiểm soát máy Student (Internet hôm nay, chống tắt app sau này)
 
+## Bổ sung 09-10-2026: chặn mạng Copilot độc lập
+
+Policy có thêm `copilot_block`, được thay đổi qua job riêng và giữ nguyên luật
+Internet đang áp dụng. Internet UI cũng không được gỡ flag này. Dùng chung DNS
+proxy/NRPT và WFP: từ chối domain Copilot, chặn IP public IPv4/IPv6 đã phân giải
+và cache DNS, cập nhật định kỳ. Thay filter bằng transaction để không có khoảng
+trống khi refresh. Checkbox nằm trong VS Code extensions, đếm máy Windows hỗ trợ
+riêng với máy không hỗ trợ. Xem
+[phạm vi, giới hạn và kiểm chứng](../checkpoints/diagnostics/2026-10-09-copilot-network-and-extension-rescan.md).
+
 Cập nhật 06-10-2026. Student chạy với quyền Administrator (chủ dự án xác nhận:
 app được admin cài sẵn trước khi sinh viên dùng). Chỉ Windows; macOS chưa làm.
 

@@ -25,7 +25,7 @@ impl Hub {
             let st = self.0.lock().unwrap();
             anyhow::ensure!(st.peers.contains_key(student), "Student is offline");
             anyhow::ensure!(
-                st.capabilities.get(student).is_some_and(|c| c["vscode"] == 1),
+                st.capabilities.get(student).is_some_and(|c| c["vscode_list"] == 1 || c["vscode"] == 1),
                 "A selected Student runs an older build without VS Code control, or is not on Windows; update it via Classroom first"
             );
         }
@@ -46,7 +46,12 @@ impl Drop for Slot {
         self.0.fetch_sub(1, Ordering::AcqRel);
     }
 }
-pub(super) fn run(address: SocketAddrV4, identity: String, p: ToolPacket, active: &Arc<AtomicUsize>) -> bool {
+pub(super) fn run(
+    address: SocketAddrV4,
+    identity: String,
+    p: ToolPacket,
+    active: &Arc<AtomicUsize>,
+) -> bool {
     if active.fetch_add(1, Ordering::AcqRel) >= MAX_CONCURRENT {
         active.fetch_sub(1, Ordering::AcqRel);
         return false;

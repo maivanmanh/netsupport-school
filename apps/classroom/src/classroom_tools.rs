@@ -230,6 +230,7 @@ struct State {
     internet: HashMap<String, String>,
     /// Students whose VS Code extension allowlist is currently enforced.
     vscode_blocked: std::collections::HashSet<String>,
+    copilot_blocked: std::collections::HashSet<String>,
     /// Bounded log of "a monitored Student disconnected" events, newest last;
     /// the Teacher UI tracks which it has already shown.
     activity_alerts: VecDeque<Value>,
@@ -318,7 +319,8 @@ impl Hub {
         clipboard_blocked.sort();
         let mut vscode_blocked: Vec<&String> = s.vscode_blocked.iter().collect();
         vscode_blocked.sort();
-        json!({"connection_popup":self.connection_popup(),"fs_jobs":fs_jobs,"locked":locked,"clipboard_blocked":clipboard_blocked,"vscode_blocked":vscode_blocked,"internet":s.internet,"capabilities":s.capabilities,"ready":s.peers.keys().collect::<Vec<_>>(),"jobs":s.jobs.iter().map(|j|json!({"id":j.packet.id,"kind":j.packet.action,"name":j.packet.name,"size":j.packet.size,"text":j.packet.text.chars().take(240).collect::<String>(),"targets":j.targets.iter().map(|(id,t)|json!({"id":id,"status":t.status,"done":t.done,"reply":t.reply,"error":t.error})).collect::<Vec<_>>()})).collect::<Vec<_>>()})
+        let copilot_blocked: Vec<&String> = s.copilot_blocked.iter().collect();
+        json!({"connection_popup":self.connection_popup(),"fs_jobs":fs_jobs,"locked":locked,"clipboard_blocked":clipboard_blocked,"vscode_blocked":vscode_blocked,"copilot_blocked":copilot_blocked,"internet":s.internet,"capabilities":s.capabilities,"ready":s.peers.keys().collect::<Vec<_>>(),"jobs":s.jobs.iter().map(|j|json!({"id":j.packet.id,"kind":j.packet.action,"name":j.packet.name,"size":j.packet.size,"text":j.packet.text.chars().take(240).collect::<String>(),"targets":j.targets.iter().map(|(id,t)|json!({"id":id,"status":t.status,"done":t.done,"reply":t.reply,"error":t.error})).collect::<Vec<_>>()})).collect::<Vec<_>>()})
     }
     /// Hashes a staged file off the caller's thread, then offers it to every
     /// recipient that has not been cancelled meanwhile. The hash lets Students
@@ -420,6 +422,13 @@ impl Hub {
                 "The site list is too long to send (keep it under about 150 entries)"
             );
             p.name = policy.internet.mode.name().into();
+            None
+        } else if action == "copilot_policy" {
+            let enabled = input["enabled"]
+                .as_bool()
+                .context("Missing Copilot block selection")?;
+            p.text = json!({"enabled":enabled}).to_string();
+            p.name = if enabled { "block" } else { "open" }.into();
             None
         } else if action == "vscode_policy" {
             let policy: crate::vscode_control::VsCodePolicy =
@@ -697,6 +706,7 @@ impl Hub {
             clipboard_blocked,
             internet,
             vscode_blocked,
+            copilot_blocked,
             ..
         } = &mut *s;
         let Some(j) = jobs.iter_mut().find(|j| j.packet.id == p.id) else {
@@ -760,6 +770,13 @@ impl Hub {
                 vscode_blocked.remove(student);
             } else {
                 vscode_blocked.insert(student.to_owned());
+            }
+        }
+        if j.packet.action == "copilot_policy" && p.status == "complete" {
+            if j.packet.name == "block" {
+                copilot_blocked.insert(student.to_owned());
+            } else {
+                copilot_blocked.remove(student);
             }
         }
         if j.packet.action == "power" && p.status == "complete" {
@@ -886,6 +903,7 @@ impl Hub {
         state.clipboard_blocked.remove(student);
         state.internet.remove(student);
         state.vscode_blocked.remove(student);
+        state.copilot_blocked.remove(student);
         for job in &mut state.jobs {
             if let Some(target) = job.targets.get_mut(student) {
                 if !(terminal(&target.status)
@@ -1054,8 +1072,16 @@ fn serve(
         } else {
             st.vscode_blocked.remove(&hello.student);
         }
+        if capability
+            .as_ref()
+            .is_some_and(|c| c["copilot_blocked"] == 1)
+        {
+            st.copilot_blocked.insert(hello.student.clone());
+        } else {
+            st.copilot_blocked.remove(&hello.student);
+        }
         if let Some(c) = &capability {
-            st.capabilities.insert(hello.student.clone(), json!({"dev_update":c["dev_update"],"connection_popup":c["connection_popup"],"fs":c["fs"],"screenshot":c["screenshot"],"website":c["website"],"launch":c["launch"],"power":c["power"],"guard":c["guard"],"activity":c["activity"],"vscode":c["vscode"],"os":c["os"],"arch":c["arch"],"build":c["build"],"pid":c["pid"]}));
+            st.capabilities.insert(hello.student.clone(), json!({"dev_update":c["dev_update"],"connection_popup":c["connection_popup"],"fs":c["fs"],"screenshot":c["screenshot"],"website":c["website"],"launch":c["launch"],"power":c["power"],"guard":c["guard"],"copilot_network":c["copilot_network"],"activity":c["activity"],"vscode":c["vscode"],"vscode_list":c["vscode_list"],"os":c["os"],"arch":c["arch"],"build":c["build"],"pid":c["pid"]}));
         }
         g
     };
@@ -1503,9 +1529,13 @@ pub fn student(
                     capabilities["locked"] = json!(u8::from(inbox.lock_state().1.is_some()));
                     capabilities["clipboard_blocked"] = json!(u8::from(inbox.clipboard_blocked()));
                     capabilities["guard"] = json!(u8::from(guard.supported()));
+                    capabilities["copilot_network"] = json!(u8::from(guard.supported()));
+                    capabilities["copilot_blocked"] = json!(u8::from(guard.copilot_blocked()));
                     capabilities["internet"] = json!(guard.mode());
                     capabilities["activity"] = json!(u8::from(cfg!(windows)));
                     capabilities["vscode"] = json!(u8::from(super::vscode_control::supported()));
+                    capabilities["vscode_list"] =
+                        json!(u8::from(cfg!(any(windows, target_os = "macos"))));
                     capabilities["vscode_blocked"] =
                         json!(u8::from(super::vscode_control::is_applied()));
                     capabilities["screenshot"] = json!(1);
@@ -1614,7 +1644,24 @@ pub fn student(
                                     let outcome =
                                         serde_json::from_str::<crate::guard::Policy>(&p.text)
                                             .context("Invalid access policy")
-                                            .and_then(|policy| guard.apply(policy));
+                                            .and_then(|policy| guard.apply_internet(policy));
+                                    match outcome {
+                                        Ok(()) => inbox.event(&p.id, "complete", "", 0),
+                                        Err(error) => {
+                                            inbox.event(&p.id, "error", &format!("{error:#}"), 0)
+                                        }
+                                    }
+                                });
+                            }
+                            "copilot_policy" => {
+                                let (guard, inbox) = (Arc::clone(&guard), Arc::clone(&inbox));
+                                thread::spawn(move || {
+                                    let outcome = serde_json::from_str::<Value>(&p.text)
+                                        .context("Invalid Copilot policy")
+                                        .and_then(|v| {
+                                            v["enabled"].as_bool().context("Missing enabled flag")
+                                        })
+                                        .and_then(|enabled| guard.set_copilot(enabled));
                                     match outcome {
                                         Ok(()) => inbox.event(&p.id, "complete", "", 0),
                                         Err(error) => {
