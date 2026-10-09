@@ -9,6 +9,8 @@ Paired build and Teacher/both Student updates completed; both endpoints online.
 Windows delivers expanded 860×540 previews. Mac TCC denies capture after signing:
 paused for manual Screen Recording grant to `/Users/lolem/Classroom/Classroom Student.app`
 on `.254`, then restart. Real classroom load/readability and visual review pending.
+Follow-up: permissions alone did not restore LAN; after owner rebooted Mac Student,
+same bundle connects and sends 830×538 previews. Both Students online/ready.
 See [details](diagnostics/2026-10-09-sharp-grid.md).
 
 ## 2026-10-09 — Website icon and saved URL suggestions

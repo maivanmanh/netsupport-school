@@ -41,3 +41,10 @@ display capture. Paused Mac verification for owner to grant Screen Recording to
 `/Users/lolem/Classroom/Classroom Student.app` on `192.168.100.254`, followed by
 Student restart. No privacy settings automated. Visual grid review and readability
 at all three tiers remain manual; wired 35–40-PC load remains deferred.
+
+Follow-up: owner granted permissions and toggled Local Network, but Student
+continued reporting EHOSTUNREACH while SSH nc reached Teacher. Restarting the
+app (including GUI LaunchAgent) did not clear it. After the owner rebooted Mac
+Student, reopening the same bundle restored registration and capture: both
+Students online/monitoring ready; Mac delivered 830×538 snapshots (about 37KiB).
+This confirms recovery after reboot, not a proven cause of the macOS denial.
