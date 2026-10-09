@@ -67,9 +67,10 @@ pub fn is_elevated() -> bool {
 
 /// Weights inside our sub-layer (higher is evaluated first).
 mod weight {
-    pub const ESSENTIAL: u8 = 15; // Teacher, upstream DNS
-    pub const BLOCK_LISTED: u8 = 14;
-    pub const PERMIT: u8 = 13; // local networks, allowed names
+    pub const ENDPOINT: u8 = 15;
+    pub const ESSENTIAL: u8 = 14; // Teacher, upstream DNS
+    pub const BLOCK_LISTED: u8 = 13;
+    pub const PERMIT: u8 = 12; // local networks, allowed names
     pub const DEFAULT_BLOCK: u8 = 1;
 }
 
@@ -283,7 +284,10 @@ impl Firewall for WfpFirewall {
                     ),
                     std::net::IpAddr::V6(ip) => (true, NetCondition::V6(ip.octets(), 128)),
                 };
-                ids.push(self.add(v6, 16, FWP_ACTION_BLOCK, Some(net))?);
+                // FWP_UINT8 is a range index (0..=15), not an arbitrary
+                // integer weight. Use the highest range for public endpoint
+                // blocks so /32 allowlist permits cannot bypass Copilot.
+                ids.push(self.add(v6, weight::ENDPOINT, FWP_ACTION_BLOCK, Some(net))?);
             }
             // IPv6: local scopes stay open, everything else follows the mode.
             for (address, prefix) in [("::1", 128), ("fe80::", 10), ("fc00::", 7), ("ff00::", 8)] {

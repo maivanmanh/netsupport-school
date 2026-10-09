@@ -1,3 +1,14 @@
+## 2026-10-10 — Windows .94 Copilot enforcement retest
+
+Fixed invalid WFP_UINT8 weight 16 and Guard mutex blocking tools heartbeat during
+policy application. Paired Teacher/Students rebuilt; .94 updated through Classroom
+and confirmed reconnected with its original identity. 15 Guard tests passed.
+Actual Windows DNS/HTTPS probes confirm Copilot blocked while GitHub/ordinary
+websites remain accessible, then restored on unblock; policy jobs now complete.
+Restored elevated Student connection to Teacher .50.206:48900 and saved adjacent
+room configuration for direct launch. Signed-in VS Code Chat and real 35–40 x64
+lab checks remain. See [evidence and next checks](diagnostics/2026-10-10-copilot-wfp-windows94.md).
+
 ## 2026-10-09 — Independent Copilot network block and extension Rescan
 
 Added independent all-capable-online Copilot checkbox with confirmed X/Y, shared

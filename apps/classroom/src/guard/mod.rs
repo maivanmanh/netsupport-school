@@ -294,7 +294,12 @@ impl Guard {
     }
     /// The Teacher answered a poll: the lease restarts (saved at most once a minute).
     pub fn keepalive(&self) {
-        let mut state = self.state.lock().unwrap();
+        // Applying DNS/WFP policy can take seconds on a slow Student. Never
+        // hold up tools polling behind that work: apply_change refreshes the
+        // lease when it finishes, and the next poll saves the heartbeat.
+        let Ok(mut state) = self.state.try_lock() else {
+            return;
+        };
         state.last_seen = std::time::Instant::now();
         if state.applied.is_some() && unix_secs().saturating_sub(state.last_saved) >= 60 {
             self.save(&mut state);
@@ -302,7 +307,9 @@ impl Guard {
     }
     /// Called while the Teacher is unreachable: lifts a policy whose lease ran out.
     pub fn tick(&self) {
-        let mut state = self.state.lock().unwrap();
+        let Ok(mut state) = self.state.try_lock() else {
+            return;
+        };
         let Some(policy) = &state.applied else { return };
         let lease = Duration::from_secs(u64::from(policy.lease_minutes) * 60);
         if state.last_seen.elapsed() > lease {
@@ -402,6 +409,18 @@ mod tests {
         let future: Policy =
             serde_json::from_str(r#"{"internet":{"mode":"block_all"},"protect":{"x":1}}"#).unwrap();
         assert_eq!(future.internet.mode, Mode::BlockAll);
+    }
+
+    #[test]
+    fn heartbeat_does_not_wait_for_policy_application() {
+        let dir = temp();
+        let guard = Guard::new(&dir, vec![], true);
+        let state = guard.state.lock().unwrap();
+        guard.keepalive();
+        guard.tick();
+        drop(state);
+        guard.keepalive();
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
