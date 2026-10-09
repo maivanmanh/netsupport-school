@@ -666,7 +666,15 @@ class Agent extends ChangeNotifier {
           .map((e) => Map<String, dynamic>.from(e as Map))
           .toList();
 
-  Future<void> openObserve(Map<String, dynamic> row) async {
+  Future<void> openObserve(Map<String, dynamic> row) => _openObserve(row);
+
+  Future<void> screenshotStudent(Map<String, dynamic> row) =>
+      _openObserve(row, screenshot: true);
+
+  Future<void> _openObserve(
+    Map<String, dynamic> row, {
+    bool screenshot = false,
+  }) async {
     if (row['online'] != true) {
       error = 'Student is offline';
       notifyListeners();
@@ -677,10 +685,14 @@ class Agent extends ChangeNotifier {
     notice = 'Opening Observe · ${row['name']}';
     notifyListeners();
     final bounds = await windowManager.getBounds();
-    await command(
+    await (screenshot ? commandChecked : command)(
       'observe_window',
       ['${row['id']}'],
-      {'center_x': bounds.center.dx, 'center_y': bounds.center.dy},
+      {
+        'center_x': bounds.center.dx,
+        'center_y': bounds.center.dy,
+        if (screenshot) 'screenshot': true,
+      },
     );
     // Give immediate feedback during native engine startup. Repeated clicks
     // are coalesced by the persistent Rust coordinator and focus its window.

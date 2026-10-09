@@ -1,3 +1,15 @@
+## 2026-10-09 — Student context menu Screenshot
+
+Added icons to all student context items and Screenshot, which opens/focuses
+Observe, waits for a fresh image and saves PNG to Teacher Desktop automatically.
+Includes one-shot acknowledgement, timeout and save-error feedback; preserves
+existing Control mode. Flutter analyze and Rust check passed. No tests run.
+Paired build `paired-screenshot-20261009` succeeded; both embedded Student ZIPs
+match fresh packages. Teacher replaced at the same path and restarted; IPC and
+Mac Student registration confirmed. Actual screenshot saving remains manual
+verification pending (Desktop access may need the owner's first selection).
+See [details](diagnostics/2026-10-09-student-screenshot-menu.md).
+
 ## 2026-10-09 — Teacher deployment cleanup
 
 Removed 41 unused app bundles after full recoverable archiving; consolidated

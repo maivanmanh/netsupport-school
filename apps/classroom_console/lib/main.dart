@@ -337,8 +337,32 @@ class _ConsoleState extends State<Console> with WindowListener {
       context: context,
       position: RelativeRect.fromLTRB(at.dx, at.dy, at.dx, at.dy),
       items: [
-        const PopupMenuItem(value: 'files', child: Text('Collect files…')),
-        const PopupMenuItem(value: 'observe', child: Text('Observe screen')),
+        const PopupMenuItem(
+          value: 'files',
+          child: ListTile(
+            dense: true,
+            leading: Icon(Icons.folder_open_outlined),
+            title: Text('Collect files…'),
+          ),
+        ),
+        const PopupMenuItem(
+          value: 'observe',
+          child: ListTile(
+            dense: true,
+            leading: Icon(Icons.monitor_outlined),
+            title: Text('Observe screen'),
+          ),
+        ),
+        PopupMenuItem(
+          value: 'screenshot',
+          enabled: agent.connected && !agent.commandBusy,
+          child: const ListTile(
+            dense: true,
+            leading: Icon(Icons.screenshot_monitor_outlined),
+            title: Text('Screenshot'),
+            subtitle: Text('Save to Teacher Desktop'),
+          ),
+        ),
         PopupMenuItem(
           value: 'present',
           enabled:
@@ -346,7 +370,11 @@ class _ConsoleState extends State<Console> with WindowListener {
               !agent.commandBusy &&
               ['idle', 'sharing'].contains(agent.state['phase']) &&
               agent.state['source_id'] != row['id'],
-          child: const Text('Control & present Student'),
+          child: const ListTile(
+            dense: true,
+            leading: Icon(Icons.present_to_all),
+            title: Text('Control & present Student'),
+          ),
         ),
       ],
     );
@@ -354,6 +382,15 @@ class _ConsoleState extends State<Console> with WindowListener {
       await agent.openFiles(row);
     } else if (choice == 'observe') {
       await inspect(row);
+    } else if (choice == 'screenshot') {
+      try {
+        await agent.screenshotStudent(row);
+      } catch (error) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Cannot take screenshot: $error')),
+        );
+      }
     } else if (choice == 'present') {
       // The context target is independent of checkbox selection. The backend
       // revalidates online/current/busy state before stopping any old source.

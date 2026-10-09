@@ -49,6 +49,7 @@ struct Snapshot {
     tray: bool,
     ui_request: u64,
     observe_focus: (String, u64, u32),
+    screenshot_request: (String, u64),
     open_settings: bool,
     observe: Value,
     tools: Value,
@@ -201,7 +202,7 @@ fn state_json(state: &Snapshot, sent: &mut HashMap<String, u64>) -> Value {
         "tray_available":state.tray,"ui_request":state.ui_request,"open_settings":state.open_settings,
         "students":students,"observe":state.observe,"tools":state.tools,"lifecycle":state.lifecycle,
         "settings":state.settings,"diagnostics":state.diagnostics,"student_download":state.student_download,
-        "observe_focus":state.observe_focus,"source_id":state.source_id,"next_source":state.next_source})
+        "observe_focus":state.observe_focus,"screenshot_request":state.screenshot_request,"source_id":state.source_id,"next_source":state.next_source})
 }
 async fn client(
     mut socket: TcpStream,
@@ -384,6 +385,7 @@ pub(super) fn run(
         tray: tray.is_some(),
         ui_request: 0,
         observe_focus: (String::new(), 0, 0),
+        screenshot_request: (String::new(), 0),
         open_settings: false,
         observe: Value::Null,
         tools: tools_hub.snapshot(),
@@ -677,7 +679,20 @@ pub(super) fn run(
                         snapshot.diagnostics = diagnostics.snapshot();
                         Ok(())
                     }
-                    "observe_window" if snapshot.source_id.is_none() => {
+                    "screenshot_done" => {
+                        if command.selected.first() == Some(&snapshot.screenshot_request.0)
+                            && command.input["sequence"].as_u64()
+                                == Some(snapshot.screenshot_request.1)
+                        {
+                            snapshot.screenshot_request.0.clear();
+                            publish_due = Instant::now();
+                        }
+                        Ok(())
+                    }
+                    "observe_window"
+                        if snapshot.source_id.is_none()
+                            || command.selected.first() == snapshot.source_id.as_ref() =>
+                    {
                         observe_windows.retain(|_, child| matches!(child.try_wait(), Ok(None)));
                         let rows = roster.lock().unwrap().snapshot();
                         if let Some(row) = rows
@@ -688,6 +703,10 @@ pub(super) fn run(
                                 snapshot.observe_focus.0 = row.instance_id.clone();
                                 snapshot.observe_focus.1 += 1;
                                 snapshot.observe_focus.2 = observe_windows[&row.instance_id].id();
+                                if command.input["screenshot"].as_bool() == Some(true) {
+                                    snapshot.screenshot_request.0 = row.instance_id.clone();
+                                    snapshot.screenshot_request.1 += 1;
+                                }
                                 publish_due = Instant::now();
                                 Ok(())
                             } else if let Some(console) = console {
@@ -717,6 +736,11 @@ pub(super) fn run(
                                             snapshot.observe_focus.0 = row.instance_id.clone();
                                             snapshot.observe_focus.1 += 1;
                                             snapshot.observe_focus.2 = child.id();
+                                            if command.input["screenshot"].as_bool() == Some(true) {
+                                                snapshot.screenshot_request.0 =
+                                                    row.instance_id.clone();
+                                                snapshot.screenshot_request.1 += 1;
+                                            }
                                             publish_due = Instant::now();
                                             info!(student_id=%row.instance_id,pid=child.id(),"Observe window launched");
                                             observe_windows.insert(row.instance_id.clone(), child);
