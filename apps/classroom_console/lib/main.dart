@@ -991,17 +991,15 @@ class _ConsoleState extends State<Console> with WindowListener {
                               size: 18,
                             ),
                           ),
-                          Tooltip(
-                            message: selectionMode && onlineSelected.isNotEmpty
+                          IconButton(
+                            tooltip: selectionMode && onlineSelected.isNotEmpty
                                 ? 'Open website on selected computers'
                                 : 'Open website on the class',
-                            child: OutlinedButton.icon(
-                              onPressed: !agent.commandBusy && canUseTools
-                                  ? openWebsite
-                                  : null,
-                              icon: const Icon(Icons.language, size: 18),
-                              label: const Text('Open website'),
-                            ),
+                            visualDensity: VisualDensity.compact,
+                            onPressed: !agent.commandBusy && canUseTools
+                                ? openWebsite
+                                : null,
+                            icon: const Icon(Icons.language, size: 18),
                           ),
                           AnimatedBuilder(
                             animation: agent,

@@ -28,6 +28,7 @@ class _WebsiteDialog extends StatefulWidget {
 class _WebsiteDialogState extends State<_WebsiteDialog> {
   static const historyKey = 'recent_websites';
   final input = TextEditingController();
+  final urlFocus = FocusNode();
   late List<String> recent =
       ((widget.agent.preferences[historyKey] as List?) ?? const [])
           .whereType<String>()
@@ -118,6 +119,85 @@ class _WebsiteDialogState extends State<_WebsiteDialog> {
     }
   }
 
+  Widget urlInput() => LayoutBuilder(
+    builder: (context, constraints) => RawAutocomplete<String>(
+      textEditingController: input,
+      focusNode: urlFocus,
+      optionsBuilder: (value) {
+        final query = value.text.trim().toLowerCase().replaceFirst(
+          RegExp(r'^https?://'),
+          '',
+        );
+        if (busy || query.isEmpty) return const Iterable<String>.empty();
+        return recent
+            .where(
+              (url) => url
+                  .toLowerCase()
+                  .replaceFirst(RegExp(r'^https?://'), '')
+                  .contains(query),
+            )
+            .take(6);
+      },
+      // Selecting a suggestion only fills the field. Open remains explicit.
+      onSelected: (_) => setState(() => error = null),
+      fieldViewBuilder: (context, controller, focus, submit) => TextField(
+        controller: controller,
+        focusNode: focus,
+        autofocus: true,
+        enabled: !busy,
+        keyboardType: TextInputType.url,
+        onSubmitted: (_) {
+          submit();
+          open();
+        },
+        decoration: InputDecoration(
+          labelText: 'Website URL',
+          hintText: 'https://example.com',
+          prefixIcon: const Icon(Icons.link),
+          helperText: 'Type an address or choose a saved suggestion.',
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+        ),
+      ),
+      optionsViewBuilder: (context, select, options) => Align(
+        alignment: Alignment.topLeft,
+        child: Material(
+          elevation: 6,
+          clipBehavior: Clip.antiAlias,
+          borderRadius: BorderRadius.circular(10),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxWidth: constraints.maxWidth,
+              maxHeight: 240,
+            ),
+            child: ListView.builder(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              shrinkWrap: true,
+              itemCount: options.length,
+              itemBuilder: (context, index) {
+                final url = options.elementAt(index);
+                return ListTile(
+                  dense: true,
+                  selected: AutocompleteHighlightedOption.of(context) == index,
+                  selectedTileColor: const Color(0xffe4f1f2),
+                  leading: const Icon(Icons.history, size: 18),
+                  title: Text(
+                    url,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  onTap: () {
+                    select(url);
+                    urlFocus.requestFocus();
+                  },
+                );
+              },
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+
   Widget deliveryStatus() {
     final jobs =
         ((widget.agent.state['tools'] as Map? ?? const {})['jobs'] as List?)
@@ -175,6 +255,7 @@ class _WebsiteDialogState extends State<_WebsiteDialog> {
   @override
   void dispose() {
     input.dispose();
+    urlFocus.dispose();
     super.dispose();
   }
 
@@ -234,22 +315,7 @@ class _WebsiteDialogState extends State<_WebsiteDialog> {
               ),
             ),
             const SizedBox(height: 20),
-            TextField(
-              controller: input,
-              autofocus: true,
-              enabled: !busy,
-              keyboardType: TextInputType.url,
-              onSubmitted: (_) => open(),
-              decoration: InputDecoration(
-                labelText: 'Website URL',
-                hintText: 'https://example.com',
-                prefixIcon: const Icon(Icons.link),
-                helperText: 'You can also type a domain, e.g. example.com',
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-              ),
-            ),
+            urlInput(),
             if (error != null)
               Padding(
                 padding: const EdgeInsets.only(top: 10),

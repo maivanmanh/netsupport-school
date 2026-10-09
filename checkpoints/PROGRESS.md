@@ -1,3 +1,13 @@
+## 2026-10-09 — Website icon and saved URL suggestions
+
+Owner confirmed Open website working. Changed toolbar to matching icon-only
+button and added saved-URL autocomplete; selecting a suggestion fills the input
+without dispatching. Flutter analyze/format passed, no tests run. Teacher-only
+UI deployment uses fresh paired packages without restarting compatible Students.
+Paired build completed and Teacher reopened at the existing path; both Students
+online, embedded packages match fresh outputs, saved URL history survives restart.
+See [details](diagnostics/2026-10-09-url-suggestions.md).
+
 ## 2026-10-09 — Open website and short screenshot filenames
 
 Added audience-aware Open website dialog with durable, one-click recent URLs
