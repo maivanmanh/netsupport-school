@@ -33,7 +33,11 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--teacher-log', type=Path, required=True)
     parser.add_argument('--teacher', help='Optional Windows Teacher SSH address; native Rust agent, not Flutter GUI')
+    parser.add_argument('--workload-seconds', type=int, default=0,
+                        help='60..300 seconds of fixed 1080p foreground workload per source, with source swap/crash tests')
     args = parser.parse_args()
+    if args.workload_seconds and not 60 <= args.workload_seconds <= 300:
+        parser.error('--workload-seconds must be 60..300')
     if not args.teacher and not args.endpoint.is_file():
         parser.error('Teacher IPC endpoint is missing; launch the paired Console first')
     output = args.output.resolve()
@@ -50,6 +54,8 @@ def main():
     owned = []
     client = None
     samples = []
+    stage = 'setup'
+    events = []
     tunnel = None
     teacher_remote = None
     manifest = {'scope': 'Two Windows endpoints / Mac coordinator; functional only',
@@ -108,6 +114,9 @@ def main():
             remote.ps(f"New-Item -ItemType Directory -Force '{root}' | Out-Null")
             owned.append((name, remote, address))
             remote.copy(binary, f'{address}:{root}/Classroom.exe')
+            if args.workload_seconds:
+                for script in ('phase1-windows-workload.ps1', 'phase1-display-modes.ps1'):
+                    remote.copy(ROOT / 'scripts' / script, f'{address}:{root}/{script}')
             # Isolated executable has no installed-app firewall allowance.
             # Restrict inbound access to the named Teacher and remove on exit.
             for protocol in ['TCP', 'UDP']:
@@ -119,16 +128,18 @@ def main():
             remote.ps(f"$a=New-ScheduledTaskAction -Execute '{root}/Classroom.exe' -Argument '{arguments}'; $p=New-ScheduledTaskPrincipal -UserId '{address.split('@')[0]}' -LogonType Interactive -RunLevel Limited; $s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries; Register-ScheduledTask -TaskName '{task}-{name}' -Action $a -Principal $p -Settings $s -Force | Out-Null")
         client = module('ipc', ROOT / 'scripts/classroom-dev-update.py').IPC(args.endpoint)
 
-        def wait_for(predicate, seconds=25):
+        def wait_for(predicate, seconds=25, allow_error=False):
             deadline = time.monotonic() + seconds
             while time.monotonic() < deadline:
                 client.read()
                 state = client.state
-                samples.append({'time': time.time(), 'phase': state.get('phase'), 'error': state.get('error'),
+                samples.append({'time': time.time(), 'stage': stage, 'phase': state.get('phase'), 'error': state.get('error'),
+                                'stream_id': state.get('stream_id'),
+                                'observe': {k: (state.get('observe') or {}).get(k) for k in ['id', 'phase', 'mode', 'class_control', 'error']},
                                 'source_id': state.get('source_id'), 'students': [
                                     {k: r.get(k) for k in ['id', 'name', 'ip', 'online', 'media']}
                                     for r in state.get('students', [])]})
-                if state.get('error'):
+                if state.get('error') and not allow_error:
                     raise RuntimeError(state['error'])
                 if predicate(state):
                     return state
@@ -141,13 +152,14 @@ def main():
         source_id = next(r['id'] for r in state['students'] if r['online'] and r['ip'] == source_ip)
         print('START Student source; receiver will late join', flush=True)
         client.command('share_student', [source_id])
-        wait_for(lambda s: s.get('phase') == 'sharing')
+        wait_for(lambda s: s.get('phase') == 'sharing' and (s.get('observe') or {}).get('mode') == 'control')
         peers[1][1].ps(f"Start-ScheduledTask '{task}-receiver'")
         wait_for(lambda s: any(r['ip'] == receiver_ip and r.get('media', {}).get('state') == 'receiving' for r in s.get('students', [])), 35)
         receiver_id = next(r['id'] for r in client.state['students'] if r['online'] and r['ip'] == receiver_ip)
         end = time.monotonic() + 20
         wait_for(lambda s: time.monotonic() >= end)
         print('RECONNECT receiver while Student source remains live', flush=True)
+        peers[1][1].copy(f'{args.receiver}:{roots["receiver"]}/student.log', str(output / 'receiver-before-reconnect.log'))
         peers[1][1].ps(f"Stop-ScheduledTask '{task}-receiver'; Get-CimInstance Win32_Process | Where-Object {{$_.ExecutablePath -eq '{roots['receiver']}/Classroom.exe'.Replace('/','\\')}} | ForEach-Object {{Stop-Process -Id $_.ProcessId}}")
         wait_for(lambda s: any(r['id'] == receiver_id and not r['online'] for r in s.get('students', [])))
         peers[1][1].ps(f"Start-ScheduledTask '{task}-receiver'")
@@ -173,8 +185,74 @@ def main():
         # Repeat with a new stream ID to catch stale report/SSRC state.
         client.command('share_student', [source_id])
         wait_for(lambda s: any(r['id'] == receiver_id and r.get('media', {}).get('state') == 'receiving' for r in s.get('students', [])), 35)
-        client.command('stop')
+        # Closing the owned class Control view must also stop its presentation.
+        client.command('observe_close', [source_id])
         wait_for(lambda s: s.get('phase') == 'idle')
+        if args.workload_seconds:
+            for name, remote, address in peers:
+                stage = f'workload-{name}'
+                root = roots[name]
+                ip = address.split('@')[1]
+                other_ip = receiver_ip if name == 'source' else source_ip
+                sid = next(r['id'] for r in client.state['students'] if r['online'] and r['ip'] == ip)
+                # Process-local policy for our copied local test script; no system policy change.
+                workload_args = f'-NoLogo -NoProfile -ExecutionPolicy RemoteSigned -WindowStyle Hidden -Command "& \'{root}/phase1-windows-workload.ps1\' -Seconds {args.workload_seconds + 120} -Width 1920 -Height 1080 -EvidencePath \'{root}/workload.jsonl\' -StopFile \'{root}/workload.stop\' *> \'{root}/workload-output.txt\'"'
+                workload_args_ps = workload_args.replace("'", "''")
+                remote.ps(f"$a=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '{workload_args_ps}'; $p=New-ScheduledTaskPrincipal -UserId '{address.split('@')[0]}' -LogonType Interactive -RunLevel Limited; $s=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries; Register-ScheduledTask -TaskName '{task}-{name}-workload' -Action $a -Principal $p -Settings $s -Force | Out-Null; Start-ScheduledTask '{task}-{name}-workload'; $until=(Get-Date).AddSeconds(15); while(-not(Test-Path '{root}/workload.jsonl')){{if((Get-Date) -gt $until){{Get-Content '{root}/workload-output.txt' -ErrorAction SilentlyContinue; throw 'Workload startup failed'}}; Start-Sleep -Milliseconds 100}}")
+                print(f'WORKLOAD {ip}: fixed 1920x1080, {args.workload_seconds}s', flush=True)
+                try:
+                    client.command('share_student', [sid])
+                    wait_for(lambda s: any(r['ip'] == other_ip and r.get('media', {}).get('state') == 'receiving' for r in s.get('students', [])), 35)
+                    wait_for(lambda s: (s.get('observe') or {}).get('mode') == 'control')
+                    # A harmless key in our own foreground workload proves the
+                    # existing Teacher input channel reaches the source app.
+                    client.command('observe_input', [sid], {'action': 'key', 'key': 'Home', 'down': True})
+                    client.command('observe_input', [sid], {'action': 'key', 'key': 'Home', 'down': False})
+                    end = time.monotonic() + args.workload_seconds
+                    wait_for(lambda s: time.monotonic() >= end, args.workload_seconds + 5)
+                    stage = f'crash-{name}'
+                    remote.copy(f'{address}:{root}/student.log', str(output / f'{name}-before-crash.log'))
+                    events.append({'stage': stage, 'event': 'kill_source', 'time': time.time()})
+                    remote.ps(f"Stop-ScheduledTask '{task}-{name}'; Get-CimInstance Win32_Process | Where-Object {{$_.ExecutablePath -eq '{root}/Classroom.exe'.Replace('/','\\')}} | ForEach-Object {{Stop-Process -Id $_.ProcessId -Force}}")
+                    stopped = wait_for(lambda s: s.get('phase') == 'idle', 20, allow_error=True)
+                    events.append({'stage': stage, 'event': 'teacher_idle', 'time': time.time(), 'error': stopped.get('error')})
+                    assert not any(r.get('media', {}).get('state') == 'receiving' for r in stopped.get('students', [])), stopped
+                    # A source failure stays visible until explicitly acknowledged.
+                    client.command('stop')
+                    client.command('clear_error')
+                    remote.ps(f"Start-ScheduledTask '{task}-{name}'")
+                    wait_for(lambda s: any(r['online'] and r['ip'] == ip for r in s.get('students', [])))
+                    stage = f'recover-{name}'
+                    client.command('share_student', [sid])
+                    wait_for(lambda s: any(r['ip'] == other_ip and r.get('media', {}).get('state') == 'receiving' for r in s.get('students', [])), 35)
+                    client.command('stop')
+                    wait_for(lambda s: s.get('phase') == 'idle')
+                    stage = f'network-loss-{name}'
+                    client.command('share_student', [sid])
+                    wait_for(lambda s: any(r['ip'] == other_ip and r.get('media', {}).get('state') == 'receiving' for r in s.get('students', [])), 35)
+                    events.append({'stage': stage, 'event': 'block_source_teacher', 'time': time.time()})
+                    try:
+                        remote.ps(f"$ErrorActionPreference='Stop'; foreach($d in @('Inbound','Outbound')){{New-NetFirewallRule -Name ('{task}-{name}-loss-' + $d) -DisplayName ('{task}-{name}-loss-' + $d) -Program '{root}/Classroom.exe'.Replace('/','\\') -Direction $d -RemoteAddress '{args.local_ip}' -Action Block -Profile Any | Out-Null}}")
+                        stopped = wait_for(lambda s: s.get('phase') == 'idle', 25, allow_error=True)
+                        events.append({'stage': stage, 'event': 'teacher_idle', 'time': time.time(), 'error': stopped.get('error')})
+                        assert not any(r.get('media', {}).get('state') == 'receiving' for r in stopped.get('students', [])), stopped
+                    finally:
+                        remote.ps(f"Remove-NetFirewallRule -Name '{task}-{name}-loss-Inbound','{task}-{name}-loss-Outbound' -ErrorAction SilentlyContinue; exit 0")
+                    client.command('clear_error')
+                    wait_for(lambda s: any(r['online'] and r['ip'] == ip for r in s.get('students', [])), 35)
+                    stage = f'network-recover-{name}'
+                    client.command('share_student', [sid])
+                    wait_for(lambda s: any(r['ip'] == other_ip and r.get('media', {}).get('state') == 'receiving' for r in s.get('students', [])), 35)
+                    client.command('stop')
+                    wait_for(lambda s: s.get('phase') == 'idle')
+                finally:
+                    remote.ps(f"New-Item -ItemType File -Force '{root}/workload.stop' | Out-Null; $until=(Get-Date).AddSeconds(15); while((Get-ScheduledTask '{task}-{name}-workload').State -eq 'Running'){{if((Get-Date) -gt $until){{throw 'Workload failed to restore display'}}; Start-Sleep -Milliseconds 100}}; Unregister-ScheduledTask '{task}-{name}-workload' -Confirm:$false")
+                    remote.copy(f'{address}:{root}/workload.jsonl', str(output / f'{name}-workload.jsonl'))
+                records = [json.loads(line.lstrip('\ufeff')) for line in (output / f'{name}-workload.jsonl').read_text(encoding='utf-8-sig').splitlines()]
+                steady = [r for r in records if r.get('event') == 'sample' and 2 <= r['elapsed'] <= args.workload_seconds]
+                assert steady and all(r['width'] == 1920 and r['height'] == 1080 and r['foreground'] for r in steady), 'Workload dimensions/foreground changed; inspect evidence'
+                assert records[-1]['event'] == 'restored', 'Display restoration missing'
+                assert any(r.get('event') == 'teacher_home' for r in records), 'Teacher input did not reach the foreground source workload'
         print('PASS late join, reconnect, restart, receiver health, diagnostic ZIP', flush=True)
     except Exception:
         if client and 'source' in roots:
@@ -190,6 +268,7 @@ def main():
         raise
     finally:
         (output / 'states.json').write_text(json.dumps(samples, indent=2))
+        (output / 'events.json').write_text(json.dumps(events, indent=2))
         if not args.teacher and args.teacher_log.is_file():
             shutil.copy2(args.teacher_log, output / 'teacher.log')
         if client:
@@ -203,11 +282,19 @@ def main():
             tunnel.stop()
         for name, remote, address in owned:
             root = roots[name]
+            if args.workload_seconds and name != 'teacher':
+                try:
+                    remote.ps(f"New-Item -ItemType File -Force '{root}/workload.stop' | Out-Null; $w=Get-ScheduledTask '{task}-{name}-workload' -ErrorAction SilentlyContinue; if($w){{$until=(Get-Date).AddSeconds(15); while((Get-ScheduledTask '{task}-{name}-workload').State -eq 'Running'){{if((Get-Date) -gt $until){{throw 'Workload cleanup timeout; display restoration unverified'}}; Start-Sleep -Milliseconds 100}}; Unregister-ScheduledTask '{task}-{name}-workload' -Confirm:$false}}; Remove-NetFirewallRule -Name '{task}-{name}-loss-Inbound','{task}-{name}-loss-Outbound' -ErrorAction SilentlyContinue; exit 0")
+                except Exception as error:
+                    print(f'{name} workload cleanup: {error}', flush=True)
             try:
                 remote.ps(f"Stop-ScheduledTask '{task}-{name}' -ErrorAction SilentlyContinue; Unregister-ScheduledTask '{task}-{name}' -Confirm:$false -ErrorAction SilentlyContinue; Get-CimInstance Win32_Process | Where-Object {{$_.ExecutablePath -eq '{root}/Classroom.exe'.Replace('/','\\')}} | ForEach-Object {{Stop-Process -Id $_.ProcessId -ErrorAction SilentlyContinue}}")
-                remote.ps(f"Remove-NetFirewallRule -Name '{task}-{name}-TCP','{task}-{name}-UDP' -ErrorAction SilentlyContinue")
             except Exception as error:
                 print(f'{name} cleanup/evidence: {error}', flush=True)
+            try:
+                remote.ps(f"Remove-NetFirewallRule -Name '{task}-{name}-TCP','{task}-{name}-UDP' -ErrorAction SilentlyContinue; exit 0")
+            except Exception as error:
+                print(f'{name} firewall cleanup: {error}', flush=True)
             try:
                 filename = 'teacher.log' if name == 'teacher' else f'{name}-student.log'
                 remote.copy(f'{address}:{root}/student.log', str(output / filename))

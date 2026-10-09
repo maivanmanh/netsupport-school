@@ -298,6 +298,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
       view['phase'] == 'live' &&
       (stats['sequence'] as num? ?? 0) > 0;
   bool get canSwitchMode => live;
+  bool get classControl => view['class_control'] == true;
 
   /// Negotiated codec for the footer (also shown in Session stats).
   String? get sessionCodec => ObserveStatsData.codecLabel(
@@ -489,7 +490,8 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
         widget.agent.connected &&
         reconnectAttempts < 2 &&
         reconnectTimer == null &&
-        !closing) {
+        !closing &&
+        !classControl) {
       reconnecting = true;
       reconnectTimer = Timer(const Duration(milliseconds: 800), () {
         reconnectTimer = null;
@@ -651,6 +653,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
   }
 
   void switchMode(String value) {
+    if (classControl && value == 'observe') return;
     if (!canSwitchMode || requestedMode != null) return;
     modeRequestTimer?.cancel();
     modeError = null;
@@ -1209,7 +1212,9 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                           ],
                           selected: {mode == 'observe' ? 'observe' : 'control'},
                           onSelectionChanged:
-                              canSwitchMode && requestedMode == null
+                              canSwitchMode &&
+                                  !classControl &&
+                                  requestedMode == null
                               ? (v) => switchMode(v.first)
                               : null,
                         ),

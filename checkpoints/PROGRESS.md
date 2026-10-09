@@ -3928,3 +3928,54 @@ pending the next grouped build. Duplicate sessions cleaned, one test Teacher lef
 idle. Next: grouped build/native custom restart test when more source changes are
 ready; fixed1920x1080 foreground workload and 35–40 physical x64 Ethernet ladder,
 optical latency/soak/source failure/sleep/DPI and Defender lab regression deferred.
+
+## 2026-10-08 — owner clarifies shared Control for Student presentation
+
+Owner requires selecting Student A to open Teacher Control automatically while
+the class watches A; explicitly chose cooperative Control (Teacher and A can both
+use input), not an exclusive input lock. Implementing a second authorized viewer
+of the same Source publisher for Teacher preview/control: one Source capture,
+encoder and packetizer remain; class RTP relay stays compressed. Teacher decodes
+only its interactive preview. Distinct session-token identities prevent replacing
+the relay registration; mode/cursor responses go only to the Control viewer.
+Class broadcasts retain the source cursor in video. Closing/failing Control ends
+the class session and releases input. Ordinary Observe remains read-only by default.
+
+Before this change, a 90s fixed1920x1080 foreground workload on .94 recorded median
+decode27.883/render24.946 FPS, source crash -> Teacher idle in1.55s and successful
+restart. Evidence: target/student-broadcast-1080p-retry-20261008. Script errors
+prevented network-loss/swap completion; these are not product passes. Workload
+restored1920x1200. New harness preserves logs before process restart, records
+foreground/mode each second, and will verify harmless Teacher Home-key input.
+
+Control source changes and pending custom-argument Restart fix are being grouped
+for one paired build. No new native Control pass claimed yet. Physical x64 wired
+35–40-PC scaling, optical latency and long soak remain required in the lab.
+
+
+## 2026-10-09 — resume cooperative class Control and final grouped build
+
+Verified retained native artifacts from both .94/.106 source directions: default
+cooperative Control, harmless Teacher input, foreground fixed1080p workloads,
+late join/reconnect, source crash/network-loss recovery, Stop/Control-close cleanup
+and diagnostic ZIP2/2. See diagnostics/2026-10-08-student-broadcast.md and its
+explicit VM/loss/lab limitations. Prior native custom Restart still dropped args
+through open; source now starts the exact bundle executable with explicit args.
+Added relay deadline/last-error counters only. Final paired20261009 build and
+native Restart verification are in progress; no pass claimed for that fix yet.
+
+
+## 2026-10-09 — final grouped milestone verified
+
+Paired-class-control-20261009 builds fresh Teacher/Mac Student/Windows x64 Student
+and Guard; embedded package bytes/manifests verified. Native direct Restart
+preserves bind/ports/IPC/log and leaves one GUI/helper. Both apps connect to .94:22.
+Owner granted Recording; reopening exact bundle shows both Granted and actual
+Teacher capture/encode runs then stops successfully (no receiver acceptance claim).
+Final native Student class-Control regression exit0: late join, receiver reconnect,
+queued ZIP2/2, repeat stream and Control-close ending class. Final Rust195 pass,
+2 ignored; focused relay5 pass. No further signing/build after grants. Teacher is
+left idle for owner use. Detailed reports preserve motion losses and deferred
+physical35–40 x64 Ethernet, optical latency, fixed1080p soak/sleep/DPI/Defender tests.
+Next: lab acceptance ladder and source-upload/preview load measurements; use added
+relay timeout/error counters to diagnose send loss before changing media policy.

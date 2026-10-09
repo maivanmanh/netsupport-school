@@ -433,9 +433,36 @@ pub(super) fn run(
                     }
                 }
             }
+            if let Some(source) = snapshot.source_id.as_ref() {
+                let view_failed = observe.as_ref().is_some_and(|v| {
+                    matches!(v.state()["phase"].as_str(), Some("ended" | "error"))
+                });
+                let window_closed = observe_windows
+                    .get_mut(source)
+                    .is_some_and(|c| !matches!(c.try_wait(), Ok(None)));
+                if snapshot.phase != "stopping" && (view_failed || window_closed) {
+                    if let Some(active) = session.as_ref() {
+                        active.stop.store(true, Ordering::Release);
+                    }
+                    presentation.send_replace(None);
+                    snapshot.error = Some(
+                        observe
+                            .as_ref()
+                            .and_then(|v| v.state()["error"].as_str().map(str::to_owned))
+                            .unwrap_or_else(|| "Student class control window closed".into()),
+                    );
+                }
+            }
             if session.as_ref().is_some_and(|s| s.worker.is_finished()) {
                 let done = session.take().unwrap();
                 presentation.send_replace(None);
+                if let Some(source) = snapshot.source_id.as_ref() {
+                    observe.take();
+                    if let Some(mut child) = observe_windows.remove(source) {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    }
+                }
                 snapshot.phase = "idle".into();
                 snapshot.source_id = None;
                 match done.worker.join() {
@@ -644,7 +671,8 @@ pub(super) fn run(
                         publish_due = Instant::now();
                         Ok(())
                     }
-                    "tool_message" | "tool_file" | "tool_update" | "tool_launch" | "tool_power" | "tool_policy" | "tool_vscode_policy" => {
+                    "tool_message" | "tool_file" | "tool_update" | "tool_launch" | "tool_power"
+                    | "tool_policy" | "tool_vscode_policy" => {
                         if command.action == "tool_update"
                             && (session.is_some() || observe.is_some())
                         {
@@ -665,7 +693,8 @@ pub(super) fn run(
                         // up-to-date Student; apply to every computer that qualifies rather
                         // than refusing the whole batch for one that does not, and report
                         // exactly which were skipped and why.
-                        if command.action == "tool_policy" || command.action == "tool_vscode_policy" {
+                        if command.action == "tool_policy" || command.action == "tool_vscode_policy"
+                        {
                             let caps = tools_hub.snapshot()["capabilities"].clone();
                             let mut skipped = Vec::new();
                             recipients.retain(|id| {
@@ -757,7 +786,15 @@ pub(super) fn run(
                             }
                         }
                     }
-                    "fs_collect" | "fs_list" | "fs_result" | "fs_transfer" | "fs_cancel" | "fs_open" | "activity_request" | "activity_monitoring_set" | "vscode_list" => {
+                    "fs_collect"
+                    | "fs_list"
+                    | "fs_result"
+                    | "fs_transfer"
+                    | "fs_cancel"
+                    | "fs_open"
+                    | "activity_request"
+                    | "activity_monitoring_set"
+                    | "vscode_list" => {
                         let rows = roster.lock().unwrap().snapshot();
                         let input = &command.input;
                         let outcome: Result<Option<Value>> = (|| match command.action.as_str() {
@@ -831,7 +868,9 @@ pub(super) fn run(
                                 Ok(None)
                             }
                             "activity_monitoring_set" => {
-                                tools_hub.set_activity_monitoring(input["enabled"].as_bool().unwrap_or(false));
+                                tools_hub.set_activity_monitoring(
+                                    input["enabled"].as_bool().unwrap_or(false),
+                                );
                                 publish_due = Instant::now();
                                 Ok(None)
                             }
@@ -853,9 +892,11 @@ pub(super) fn run(
                                     .flatten()
                                     .any(|job| {
                                         job["dest"] == wanted
-                                            || job["targets"].as_array().into_iter().flatten().any(
-                                                |t| t["folder"] == wanted,
-                                            )
+                                            || job["targets"]
+                                                .as_array()
+                                                .into_iter()
+                                                .flatten()
+                                                .any(|t| t["folder"] == wanted)
                                     });
                                 anyhow::ensure!(known, "Unknown folder");
                                 std::process::Command::new(if cfg!(windows) {
@@ -903,7 +944,8 @@ pub(super) fn run(
                         } else if internet_windows.len() >= MAX_INTERNET_WINDOWS {
                             Err("Close an Internet access window before opening another")
                         } else if let Some(console) = console {
-                            let audience = command.input["audience"].as_str().unwrap_or("the class");
+                            let audience =
+                                command.input["audience"].as_str().unwrap_or("the class");
                             match std::process::Command::new(console)
                                 .arg("--internet-ids")
                                 .arg(ids.join(","))
@@ -914,7 +956,11 @@ pub(super) fn run(
                                 .spawn()
                             {
                                 Ok(child) => {
-                                    info!(students = ids.len(), pid = child.id(), "Internet access window launched");
+                                    info!(
+                                        students = ids.len(),
+                                        pid = child.id(),
+                                        "Internet access window launched"
+                                    );
                                     internet_windows.push(child);
                                     publish_due = Instant::now();
                                     Ok(())
@@ -949,7 +995,8 @@ pub(super) fn run(
                         } else if vscode_windows.len() >= MAX_VSCODE_WINDOWS {
                             Err("Close a VS Code control window before opening another")
                         } else if let Some(console) = console {
-                            let audience = command.input["audience"].as_str().unwrap_or("the class");
+                            let audience =
+                                command.input["audience"].as_str().unwrap_or("the class");
                             match std::process::Command::new(console)
                                 .arg("--vscode-ids")
                                 .arg(ids.join(","))
@@ -960,7 +1007,11 @@ pub(super) fn run(
                                 .spawn()
                             {
                                 Ok(child) => {
-                                    info!(students = ids.len(), pid = child.id(), "VS Code control window launched");
+                                    info!(
+                                        students = ids.len(),
+                                        pid = child.id(),
+                                        "VS Code control window launched"
+                                    );
                                     vscode_windows.push(child);
                                     publish_due = Instant::now();
                                     Ok(())
@@ -1003,7 +1054,8 @@ pub(super) fn run(
                                 .spawn()
                             {
                                 Ok(child) => {
-                                    snapshot.observe_focus.0 = format!("activity:{}", row.instance_id);
+                                    snapshot.observe_focus.0 =
+                                        format!("activity:{}", row.instance_id);
                                     snapshot.observe_focus.1 += 1;
                                     snapshot.observe_focus.2 = child.id();
                                     publish_due = Instant::now();
@@ -1066,6 +1118,17 @@ pub(super) fn run(
                             Err("Teacher console executable unavailable")
                         }
                     }
+                    "observe_open"
+                        if snapshot.source_id.is_some()
+                            && command.selected.first() == snapshot.source_id.as_ref() =>
+                    {
+                        // The class-control window attaches to the already owned
+                        // source publisher. Never request another encoder.
+                        snapshot.observe = observe
+                            .as_ref()
+                            .map_or(Value::Null, super::observe_coordinator::View::state);
+                        Ok(())
+                    }
                     "observe_open" if snapshot.source_id.is_none() => {
                         let rows = roster.lock().unwrap().snapshot();
                         if let Some(row) = rows
@@ -1110,6 +1173,13 @@ pub(super) fn run(
                                 Ok(())
                             } else {
                                 observe.take();
+                                if snapshot.source_id.is_some() {
+                                    if let Some(active) = session.as_ref() {
+                                        active.stop.store(true, Ordering::Release);
+                                    }
+                                    presentation.send_replace(None);
+                                    snapshot.phase = "stopping".into();
+                                }
                                 Err("Observe input queue closed")
                             }
                         } else {
@@ -1125,21 +1195,65 @@ pub(super) fn run(
                                     .is_none_or(|surface| surface == &v.state()["surface"])
                         }) {
                             observe.take();
+                            if command.selected.first() == snapshot.source_id.as_ref() {
+                                if let Some(active) = session.as_ref() {
+                                    active.stop.store(true, Ordering::Release);
+                                }
+                                presentation.send_replace(None);
+                                snapshot.phase = "stopping".into();
+                            }
                         }
                         Ok(())
                     }
                     "share_student" if session.is_none() => {
                         observe_windows.retain(|_, child| matches!(child.try_wait(), Ok(None)));
                         let rows = roster.lock().unwrap().snapshot();
-                        let source = rows.iter().find(|r| r.online && command.selected.len() == 1 && command.selected[0] == r.instance_id);
+                        let source = rows.iter().find(|r| {
+                            r.online
+                                && command.selected.len() == 1
+                                && command.selected[0] == r.instance_id
+                        });
                         if !config.monitoring.enabled {
                             Err("Enable monitoring to request Student screen publishing")
                         } else if observe.is_some() || !observe_windows.is_empty() {
                             Err("Close Observe/Control windows before presenting a Student")
+                        } else if console.is_none() {
+                            Err("Teacher console is required for Student class control")
                         } else if let Some(source) = source {
+                            let control_view =
+                                super::observe_coordinator::View::start_class_control(
+                                    source.instance_id.clone(),
+                                    source.endpoint.ip().to_string(),
+                                    path.parent().unwrap_or(Path::new(".")),
+                                    Arc::clone(&observe_jobs),
+                                );
+                            let setup = control_view.and_then(|view| {
+                                let child = std::process::Command::new(console.unwrap())
+                                    .arg("--observe-id")
+                                    .arg(&source.instance_id)
+                                    .arg("--observe-name")
+                                    .arg(&source.hostname)
+                                    .arg("--ipc-file")
+                                    .arg(path)
+                                    .spawn()?;
+                                Ok((view, child))
+                            });
+                            let (view, child) = match setup {
+                                Ok(value) => value,
+                                Err(error) => {
+                                    let _ = request.reply.send(json!({"type":"ack","id":id,"ok":false,"error":format!("Cannot start Student class control: {error:#}")}));
+                                    continue;
+                                }
+                            };
+                            observe = Some(view);
+                            observe_windows.insert(source.instance_id.clone(), child);
                             diagnostics.cancel();
-                            let recipients = Arc::new(rows.iter().filter(|r| r.online && r.instance_id != source.instance_id)
-                                .map(|r| r.instance_id.clone()).collect::<HashSet<_>>());
+                            let recipients = Arc::new(
+                                rows.iter()
+                                    .filter(|r| r.online && r.instance_id != source.instance_id)
+                                    .map(|r| r.instance_id.clone())
+                                    .collect::<HashSet<_>>(),
+                            );
                             snapshot.stream_id = presentation_ids.next()?;
                             snapshot.source_id = Some(source.instance_id.clone());
                             snapshot.scope = "student_class".into();
@@ -1155,12 +1269,19 @@ pub(super) fn run(
                             let source_ip = *source.endpoint.ip();
                             let jobs = Arc::clone(&observe_jobs);
                             let runtime = tokio::runtime::Handle::current();
-                            session = Some(Session { stop, worker: thread::spawn(move || {
-                                super::student_broadcast::run(&settings, bind_ip, source_id, source_ip, stream,
-                                    &cancel, &state, jobs, runtime)
-                            }) });
+                            session = Some(Session {
+                                stop,
+                                worker: thread::spawn(move || {
+                                    super::student_broadcast::run(
+                                        &settings, bind_ip, source_id, source_ip, stream, &cancel,
+                                        &state, jobs, runtime,
+                                    )
+                                }),
+                            });
                             Ok(())
-                        } else { Err("Select exactly one online Student as the presentation source") }
+                        } else {
+                            Err("Select exactly one online Student as the presentation source")
+                        }
                     }
                     "share_class" | "share_selected" if session.is_none() => {
                         diagnostics.cancel();
@@ -1223,6 +1344,9 @@ pub(super) fn run(
                                 stream_id = snapshot.stream_id,
                                 "teacher dashboard Stop Sharing"
                             );
+                            if snapshot.source_id.is_some() {
+                                observe.take();
+                            }
                         }
                         Ok(())
                     }

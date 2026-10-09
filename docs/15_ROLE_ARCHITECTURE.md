@@ -64,6 +64,21 @@ Observe is read-only by default. Control is explicit, cooperative by default;
 exclusive Windows input requires an acknowledged capability and an expiring lease.
 Closing Observe must not close the main console or persistent room.
 
+Owner clarification (2026-10-08): **Control & present Student** automatically opens
+cooperative Control for the selected source; Teacher and that Student may both
+operate it. This class session cannot be switched to Observe. Closing its Control
+window, losing the source, or losing the input lease ends the class presentation.
+Ordinary standalone Observe retains its existing default and lifecycle.
+
+Class relay and Teacher Control preview register with separate authorized identities
+on one Source publisher. Capture, encode and packetization happen once; Source
+fans those packets to the relay and preview, and Teacher fans compressed RTP to
+the class. Only the Teacher preview decodes locally. Control acknowledgements and
+cursor metadata are addressed to the preview connection. Class mode keeps the
+source cursor in the encoded picture so recipients see Teacher/Student actions.
+The extra Source-to-Teacher preview stream and Teacher decoder require performance
+measurement; this is not evidence of 35–40 physical PC acceptance.
+
 Observe opens in Fill mode at the complete logical work area of the monitor
 containing the Teacher window, excluding the menu bar and Dock/taskbar. Bounds
 are set before the window is shown. This is a centered ordinary window, not a

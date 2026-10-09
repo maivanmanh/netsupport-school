@@ -3,7 +3,7 @@
 ## Scope and architecture
 Owner authorizes receiver health, manual diagnostic ZIP collection and presenting one selected Student to the class. Owner reports the existing Windows Teacher broadcast worked well for 35 real Windows Students at 1920×1080; that result is the owner's evidence and is not a newly measured result here.
 
-Student publishing reuses `observation::Publisher` and the existing DXGI/H.264 media publisher. The selected Student captures, encodes and packetizes once. Teacher relays compressed RTP, rewriting only session SSRC; Teacher does not decode or re-encode. Downstream uses existing UDP pacing, repair cache, NACK and keyframe requests. Source is excluded from class presentation; current and future recipients can join. No video history or unbounded queue is added.
+Student publishing reuses `observation::Publisher` and the existing DXGI/H.264 media publisher. The selected Student captures, encodes and packetizes once. Teacher relays compressed RTP, rewriting only session SSRC; The relay does not decode or re-encode; the later Control feature decodes a separate interactive preview on Teacher. Downstream uses existing UDP pacing, repair cache, NACK and keyframe requests. Source is excluded from class presentation; current and future recipients can join. No video history or unbounded queue is added.
 
 Teacher displays session-scoped receiver progress and freshness rather than equating TCP Connected with receiving an image. Legacy reports without health version show unknown. First report has no measured FPS interval, so its FPS is zero until a second sample. Student policy actions remain silent; this milestone adds Teacher-facing status only.
 
@@ -104,3 +104,87 @@ repeatable foreground text/scroll/motion at fixed actual 1920x1080, optical late
 long soak, source crash/recovery, sleep/DPI, original Defender quarantine case.
 
 Restart source checks: Swift typecheck passed (registrar stub; existing activation deprecation), Flutter analyzer no issues, focused UI 11 passed. Evidence: `target/macos-permissions-restart-{swift-check,analyze,tests}.txt`. No paired build/deployment of this restart source fix.
+
+
+## 2026-10-09 — resumed artifact verification: cooperative class Control
+
+The paired-class-control-20261008 native run completed both source directions.
+Evidence: `target/student-class-control-1080p-20261008/verified-summary.json`,
+585 safe state samples, events, source/receiver logs and workload JSONL. The daemon
+restart lost the original runner exit status; completion is verified from retained
+artifacts, not an invented exit code.
+
+Selecting A automatically opens Teacher Control; both Teacher and A retain input.
+One Source publisher feeds compressed relay and Teacher preview; relay intervals
+report zero encoder instances. Teacher decodes its interactive preview only.
+Class source cursor remains in video. Ordinary Observe remains read only.
+Closing Control stops the class session. Native mode acknowledgements and one
+harmless Teacher Home-key event at each Source establish the input route; pixel
+cursor appearance and optical latency still require visual/physical verification.
+
+Each direction used 90 seconds of foreground workload at fixed 1920×1080:
+
+| Source | Receiver | Median decode FPS | Median render FPS | Max reported missing packets |
+| --- | --- | ---: | ---: | ---: |
+| .94 | .106 | 27.880 | 26.817 | 0 |
+| .106 | .94 | 26.891 | 26.533 | 44 |
+
+All recorded workload samples were foreground 1920×1080 (114 / 113 samples,
+including surrounding lifecycle time). Each workload restored its original mode:
+1920×1200 and 1512×949. Receiver FPS medians describe health reports in the workload
+stage, not optical latency or an exact frame counter for only the 90-second window.
+
+Source process termination ended Teacher presentation in 1.368 / 1.301 seconds.
+Temporary per-test-EXE network blocking ended it in 6.460 / 6.947 seconds. Restart
+and reconnection produced receiving health in both directions; final state idle,
+no error, no Observe view, both endpoints online. Receiver late join and process
+restart passed. Diagnostic collection queued during presentation and completed
+on Stop: collected=2, missing=0. ZIP integrity and its Teacher plus two Student
+log/metadata entries were checked on resume.
+
+ZIP: `target/diagnostics/Classroom-diagnostics-1791458860082-session-1952094455784981871.zip`.
+Relay logged up to 5 send errors; this is not a zero-loss claim. Added bounded last
+send-error text and timeout counter for subsequent diagnosis, with no queue,
+quality or transport-policy change. No decoder redesign is justified by this run.
+
+### Deferred to physical lab
+
+- Windows x64 Teacher and 35–40 physical Windows x64 Students over wired Ethernet;
+  ladder 1/5/10/20/40 with identical active 1080p workload and actual bitrate.
+- Student-source Control + class relay scaling, Source upload for relay and preview,
+  Teacher preview CPU/decoder load, optical latency and visible cursor correctness.
+- Fixed-resolution 1080p long soak, real sleep/resume and 125%/150% DPI.
+- Defender false-positive reproduction with detection name, affected file/hash and
+  protection history; the current ARM guests cannot prove lab AV compatibility.
+
+The present endpoints are ARM Parallels guests running x64 binaries on a shared
+Mac/Wi-Fi environment. These results are functional verification, not Phase 1
+physical Ethernet performance acceptance.
+
+
+On 2026-10-09, fresh SSH audits found no Classroom-Broadcast test tasks, firewall
+rules or owned runtime processes on either .94 or .106; Defender realtime was
+still enabled. Evidence: `target/final-cleanup-audit-192.168.50.94.json` and `.106.json`.
+Final grouped build passed and embedded package byte/hash checks matched fresh
+roles (paired-class-control-20261009). Focused Rust relay checks5 passed. Native
+final short lifecycle/Control regression is being run; results follow below.
+
+
+## Final grouped native regression — 2026-10-09
+
+`target/student-class-control-final-20261009` completed with retained runner exit0
+(`target/student-class-control-final-run.txt`). Default cooperative Control,
+late join, 20-second receiving wait, receiver restart, queued diagnostic ZIP2/2,
+new stream, and Control-close ending the presentation passed. 89 safe state
+samples verify acknowledged Control and final idle. Relay intervals show one
+recipient, zero encoder instances and zero send/deadline errors in this short
+static regression; that does not supersede losses in the prior motion workload.
+No 90-second workload was repeated because media behavior was unchanged; the
+final changes were Restart launch and relay error diagnostics.
+
+Final Classroom test suite:195 passed/2 ignored. Prior protocol/control tests
+1/14 passed, focused Flutter12 passed and analyzer clean; no claim that the full
+Flutter suite passes (existing Observe layout failures remain documented).
+
+A second SSH audit after the final regression again found zero owned test tasks,
+firewall rules or runtime processes on both Windows; Defender realtime enabled.

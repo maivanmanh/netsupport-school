@@ -46,6 +46,17 @@ impl ObserveRequests {
         self.request_with_offer(id, None);
     }
     pub fn request_with_offer(&self, id: String, offer: Option<(Vec<String>, u32)>) {
+        self.request_profile(id, offer, false);
+    }
+    pub fn request_broadcast(&self, id: String) {
+        self.request_profile(id, Some((vec!["h264".into()], 30)), true);
+    }
+    fn request_profile(
+        &self,
+        id: String,
+        offer: Option<(Vec<String>, u32)>,
+        class_broadcast: bool,
+    ) {
         let mut entries = self.entries.lock().unwrap();
         entries.insert(
             id,
@@ -53,6 +64,7 @@ impl ObserveRequests {
                 request: true,
                 requested_at: Some(Instant::now()),
                 offer,
+                class_broadcast,
                 ..Default::default()
             },
         );
@@ -82,6 +94,7 @@ pub struct ObserveJob {
     /// Student-chosen session profile, e.g. "h265@60".
     pub profile: String,
     pub offer: Option<(Vec<String>, u32)>,
+    pub class_broadcast: bool,
 }
 
 const MAX_JPEG: usize = 48 * 1024;
@@ -293,8 +306,13 @@ fn serve(
                 r
             });
         if let Some(queued_at) = request {
-            let offer = jobs.entries.lock().unwrap().get(&hello.instance_id)
-                .and_then(|j| j.offer.clone()).unwrap_or_else(|| jobs.offer.clone());
+            let offer = jobs
+                .entries
+                .lock()
+                .unwrap()
+                .get(&hello.instance_id)
+                .and_then(|j| j.offer.clone())
+                .unwrap_or_else(|| jobs.offer.clone());
             let handshake = Instant::now();
             info!(
                 client_id,
@@ -307,6 +325,12 @@ fn serve(
                     action: "start".into(),
                     codecs: offer.0,
                     max_fps: offer.1,
+                    class_broadcast: jobs
+                        .entries
+                        .lock()
+                        .unwrap()
+                        .get(&hello.instance_id)
+                        .is_some_and(|j| j.class_broadcast),
                     ..Default::default()
                 }),
             )?;

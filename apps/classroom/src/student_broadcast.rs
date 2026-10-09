@@ -41,7 +41,7 @@ pub fn run(
         id: source_id.clone(),
         jobs: Arc::clone(&jobs),
     };
-    jobs.request_with_offer(source_id.clone(), Some((vec!["h264".into()], 30)));
+    jobs.request_broadcast(source_id.clone());
     let began = Instant::now();
     let job = loop {
         if stop.load(Ordering::Acquire) {
@@ -147,6 +147,8 @@ pub fn run(
             let mut packets = 0u64;
             let mut sent = 0u64;
             let mut errors = 0u64;
+            let mut send_deadline_errors = 0u64;
+            let mut last_send_error = String::new();
             let mut last_metrics = Instant::now();
             while !stop.load(Ordering::Acquire) {
                 anyhow::ensure!(
@@ -268,13 +270,20 @@ pub fn run(
                         super::udp_sender::SendBudget::new(now, Duration::from_millis(2));
                     for (id, endpoint) in &endpoints {
                         if ready.contains(id) {
-                            if budget
-                                .send_to_paced(&socket, &buffer[..n], *endpoint, &pacer, deadline)
-                                .is_ok()
-                            {
-                                sent += 1;
-                            } else {
-                                errors += 1;
+                            match budget.send_to_paced(
+                                &socket,
+                                &buffer[..n],
+                                *endpoint,
+                                &pacer,
+                                deadline,
+                            ) {
+                                Ok(_) => sent += 1,
+                                Err(error) => {
+                                    errors += 1;
+                                    send_deadline_errors +=
+                                        u64::from(error.kind() == std::io::ErrorKind::TimedOut);
+                                    last_send_error = error.to_string().chars().take(160).collect();
+                                }
                             }
                         }
                     }
@@ -286,6 +295,8 @@ pub fn run(
                         received_packets = packets,
                         sent_packets = sent,
                         send_errors = errors,
+                        send_deadline_errors,
+                        last_send_error,
                         recipients = ready.len(),
                         active_encoder_instances = 0,
                         "Student broadcast relay interval"

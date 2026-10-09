@@ -114,3 +114,35 @@ Duplicate sessions stopped; final GUI49239/helper49249 on same signed test bundl
 are idle at 48900. Native Record/Network grant checks remain passed for this bundle.
 
 Restart source checks: Swift typecheck passed (registrar stub; existing activation deprecation), Flutter analyzer no issues, focused UI 11 passed. Evidence: `target/macos-permissions-restart-{swift-check,analyze,tests}.txt`. No paired build/deployment of this restart source fix.
+
+
+## 2026-10-09 — direct executable Restart verified
+
+The grouped paired-class-control-20261009 build includes the final Restart fix.
+The earlier open/LaunchServices argument fix still failed native testing, creating
+an argument-less GUI and default47800 helper. Direct Process launch of the exact
+bundled Console executable now preserves explicit Dart arguments. Native checklist
+Restart replaced GUI9235 with9545; helper9240 exec-restarted/reconnected on48900.
+Exactly one GUI and one helper remained, retaining bind192.168.50.206, control48900,
+custom IPC and log paths. No duplicate default helper appeared. Evidence:
+`target/final-restart-before.txt`, `target/final-restart-after.txt` and runtime log.
+
+Both Console and Agent LAN probes to192.168.50.94:22 succeeded, shown as Connected
+(last test). This is TCP reachability at that endpoint, not media/UDP acceptance.
+Initial Screen Recording status after signing was Not granted for both; owner
+subsequently reported granting both. Restart after that grant and actual Teacher
+capture are the remaining native confirmation steps for this build.
+
+Paired package byte/hash checks passed for embedded Mac Student, Windows x64
+Student and Guard; both manifests label paired-class-control-20261009. Evidence:
+`target/grouped-class-control-final-package-checks.json`. Five focused Rust relay
+checks passed after adding bounded send-error/timeout diagnostics.
+
+
+After owner granted both Recording permissions, closed test Teacher then reopened
+the exact final bundle with the same flags. Native checklist shows both Granted.
+Actual Teacher share_class capture/encode ran11.88 seconds and returned idle on
+Stop, no error, one encoder, about29.87 encoded FPS. No Students were connected:
+this confirms usable capture after grants, not receiver or network performance.
+Evidence: `target/final-recording-capture-check.json` and runtime media-complete log.
+Final bundle remains unchanged after these grants.

@@ -399,4 +399,7 @@ pub struct ObserveMessage {
     /// Student → Teacher reply: chosen session profile, e.g. "h265@60".
     #[prost(string, tag = "12")]
     pub codec: String,
+    /// Preserve the source cursor for class relay while Teacher controls it.
+    #[prost(bool, tag = "13")]
+    pub class_broadcast: bool,
 }

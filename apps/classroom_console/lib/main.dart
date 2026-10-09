@@ -682,7 +682,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                                     )
                                   : null,
                               icon: const Icon(Icons.present_to_all, size: 16),
-                              label: const Text('Present Student to class'),
+                              label: const Text('Control & present Student'),
                             ),
                             const SizedBox(width: 8),
                           ],

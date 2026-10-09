@@ -78,24 +78,21 @@ class MainFlutterWindow: NSWindow {
         guard let arguments = call.arguments as? [String] else {
           result(FlutterError(code: "restart_arguments", message: "Console launch arguments are missing.", details: nil)); return
         }
-        // Dart owns the actual Flutter entrypoint arguments. Use the same
-        // normal macOS launcher as initial startup, preserving custom IPC/ports.
-        // No shell expansion, external executable selection or privacy changes.
-        let bundlePath = Bundle.main.bundlePath
+        // Start the exact bundled executable, as existing dependent windows do.
+        // LaunchServices/open from this sandbox dropped custom arguments in a
+        // native restart test, creating a second helper on the default port.
+        guard let executable = Bundle.main.executableURL else {
+          result(FlutterError(code: "restart_executable", message: "Console executable is unavailable.", details: nil)); return
+        }
         DispatchQueue.global(qos: .utility).async {
           let launcher = Process()
-          launcher.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-          launcher.arguments = ["-n", bundlePath, "--args"] + arguments
+          launcher.executableURL = executable
+          launcher.arguments = arguments
           do {
             try launcher.run()
-            let deadline = Date().addingTimeInterval(8)
-            while launcher.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
-            if launcher.isRunning {
-              launcher.terminate()
-              DispatchQueue.main.async { result(FlutterError(code: "restart_timeout", message: "macOS launcher timed out; this Console stays open.", details: nil)) }
-              return
-            }
-            let success = launcher.terminationStatus == 0
+            // Catch immediate launch failures while retaining the old window.
+            Thread.sleep(forTimeInterval: 0.5)
+            let success = launcher.isRunning
             DispatchQueue.main.async {
               if success {
                 result(true)

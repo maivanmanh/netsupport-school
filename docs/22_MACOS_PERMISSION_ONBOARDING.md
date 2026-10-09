@@ -39,9 +39,10 @@ first-use registration/prompt; a recorded decision need not prompt again.
 
 After changing Screen Recording, restart Teacher. The explicit button is enabled
 only for an idle, connected Teacher; it invokes the existing Rust restart lifecycle
-and reopens the exact Console bundle through the normal macOS launcher with
-explicit Dart launch arguments before closing
-this GUI. This is not an automatic promise of permission continuity across ad-hoc
+and starts the exact bundled Console executable with explicit Dart launch
+arguments before closing this GUI. A bounded immediate-exit check retains the old
+window on launch failure. LaunchServices/open dropped custom arguments in native
+tests, so this path uses the existing dependent-window Process launch mechanism. This is not an automatic promise of permission continuity across ad-hoc
 updates. Settings/profiles remain intact. If a launch fails, report the error.
 
 Batch source changes and checks before rebuilding/signing macOS apps. Every

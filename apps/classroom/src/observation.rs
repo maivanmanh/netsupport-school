@@ -77,7 +77,14 @@ impl Publisher {
         let mut bytes = [0u8; 32];
         getrandom::fill(&mut bytes).map_err(|e| anyhow::anyhow!("Observe nonce: {e}"))?;
         let token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
-        let recipients = Arc::new(HashSet::from([token.clone()]));
+        // Relay and Teacher control view share this publisher/encoder, but have
+        // separate connection identities so one cannot replace the other.
+        let recipients = Arc::new(if request.class_broadcast {
+            HashSet::from([token.clone(), format!("{token}:view")])
+        } else {
+            HashSet::from([token.clone()])
+        });
+        let class_broadcast = request.class_broadcast;
         let (state, updates) = watch::channel::<Option<RoomPresentation>>(None);
         let roster = Arc::new(Mutex::new(RoomRoster::default()));
         let server = handle.spawn(control_transport::room::run_authorized_listener(
@@ -189,7 +196,7 @@ impl Publisher {
                     }
                     // Avoid a lagging second pointer in the H.264 image during
                     // Control; Observe still shows the actual Student pointer.
-                    let visible = !input.enabled();
+                    let visible = class_broadcast || !input.enabled();
                     if cursor.swap(visible, Ordering::AcqRel) != visible {
                         info!(
                             source_cursor_visible = visible,
@@ -448,6 +455,13 @@ pub async fn receive(
             return Ok(());
         }
         if let Some(p) = initial.take().or_else(|| control.presentation()) {
+            if token.ends_with(":view") {
+                control.observe_input(protocol::ObserveMessage {
+                    action: "control".into(),
+                    stream_id: p.stream_id,
+                    ..Default::default()
+                })?;
+            }
             let endpoint =
                 SocketAddrV4::new(*address.ip(), u16::try_from(p.teacher_media_udp_port)?);
             output.profile = media_core::VideoCodec::from_rtp_payload_type(p.rtp_payload_type)

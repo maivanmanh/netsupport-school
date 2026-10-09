@@ -28,10 +28,27 @@ pub struct View {
 }
 impl View {
     pub fn start(id: String, ip: String, parent: &Path, jobs: ObserveJobs) -> Result<Self> {
+        Self::start_inner(id, ip, parent, jobs, false)
+    }
+    pub fn start_class_control(
+        id: String,
+        ip: String,
+        parent: &Path,
+        jobs: ObserveJobs,
+    ) -> Result<Self> {
+        Self::start_inner(id, ip, parent, jobs, true)
+    }
+    fn start_inner(
+        id: String,
+        ip: String,
+        parent: &Path,
+        jobs: ObserveJobs,
+        class_control: bool,
+    ) -> Result<Self> {
         let surface = parent.join(format!("observe-frame-{}.bin", media_core::unix_us()));
         let executable = std::env::current_exe()?;
         let status = Arc::new(Mutex::new(Status {
-            value: json!({"id":id,"phase":"starting","mode":"observe","surface":surface}),
+            value: json!({"id":id,"phase":"starting","mode":"observe","surface":surface,"class_control":class_control}),
             lease: Instant::now(),
         }));
         let state = Arc::clone(&status);
@@ -40,7 +57,9 @@ impl View {
         let input = Arc::new(Mutex::new(VecDeque::new()));
         let worker_input = Arc::clone(&input);
         let identity = id.clone();
-        jobs.request(id.clone());
+        if !class_control {
+            jobs.request(id.clone());
+        }
         let worker = thread::spawn(move || {
             let result = run(
                 &identity,
@@ -51,8 +70,11 @@ impl View {
                 &state,
                 &cancel,
                 &worker_input,
+                class_control,
             );
-            jobs.entries.lock().unwrap().remove(&identity);
+            if !class_control {
+                jobs.entries.lock().unwrap().remove(&identity);
+            }
             let mut state = state.lock().unwrap();
             state.value["phase"] = json!(if result.is_ok() { "ended" } else { "error" });
             if let Err(e) = result {
@@ -115,6 +137,31 @@ fn receiver_failure(path: &Path) -> Option<String> {
 mod tests {
     use super::*;
     #[test]
+    fn class_view_does_not_restart_or_remove_the_relays_publisher_request() {
+        let jobs = Arc::new(super::super::monitoring::ObserveRequests::default());
+        jobs.request_broadcast("source".into());
+        jobs.entries
+            .lock()
+            .unwrap()
+            .get_mut("source")
+            .unwrap()
+            .request = false;
+        let view = View::start_class_control(
+            "source".into(),
+            "127.0.0.1".into(),
+            &std::env::temp_dir(),
+            Arc::clone(&jobs),
+        )
+        .unwrap();
+        assert_eq!(view.state()["class_control"], true);
+        drop(view);
+        let entries = jobs.entries.lock().unwrap();
+        let request = entries.get("source").unwrap();
+        assert!(!request.request);
+        assert!(request.class_broadcast);
+        assert_eq!(request.offer, Some((vec!["h264".into()], 30)));
+    }
+    #[test]
     fn receiver_exit_uses_only_error_from_bounded_log_tail() {
         let path = std::env::temp_dir().join(format!(
             "classroom-receiver-error-{}.log",
@@ -171,6 +218,7 @@ fn run(
     status: &Arc<Mutex<Status>>,
     stop: &AtomicBool,
     events: &Mutex<VecDeque<Value>>,
+    class_control: bool,
 ) -> Result<()> {
     let began = Instant::now();
     let job = loop {
@@ -181,13 +229,14 @@ fn run(
             began.elapsed() < Duration::from_secs(12),
             "Student did not answer Observe request"
         );
-        let job = jobs
-            .entries
-            .lock()
-            .unwrap()
-            .get(id)
-            .cloned()
-            .context("Observe request canceled")?;
+        let job = jobs.entries.lock().unwrap().get(id).cloned();
+        let Some(job) = job else {
+            if class_control {
+                thread::sleep(Duration::from_millis(25));
+                continue;
+            }
+            anyhow::bail!("Observe request canceled");
+        };
         anyhow::ensure!(job.error.is_empty(), "{}", job.error);
         if job.port != 0 && !job.token.is_empty() {
             break job;
@@ -205,7 +254,11 @@ fn run(
                 "--observe-connect",
                 &format!("{ip}:{}", job.port),
                 "--observe-token",
-                &job.token,
+                &if class_control {
+                    format!("{}:view", job.token)
+                } else {
+                    job.token.clone()
+                },
                 "--observe-surface",
                 surface.to_str().context("Invalid surface path")?,
                 "--log-file",
@@ -245,7 +298,29 @@ fn run(
         }
     });
     status.lock().unwrap().value["phase"] = json!("live");
+    let control_started = Instant::now();
+    let mut control_confirmed = false;
     while !stop.load(Ordering::Acquire) {
+        if class_control {
+            let state = status.lock().unwrap();
+            let mode = state.value["mode"].as_str().unwrap_or("observe");
+            if mode == "control" || mode == "exclusive" {
+                control_confirmed = true;
+            }
+            anyhow::ensure!(
+                state.value["error"].as_str().unwrap_or("").is_empty(),
+                "Student control failed: {}",
+                state.value["error"]
+            );
+            anyhow::ensure!(
+                !control_confirmed || mode != "observe",
+                "Student class control was released"
+            );
+            anyhow::ensure!(
+                control_confirmed || control_started.elapsed() < Duration::from_secs(8),
+                "Student did not acknowledge class control"
+            );
+        }
         if status.lock().unwrap().lease.elapsed() > Duration::from_secs(5) {
             break;
         }

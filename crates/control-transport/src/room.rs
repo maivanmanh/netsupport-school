@@ -31,9 +31,11 @@ pub struct RoomPresentation {
 }
 impl RoomPresentation {
     pub fn includes(&self, instance_id: &str) -> bool {
-        self.excluded_source.as_deref() != Some(instance_id) && self.recipients
-            .as_ref()
-            .is_none_or(|ids| ids.contains(instance_id))
+        self.excluded_source.as_deref() != Some(instance_id)
+            && self
+                .recipients
+                .as_ref()
+                .is_none_or(|ids| ids.contains(instance_id))
     }
 }
 #[derive(Clone, Debug)]
@@ -62,28 +64,62 @@ impl MediaHealth {
     fn update(previous: Option<&Self>, report: protocol::ReceiverReport) -> Self {
         let now = std::time::Instant::now();
         let previous = previous.filter(|p| p.report.stream_id == report.stream_id);
-        let seconds = previous.map_or(1.0, |p| now.duration_since(p.received_at).as_secs_f64().max(0.001));
+        let seconds = previous.map_or(1.0, |p| {
+            now.duration_since(p.received_at).as_secs_f64().max(0.001)
+        });
         let decoded = previous.map_or(0, |p| p.report.decoded_frames);
         let rendered = previous.map_or(0, |p| p.report.rendered_frames);
         Self {
-            decoded_at: if report.decoded_frames > decoded { Some(now) } else { previous.and_then(|p| p.decoded_at) },
-            rendered_at: if report.rendered_frames > rendered { Some(now) } else { previous.and_then(|p| p.rendered_at) },
+            decoded_at: if report.decoded_frames > decoded {
+                Some(now)
+            } else {
+                previous.and_then(|p| p.decoded_at)
+            },
+            rendered_at: if report.rendered_frames > rendered {
+                Some(now)
+            } else {
+                previous.and_then(|p| p.rendered_at)
+            },
             // The first cumulative report has no measured sampling interval.
-            decode_fps: previous.map_or(0.0, |_| report.decoded_frames.saturating_sub(decoded) as f64 / seconds),
-            render_fps: previous.map_or(0.0, |_| report.rendered_frames.saturating_sub(rendered) as f64 / seconds),
+            decode_fps: previous.map_or(0.0, |_| {
+                report.decoded_frames.saturating_sub(decoded) as f64 / seconds
+            }),
+            render_fps: previous.map_or(0.0, |_| {
+                report.rendered_frames.saturating_sub(rendered) as f64 / seconds
+            }),
             received_at: now,
             report,
         }
     }
     #[must_use]
     pub fn state(&self) -> &'static str {
-        if self.received_at.elapsed() > Duration::from_secs(5) { return "report_stale"; }
-        if self.report.health_version == 0 { return "unknown"; }
-        if self.report.recovering { return "recovering"; }
-        if self.decoded_at.is_none() { return "waiting_for_image"; }
-        if self.decoded_at.is_some_and(|at| at.elapsed() > Duration::from_secs(3)) { return "decode_stalled"; }
-        if !self.report.rendering_enabled { return "receiving_headless"; }
-        if self.rendered_at.is_none_or(|at| at.elapsed() > Duration::from_secs(3)) { return "render_stalled"; }
+        if self.received_at.elapsed() > Duration::from_secs(5) {
+            return "report_stale";
+        }
+        if self.report.health_version == 0 {
+            return "unknown";
+        }
+        if self.report.recovering {
+            return "recovering";
+        }
+        if self.decoded_at.is_none() {
+            return "waiting_for_image";
+        }
+        if self
+            .decoded_at
+            .is_some_and(|at| at.elapsed() > Duration::from_secs(3))
+        {
+            return "decode_stalled";
+        }
+        if !self.report.rendering_enabled {
+            return "receiving_headless";
+        }
+        if self
+            .rendered_at
+            .is_none_or(|at| at.elapsed() > Duration::from_secs(3))
+        {
+            return "render_stalled";
+        }
         "receiving"
     }
 }
@@ -92,8 +128,14 @@ impl MediaHealth {
 mod media_health_tests {
     use super::*;
     fn report(stream: u64, frames: u64) -> protocol::ReceiverReport {
-        protocol::ReceiverReport { stream_id: stream, decoded_frames: frames,
-            rendered_frames: frames, rendering_enabled: true, health_version: 1, ..Default::default() }
+        protocol::ReceiverReport {
+            stream_id: stream,
+            decoded_frames: frames,
+            rendered_frames: frames,
+            rendering_enabled: true,
+            health_version: 1,
+            ..Default::default()
+        }
     }
     #[test]
     fn decoded_and_rendered_progress_are_required() {
@@ -127,8 +169,12 @@ mod media_health_tests {
     #[test]
     fn student_source_is_excluded_but_unknown_late_join_is_included() {
         let (events, _) = std::sync::mpsc::sync_channel(1);
-        let session = RoomPresentation { config: Default::default(), events,
-            recipients: None, excluded_source: Some("source".into()) };
+        let session = RoomPresentation {
+            config: Default::default(),
+            events,
+            recipients: None,
+            excluded_source: Some("source".into()),
+        };
         assert!(!session.includes("source"));
         assert!(session.includes("late-join"));
     }
@@ -154,7 +200,11 @@ pub struct RoomRoster {
 }
 impl RoomRoster {
     pub fn update_media(&mut self, client_id: u64, report: protocol::ReceiverReport) {
-        if let Some(row) = self.students.iter_mut().find(|r| r.online && r.client_id == client_id) {
+        if let Some(row) = self
+            .students
+            .iter_mut()
+            .find(|r| r.online && r.client_id == client_id)
+        {
             row.media = Some(MediaHealth::update(row.media.as_ref(), report));
         }
     }
@@ -383,10 +433,9 @@ async fn handle_authorized(
     let Some(Payload::HelloStudent(hello)) = hello.payload else {
         return Err(ControlError::UnexpectedMessage);
     };
-    if authorized
-        .as_ref()
-        .is_some_and(|(_, token)| hello.instance_id != *token)
-    {
+    if authorized.as_ref().is_some_and(|(_, token)| {
+        hello.instance_id != *token && hello.instance_id != format!("{token}:view")
+    }) {
         return Err(ControlError::UnexpectedMessage);
     }
     let endpoint = SocketAddrV4::new(
@@ -410,7 +459,7 @@ async fn handle_authorized(
         online: true,
         thumbnail: None,
         monitoring_state: "waiting".into(),
-            media: None,
+        media: None,
     })?;
     let _peer = PeerGuard {
         roster: Arc::clone(&roster),
@@ -452,15 +501,26 @@ async fn handle_authorized(
     let mut heartbeat = tokio::time::interval(Duration::from_secs(1));
     let mut heard_at = std::time::Instant::now();
     loop {
+        // A class publisher has two viewers from one Teacher: compressed relay
+        // and Control preview. Only the latter may consume input acknowledgements
+        // and cursor metadata; otherwise the relay can steal the mode response.
+        let input_peer = authorized.as_ref().is_none_or(|(_, token)| {
+            let view = format!("{token}:view");
+            !media
+                .active
+                .as_ref()
+                .is_some_and(|s| s.recipients.as_ref().is_some_and(|ids| ids.contains(&view)))
+                || hello.instance_id == view
+        });
         tokio::select! {
-            _ = cursor_changed.notified() => {
+            _ = cursor_changed.notified(), if input_peer => {
                 let cursor = roster.lock().unwrap().cursor_status.take();
                 if let Some(cursor) = cursor {
                     send(&mut writer,&Envelope {protocol_version:protocol::PROTOCOL_VERSION,payload:Some(Payload::Observe(cursor))}).await?;
                 }
             }
             _ = heartbeat.tick() => {
-                let status=roster.lock().unwrap().input_status.take();
+                let status=if input_peer {roster.lock().unwrap().input_status.take()} else {None};
                 if let Some(status)=status {
                     send(&mut writer,&Envelope {protocol_version:protocol::PROTOCOL_VERSION,payload:Some(Payload::Observe(status))}).await?;
                 }
@@ -502,7 +562,7 @@ async fn handle_authorized(
                     Some(Payload::RequestKeyframe(message))=>{
                         if let Some(session)=media.active.as_ref().filter(|session|session.config.stream_id==message.stream_id) {dispatch(session,TeacherMediaEvent::KeyframeRequested {client_id:id,message})?;}
                     }
-                    Some(Payload::Observe(input)) if media.active.as_ref().is_some_and(|s| s.config.stream_id == input.stream_id
+                    Some(Payload::Observe(input)) if input_peer && media.active.as_ref().is_some_and(|s| s.config.stream_id == input.stream_id
                             && s.recipients.as_ref().is_some_and(|ids| ids.contains(&hello.instance_id))) => {
                             let mut r = roster.lock().unwrap();
                             // Only adjacent moves are replaceable. Never cross
@@ -544,7 +604,7 @@ mod tests {
     use super::*;
     use crate::{register_student_for_presentation, StudentRegistration};
 
-    async fn wait_until(predicate: impl Fn() -> bool) {
+    async fn wait_until(mut predicate: impl FnMut() -> bool) {
         tokio::time::timeout(Duration::from_secs(2), async {
             while !predicate() {
                 tokio::time::sleep(Duration::from_millis(5)).await;
@@ -803,6 +863,116 @@ mod tests {
         assert!(roster.snapshot()[0].online);
         roster.disconnect(2);
         assert!(!roster.snapshot()[0].online);
+    }
+    #[tokio::test]
+    async fn class_control_and_relay_share_source_without_stealing_mode_or_cursor() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let SocketAddr::V4(address) = listener.local_addr().unwrap() else {
+            panic!("IPv4")
+        };
+        let (mut session, _events) = presentation(88);
+        session.recipients = Some(Arc::new(HashSet::from([
+            "secret".into(),
+            "secret:view".into(),
+        ])));
+        let (_state, updates) = watch::channel(Some(session));
+        let roster = Arc::new(Mutex::new(RoomRoster::default()));
+        let server = tokio::spawn(run_authorized_listener(
+            listener,
+            updates,
+            Arc::clone(&roster),
+            Ipv4Addr::LOCALHOST,
+            "secret".into(),
+        ));
+        let reg = |token: &str, port| StudentRegistration {
+            hostname: "Teacher".into(),
+            instance_id: token.into(),
+            selected_local_ip: Ipv4Addr::LOCALHOST,
+            media_udp_port: port,
+            feedback_udp_port: port,
+            pointer_overlay: false,
+        };
+        assert!(
+            register_student_for_presentation(address, reg("secret:other", 49001))
+                .await
+                .is_err()
+        );
+        let (relay, _, first) = register_student_for_presentation(address, reg("secret", 49001))
+            .await
+            .unwrap();
+        let (view, _, second) =
+            register_student_for_presentation(address, reg("secret:view", 49002))
+                .await
+                .unwrap();
+        assert_eq!(first.unwrap().stream_id, second.unwrap().stream_id);
+        assert_eq!(
+            roster
+                .lock()
+                .unwrap()
+                .snapshot()
+                .iter()
+                .filter(|r| r.online)
+                .count(),
+            2
+        );
+        view.observe_input(protocol::ObserveMessage {
+            action: "control".into(),
+            stream_id: 88,
+            ..Default::default()
+        })
+        .unwrap();
+        wait_until(|| !roster.lock().unwrap().inputs.is_empty()).await;
+        assert_eq!(
+            roster.lock().unwrap().take_input().unwrap().action,
+            "control"
+        );
+        roster
+            .lock()
+            .unwrap()
+            .input_status(protocol::ObserveMessage {
+                action: "status".into(),
+                key: "control".into(),
+                ..Default::default()
+            });
+        roster
+            .lock()
+            .unwrap()
+            .cursor_status(protocol::ObserveMessage {
+                action: "cursor".into(),
+                key: "cursor-data".into(),
+                ..Default::default()
+            });
+        let mut mode = None;
+        wait_until(|| {
+            mode = view.take_input_status();
+            mode.is_some()
+        })
+        .await;
+        assert_eq!(mode.unwrap().key, "control");
+        let mut cursor = None;
+        wait_until(|| {
+            cursor = view.take_cursor_status();
+            cursor.is_some()
+        })
+        .await;
+        assert_eq!(cursor.unwrap().key, "cursor-data");
+        assert!(relay.take_input_status().is_none());
+        assert!(relay.take_cursor_status().is_none());
+        assert!(relay.is_presenting(88));
+        drop(view);
+        wait_until(|| {
+            roster
+                .lock()
+                .unwrap()
+                .snapshot()
+                .iter()
+                .filter(|r| r.online)
+                .count()
+                == 1
+        })
+        .await;
+        assert!(relay.is_presenting(88));
+        server.abort();
     }
     #[tokio::test]
     async fn reverse_publisher_requires_session_token_and_scopes_input_to_stream() {
