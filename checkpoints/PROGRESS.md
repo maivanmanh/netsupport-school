@@ -4101,3 +4101,34 @@ rebuild/sign, forced VM restart or privacy automation. Native functional evidenc
 now recorded; matched motion FPS improvement and physical35–40-PC wired1080p
 acceptance still pending. Exact next step: manual class/text interaction with these
 bundles, then lab ladder/optical latency; detailed follow-up in manual-source-control.
+
+## 2026-10-09 — matched Student-source motion measurement
+
+Owner requests FPS/pipeline measurement with unchanged builds. Weak Windows102
+stalls SSH/intermittently offline; owner adds Windows155 and closes Student102.
+Fresh embedded paired Student bootstrapped155 (ARM VM4vCPU/~6GiB), old install
+migration finds no existing Classroom runtime. Defender remains enabled. NIC
+match confirms Windows155 shares MacStudent254 host (Mac16,12/10LP/16GiB).
+
+Two native workload cycles/source, seven10s phases,140s each. Exploratory run
+excluded from matched FPS conclusions: Windows timer15Hz and unaudited Mac
+scroll. Correct only workload timing/viewport; confirmation audits Windows140/140
+and Mac139/140 foreground, actual update medians20.000/19.920Hz, scroll movement
+verified. Exact sizes1468x922/1470x956, not fixed1080p or independent PCs.
+
+Accepted Windows→Mac class render~19–25FPS nonstatic; Mac→Windows~2–6 despite
+source encode~28–29 and direct Teacher preview render~24–26. Windows receiver
+recovery/keyframe/stale discard high; missing counter delta1197, keyframe337,
+logged recovery peak~3.4s; decoder errors0/ingress drops0. Source send errors0,
+relay deadline errors2/4. No proven unique cause or product performance fix.
+Relay code already drains up to256 UDP packets/batch then sleeps1ms per batch;
+no evidence for a one-packet/ms cap. Measure relay residence/burst, deadline,
+clock-domain and VM scheduling before patching.
+
+Swift workload compiled/native140s runs pass, Python compile/whitespace checks
+clean. Workload jobs/tasks removed, Teacher idle/error:null,254/155 online,
+102 offline per owner; apps retained. No Classroom rebuild/sign/privacy edits.
+Exact next step: same workload UDP/depacketize sink without decode vs decode,
+relay residence/burst and freshness recovery instrumentation; then patch/A/B if
+proven.30-minute soak, optical/fixed1080p and wired35–40 physical x64 deferred.
+Full methods/limits/evidence: diagnostics/2026-10-09-source-motion-measurement.md.
