@@ -41,7 +41,13 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
   String? modeError;
   String modeRequestError = '';
   final controlRecovery = ObserveControlRecovery();
-  Timer? reconnectTimer, modeRequestTimer;
+  Timer? recoveryWatch, modeRequestTimer;
+  final recoveryClock = Stopwatch()..start();
+  Duration? interruptedAt, lastFreshFrame, lastOpenAt;
+  int? lastSourceSequence;
+  String? lastFrameSurface;
+  bool openingObserve = false;
+  bool previouslyOnline = true;
   int reconnectAttempts = 0;
   bool reconnecting = false;
   String? lastStateSignature;
@@ -321,7 +327,13 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
   bool get live =>
       widget.agent.connected &&
       view['phase'] == 'live' &&
+      studentOnline &&
+      path == view['surface'] &&
+      !reconnecting &&
       (stats['sequence'] as num? ?? 0) > 0;
+  bool get studentOnline => widget.agent.students.any(
+    (row) => row['id'] == widget.studentId && row['online'] == true,
+  );
   bool get canSwitchMode => live;
   bool get classControl => view['class_control'] == true;
 
@@ -457,6 +469,9 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
     windowManager.setPreventClose(true);
     widget.agent.addListener(changed);
     startPolling(fast: true);
+    recoveryWatch = Timer.periodic(const Duration(milliseconds: 250), (_) {
+      reconcileRecovery();
+    });
     // Heartbeat must not depend on texture stats, attachment or video progress.
     inputHeartbeat = Timer.periodic(const Duration(milliseconds: 500), (_) {
       if (!closing && widget.agent.connected) {
@@ -513,24 +528,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
       // Session errors are rendered directly from view, never latched as a mode error.
       if (modeAcknowledged) modeError = null;
     }
-    final phase = view['phase'];
-    if ((phase == 'ended' || phase == 'error') &&
-        widget.agent.connected &&
-        reconnectAttempts < 2 &&
-        reconnectTimer == null &&
-        !closing &&
-        !classControl) {
-      reconnecting = true;
-      reconnectTimer = Timer(const Duration(milliseconds: 800), () {
-        reconnectTimer = null;
-        if (!mounted || closing || !widget.agent.connected) return;
-        if (view['phase'] != 'ended' && view['phase'] != 'error') return;
-        reconnectAttempts++;
-        unawaited(widget.agent.command('observe_open', [widget.studentId]));
-      });
-    } else if (phase == 'live') {
-      reconnecting = false;
-    }
+    reconcileRecovery();
     restoreControlIfReady();
     if (mounted) setState(() {});
   }
@@ -556,20 +554,97 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
   }
 
   Future<void> openObserve() async {
-    await widget.agent.command('observe_open', [widget.studentId]);
-    // The command acknowledgement is sent just before the next state
-    // publication. Give that publication a chance, then explicitly retry the
-    // surface lookup so a listener scheduling race cannot leave this window in
-    // Connecting forever.
-    await Future<void>.delayed(const Duration(milliseconds: 100));
-    if (!closing && mounted) {
-      recordState();
-      final source = view['surface'] as String?;
-      if (source != null && !attaching && (texture == null || source != path)) {
-        await attach(source);
+    if (openingObserve || closing) return;
+    openingObserve = true;
+    lastOpenAt = recoveryClock.elapsed;
+    try {
+      await widget.agent.commandChecked('observe_open', [widget.studentId], {});
+      // The command acknowledgement is sent just before the next state
+      // publication. Give that publication a chance, then explicitly retry the
+      // surface lookup so a listener scheduling race cannot leave this window in
+      // Connecting forever.
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      if (!closing && mounted) {
+        recordState();
+        final source = view['surface'] as String?;
+        if (source != null &&
+            !attaching &&
+            (texture == null || source != path)) {
+          await attach(source);
+        }
+        if (mounted) setState(() {});
       }
-      if (mounted) setState(() {});
+    } catch (error) {
+      unawaited(widget.agent.log('Observe open failed error=$error'));
+    } finally {
+      openingObserve = false;
     }
+  }
+
+  void reconcileRecovery() {
+    if (!mounted || closing || !started || classControl) return;
+    final now = recoveryClock.elapsed;
+    final online = studentOnline;
+    final returnedOnline = online && !previouslyOnline;
+    previouslyOnline = online;
+    // An acknowledgement, new surface or stale cached frame never extends the
+    // deadline. Only a fresh source frame can finish recovery before expiry.
+    if (interruptedAt != null &&
+        now - interruptedAt! >= const Duration(seconds: 10)) {
+      unawaited(widget.agent.log('Observe interruption exceeded 10s; closing'));
+      unawaited(onWindowClose());
+      return;
+    }
+    final phase = view['phase'];
+    final frame = (stats['source_sequence'] ?? stats['sequence']) as num?;
+    final eligible =
+        widget.agent.connected &&
+        online &&
+        phase == 'live' &&
+        path == view['surface'] &&
+        stats['connected'] != false &&
+        frame != null &&
+        frame > 0;
+    if (eligible &&
+        (lastFrameSurface != path || lastSourceSequence != frame.toInt())) {
+      lastFrameSurface = path;
+      lastSourceSequence = frame.toInt();
+      lastFreshFrame = now;
+      interruptedAt = null;
+      reconnecting = false;
+      reconnectAttempts = 0;
+    }
+    final fresh =
+        eligible &&
+        lastFreshFrame != null &&
+        now - lastFreshFrame! < const Duration(seconds: 3);
+    if (!fresh) {
+      if (interruptedAt == null) {
+        interruptedAt = lastFreshFrame ?? now;
+        releaseHeldInput();
+        unawaited(widget.agent.log('Observe interrupted; waiting at most 10s'));
+      }
+      reconnecting = true;
+      final attemptMature =
+          lastOpenAt == null || now - lastOpenAt! >= const Duration(seconds: 3);
+      if (widget.agent.connected &&
+          online &&
+          !openingObserve &&
+          (attemptMature || returnedOnline) &&
+          (phase == 'ended' ||
+              phase == 'error' ||
+              phase == null ||
+              phase == 'live' ||
+              (phase == 'starting' && returnedOnline))) {
+        reconnectAttempts++;
+        unawaited(
+          widget.agent.log('Observe reconnect attempt=$reconnectAttempts'),
+        );
+        unawaited(openObserve());
+      }
+    }
+    syncSystemKeys();
+    if (mounted) setState(() {});
   }
 
   void recordState() {
@@ -594,7 +669,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
           'Native observe texture attach returned no texture id',
         );
       }
-      if (mounted) {
+      if (mounted && !closing) {
         setState(() {
           path = source;
           texture = id;
@@ -693,6 +768,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
         startPolling(fast: false);
       }
       polling = false;
+      reconcileRecovery();
       restoreControlIfReady();
       syncSystemKeys();
     }
@@ -732,6 +808,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
     final surface = view['surface'];
     releaseHeldInput();
     inputHeartbeat?.cancel();
+    recoveryWatch?.cancel();
     tick?.cancel();
     setState(() {
       closing = true;
@@ -845,7 +922,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
     tick?.cancel();
     inputHeartbeat?.cancel();
     chromeTimer?.cancel();
-    reconnectTimer?.cancel();
+    recoveryWatch?.cancel();
     modeRequestTimer?.cancel();
     viewportScroll.dispose();
     horizontalScroll.dispose();
@@ -1081,12 +1158,57 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                       ),
                     ),
                   if (!live)
-                    Center(
-                      child: Text(
-                        view['phase'] == 'error' || view['phase'] == 'ended'
-                            ? 'Observe ended'
-                            : 'Connecting to student…',
-                        style: const TextStyle(color: Colors.white70),
+                    ColoredBox(
+                      color: Colors.black.withValues(alpha: 0.48),
+                      child: Center(
+                        child: Container(
+                          margin: const EdgeInsets.all(24),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 28,
+                            vertical: 22,
+                          ),
+                          decoration: BoxDecoration(
+                            color: const Color(0xff17212b),
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(
+                              color: const Color(0xffffc857),
+                              width: 2,
+                            ),
+                          ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(
+                                Icons.wifi_off_rounded,
+                                color: Color(0xffffc857),
+                                size: 36,
+                              ),
+                              const SizedBox(height: 12),
+                              Text(
+                                reconnecting
+                                    ? 'Reconnecting to student…'
+                                    : 'Connecting to student…',
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 24,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              if (interruptedAt != null && !classControl) ...[
+                                const SizedBox(height: 10),
+                                Text(
+                                  'Window closes in ${(10 - (recoveryClock.elapsed - interruptedAt!).inSeconds).clamp(0, 10)}s if the connection does not recover',
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(
+                                    color: Color(0xffffc857),
+                                    fontSize: 16,
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
                       ),
                     ),
                 ],

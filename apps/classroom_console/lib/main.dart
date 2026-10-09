@@ -1765,7 +1765,11 @@ class _ConsoleState extends State<Console> with WindowListener {
 
   Future<void> inspect(Map<String, dynamic> row) => agent.openObserve(row);
 
-  Widget image(Map<String, dynamic> r, {bool flushTop = false}) {
+  Widget image(
+    Map<String, dynamic> r, {
+    bool flushTop = false,
+    bool crop = false,
+  }) {
     final bytes = agent.images[r['id']];
     return ClipRRect(
       borderRadius: flushTop
@@ -1785,7 +1789,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                 )
               : Image.memory(
                   bytes,
-                  fit: BoxFit.contain,
+                  fit: crop ? BoxFit.cover : BoxFit.contain,
                   filterQuality: FilterQuality.high,
                   gaplessPlayback: true,
                 ),
@@ -1801,6 +1805,7 @@ class _ConsoleState extends State<Console> with WindowListener {
       children: [
         if (selectionMode)
           Checkbox(
+            visualDensity: VisualDensity.compact,
             value: chosen,
             onChanged: (v) => setState(() {
               if (v == true) {
@@ -1818,15 +1823,23 @@ class _ConsoleState extends State<Console> with WindowListener {
                 '${r['name']}',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontWeight: FontWeight.w600),
+                style: TextStyle(
+                  fontWeight: FontWeight.w600,
+                  fontSize: list ? 14 : 12,
+                  height: 1.15,
+                ),
               ),
               Text(
                 '${r['ip']}',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 11, color: Colors.blueGrey),
+                style: TextStyle(
+                  fontSize: list ? 11 : 10,
+                  height: 1.15,
+                  color: Colors.blueGrey,
+                ),
               ),
-              if (mediaHealthLabel(r).isNotEmpty)
+              if (list && mediaHealthLabel(r).isNotEmpty)
                 Text(
                   mediaHealthLabel(r),
                   maxLines: 1,
@@ -1844,7 +1857,7 @@ class _ConsoleState extends State<Console> with WindowListener {
         IconButton(
           tooltip: 'Browse and collect files',
           visualDensity: VisualDensity.compact,
-          constraints: const BoxConstraints(minWidth: 28, minHeight: 32),
+          constraints: const BoxConstraints(minWidth: 26, minHeight: 28),
           padding: const EdgeInsets.all(4),
           icon: const Icon(Icons.folder_copy_outlined, size: 17),
           onPressed: r['online'] == true ? () => agent.openFiles(r) : null,
@@ -1852,7 +1865,7 @@ class _ConsoleState extends State<Console> with WindowListener {
         IconButton(
           tooltip: 'Open windows, browser tabs and downloads',
           visualDensity: VisualDensity.compact,
-          constraints: const BoxConstraints(minWidth: 28, minHeight: 32),
+          constraints: const BoxConstraints(minWidth: 26, minHeight: 28),
           padding: const EdgeInsets.all(4),
           icon: const Icon(Icons.visibility_outlined, size: 17),
           onPressed: r['online'] == true ? () => agent.openActivity(r) : null,
@@ -1860,7 +1873,7 @@ class _ConsoleState extends State<Console> with WindowListener {
         IconButton(
           tooltip: 'Inspect screen',
           visualDensity: VisualDensity.compact,
-          constraints: const BoxConstraints(minWidth: 28, minHeight: 32),
+          constraints: const BoxConstraints(minWidth: 26, minHeight: 28),
           padding: const EdgeInsets.all(4),
           icon: const Icon(Icons.open_in_full, size: 17),
           onPressed: () => inspect(r),
@@ -1895,7 +1908,7 @@ class _ConsoleState extends State<Console> with WindowListener {
             : Stack(
                 fit: StackFit.expand,
                 children: [
-                  image(r, flushTop: true),
+                  image(r, flushTop: true, crop: true),
                   Positioned(
                     left: 0,
                     right: 0,
@@ -1903,8 +1916,8 @@ class _ConsoleState extends State<Console> with WindowListener {
                     child: ColoredBox(
                       color: Colors.white.withValues(alpha: 0.84),
                       child: Padding(
-                        padding: const EdgeInsets.fromLTRB(8, 4, 8, 4),
-                        child: SizedBox(height: 44, child: title),
+                        padding: const EdgeInsets.fromLTRB(6, 3, 6, 3),
+                        child: SizedBox(height: 28, child: title),
                       ),
                     ),
                   ),

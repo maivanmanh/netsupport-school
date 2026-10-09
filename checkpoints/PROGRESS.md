@@ -1,3 +1,14 @@
+## 2026-10-09 — Observe 10s recovery deadline and thinner crop grid
+
+Replaced two-shot Observe reconnect with online-aware bounded retry and a
+monotonic 10s deadline that closes the window/session. Recovery requires fresh
+video; cached frames and acknowledgements do not extend waiting. Enlarged status
+panel/countdown. Grid overlay reduced 52→34px; previews now crop to fill without
+aspect bars. Flutter analyze/format passed; no tests run. Paired build and Teacher
+deployment completed, fresh packages bundled; both existing Students online.
+Real logout/network interruption verification remains.
+See [details](diagnostics/2026-10-09-observe-deadline.md).
+
 ## 2026-10-09 — Compact grid and sharper preview tiers
 
 Moved title/actions into a translucent white bottom overlay, removed footer
