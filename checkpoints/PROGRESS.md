@@ -4003,3 +4003,24 @@ No Computer Use/privacy automation. Teacher onboarding marker persisted true.
 Exact next step: owner grants Mac Student Recording/Accessibility and verifies
 Teacher Console/helper Recording, then restart unchanged Teacher and run prepared
 mixed-endpoint handoff harness. Native switching and lab scaling remain unverified.
+
+
+## 2026-10-09 — native handoff exposes receiver teardown race
+
+After owner grants: Teacher to two receivers and Teacher→Windows Control pass,
+Windows→Mac Source rejected while old Mac receiver was completing teardown (reply
+1ms before idle log). Archived first-run logs/states; cleanup no errors. Teacher
+monitoring now retries only transient class-source watching rejection within the
+original4s budget and ignores stale request-generation responses.201 Rust pass,
+2 ignored. Paired handoff build in progress; keep remote Students unchanged for
+Teacher-only fix and permission continuity. Next native rerun; pause for manual
+full-path grant if Teacher signing invalidates Recording. No Computer Use.
+
+
+Paired-source-switch-handoff build and embedded package checks pass. Native rerun
+blocked at Teacher capture by TCC refusal after signing; owned test cleanup errors0.
+Paused at manual permission boundary (no Computer Use), exact Console/Agent paths
+in diagnostic report. Remote Mac Student remains unchanged/granted. Next owner
+regrants Teacher Recording, restart unchanged bundle, rerun prepared mixed-peer
+handoff.201 Rust tests pass; native retry fix and full source-switch cycles still
+unverified. No further build planned before that confirmation.

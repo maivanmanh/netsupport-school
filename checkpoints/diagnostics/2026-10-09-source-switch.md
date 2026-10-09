@@ -82,3 +82,46 @@ IPC `target/source-switch-endpoint.json`, log `target/source-switch-teacher.log`
 chạy `scripts/test-source-switch.py` không --prepare, output
 `target/source-switch-native-20261009`. Nếu còn OS LAN prompt thì owner tự Allow;
 mọi lỗi quyền cần dừng/báo đường dẫn theo chỉ dẫn. Không rebuild/sign lại trước test.
+
+
+## Native sau owner cấp quyền — phát hiện race bàn giao
+
+Lượt đầu (`target/source-switch-native-first-20261009`) đã nhận đủ hai Students:
+Teacher phát tới cả hai trong4.240s theo health-render report; Teacher → Windows
+nguồn/Control và Mac nhận trong2.468s. Windows → Mac nguồn thất bại với
+`Student is watching a presentation`. Đây không phải lỗi Recording/LAN: Mac
+monitoring gửi reply lúc1791518816499, trong khi log receiver ghi teardown xong
+`waiting for next presentation` lúc1791518816500. Stop đến trên control connection,
+ObserveStart đến trên monitoring connection độc lập, nên có race khoảng1ms ở lượt
+này. Cleanup xác nhận không lỗi; chưa native pass toàn vòng.
+
+Sửa Teacher monitoring completion: chỉ class-source với đúng lỗi đang xem được
+requeue trong budget4s tính từ request gốc. Không kéo dài budget qua từng retry,
+không tăng jitter/video queue, không che lỗi permission hoặc Observe thường.
+Reply generation phải khớp requested_at để response cũ không ghi đè job mới.
+Rust201 passed/2 ignored gồm3 regression về retry/deadline/real-error/stale reply.
+
+Đang build một cặp Teacher/Student mới paired-source-switch-handoff-20261009.
+Student runtime code không đổi; remote Mac/Windows tiếp tục dùng package đã cấp
+quyền, tương thích protocol8. Fresh Student packages vẫn nhúng Teacher mới theo
+PROJECT_NOTES. Không deploy/sign lại remote Mac Student cho sửa chỉ ở Teacher.
+Native kiểm chứng bản sửa chưa hoàn tất; cần thử cùng workload/vòng chuyển nguồn.
+
+
+## Bản sửa build xong; tạm dừng do Teacher Recording sau ký lại
+
+Paired-source-switch-handoff-20261009 build thành công. Embedded fresh Mac/Windows
+Student và Guard byte/hash được kiểm tra (`target/source-switch-handoff-package-checks.json`).
+Remote Students giữ nguyên bản đã cấp quyền đúng như quy tắc Teacher-only deployment.
+Lượt rerun exit1 bị chặn ngay khi Teacher capture: ScreenCaptureKit báo user
+ declined TCCs. Native handoff fix vì thế chưa được xác nhận, không gọi là passed.
+Evidence riêng: `target/source-switch-native-permission-blocked-20261009`;
+cleanup.json errors=[]; Teacher còn idle và error đã clear bằng IPC.
+
+Dừng test đúng yêu cầu owner, không dùng Computer Use hay sửa privacy grants.
+Cần owner cấp lại Screen & System Audio Recording cho đúng hai app Teacher:
+- `/Users/mvmanh/Development/netsupport-school/target/student-broadcast-build/Classroom Console.app`
+- `/Users/mvmanh/Development/netsupport-school/target/student-broadcast-build/Classroom Console.app/Contents/Helpers/Classroom Agent.app`
+
+Không cần ký/deploy/cấp lại Mac Student ở .254 vì app đó không đổi. Sau owner
+báo đã cấp, restart cùng Teacher bundle và chạy lại harness. Giữ bản build này.

@@ -70,6 +70,42 @@ impl ObserveRequests {
         );
         self.wake.notify_all();
     }
+    /// The old fullscreen receiver may be finishing teardown when the new
+    /// class-source request arrives on this separate monitoring connection.
+    /// Retry only this transient class handoff, with the original request budget.
+    fn complete_start(
+        &self,
+        id: &str,
+        queued_at: Instant,
+        reply: protocol::ObserveMessage,
+        now: Instant,
+    ) -> Result<()> {
+        let port = u16::try_from(reply.port)?;
+        let mut entries = self.entries.lock().unwrap();
+        if let Some(job) = entries
+            .get_mut(id)
+            .filter(|j| j.requested_at == Some(queued_at))
+        {
+            if job.class_broadcast
+                && reply.error == "Student is watching a presentation"
+                && now.duration_since(queued_at) < Duration::from_secs(4)
+            {
+                job.request = true;
+                info!(
+                    student_id = id,
+                    wait_ms = now.duration_since(queued_at).as_millis(),
+                    "Class source waiting for previous receiver teardown"
+                );
+                self.wake.notify_all();
+            } else {
+                job.port = port;
+                job.token = reply.token;
+                job.error = reply.error;
+                job.profile = reply.codec;
+            }
+        }
+        Ok(())
+    }
     fn wait(&self, stop: &AtomicBool, id: &str, duration: Duration) {
         let entries = self.entries.lock().unwrap();
         let _guard = self
@@ -344,13 +380,7 @@ fn serve(
                 profile = %reply.codec,
                 "Observe source handshake complete"
             );
-            let mut all = jobs.entries.lock().unwrap();
-            if let Some(j) = all.get_mut(&hello.instance_id) {
-                j.port = u16::try_from(reply.port)?;
-                j.token = reply.token;
-                j.error = reply.error;
-                j.profile = reply.codec;
-            }
+            jobs.complete_start(&hello.instance_id, queued_at, reply, Instant::now())?;
         }
         let tier = jobs.thumbnail_width.load(Ordering::Acquire);
         let width = match tier {
@@ -740,6 +770,85 @@ fn encode(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn class_source_retry_waits_for_receiver_teardown_with_original_deadline() {
+        let jobs = ObserveRequests::default();
+        jobs.request_broadcast("A".into());
+        let began = jobs.entries.lock().unwrap()["A"].requested_at.unwrap();
+        jobs.entries.lock().unwrap().get_mut("A").unwrap().request = false;
+        let busy = protocol::ObserveMessage {
+            error: "Student is watching a presentation".into(),
+            ..Default::default()
+        };
+        jobs.complete_start("A", began, busy.clone(), began + Duration::from_millis(10))
+            .unwrap();
+        {
+            let all = jobs.entries.lock().unwrap();
+            assert!(all["A"].request);
+            assert!(all["A"].error.is_empty());
+            assert_eq!(all["A"].requested_at, Some(began));
+        }
+        jobs.entries.lock().unwrap().get_mut("A").unwrap().request = false;
+        jobs.complete_start("A", began, busy, began + Duration::from_secs(4))
+            .unwrap();
+        let all = jobs.entries.lock().unwrap();
+        assert!(!all["A"].request);
+        assert_eq!(all["A"].error, "Student is watching a presentation");
+    }
+    #[test]
+    fn ordinary_observe_and_real_class_errors_are_not_retried() {
+        let jobs = ObserveRequests::default();
+        for (class, error) in [
+            (false, "Student is watching a presentation"),
+            (true, "Screen Recording denied"),
+        ] {
+            jobs.request_profile("A".into(), None, class);
+            let began = jobs.entries.lock().unwrap()["A"].requested_at.unwrap();
+            jobs.entries.lock().unwrap().get_mut("A").unwrap().request = false;
+            jobs.complete_start(
+                "A",
+                began,
+                protocol::ObserveMessage {
+                    error: error.into(),
+                    ..Default::default()
+                },
+                began,
+            )
+            .unwrap();
+            let all = jobs.entries.lock().unwrap();
+            assert!(!all["A"].request);
+            assert_eq!(all["A"].error, error);
+        }
+    }
+    #[test]
+    fn stale_source_reply_cannot_replace_a_newer_job() {
+        let jobs = ObserveRequests::default();
+        jobs.request_broadcast("A".into());
+        let old = jobs.entries.lock().unwrap()["A"].requested_at.unwrap();
+        jobs.request_broadcast("A".into());
+        let newer = old + Duration::from_millis(1);
+        jobs.entries
+            .lock()
+            .unwrap()
+            .get_mut("A")
+            .unwrap()
+            .requested_at = Some(newer);
+        jobs.complete_start(
+            "A",
+            old,
+            protocol::ObserveMessage {
+                port: 12345,
+                token: "old".into(),
+                ..Default::default()
+            },
+            newer,
+        )
+        .unwrap();
+        let all = jobs.entries.lock().unwrap();
+        assert_eq!(all["A"].port, 0);
+        assert!(all["A"].token.is_empty());
+        assert!(all["A"].request);
+    }
     #[test]
     fn observe_bypasses_student_thumbnail_cadence_on_same_socket() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
