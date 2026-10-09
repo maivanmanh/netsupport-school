@@ -437,7 +437,7 @@ class _ConsoleState extends State<Console> with WindowListener {
     windowManager.setPreventClose(true);
     if (Platform.isMacOS) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) showMacPermissions(context, agent);
+        if (mounted) maybeShowMacPermissions(context, agent);
       });
       permissions
           .invokeMethod<bool>('screenRecordingGranted')
@@ -472,7 +472,11 @@ class _ConsoleState extends State<Console> with WindowListener {
     final sharing = agent.state['phase'] == 'sharing';
     // Minimize only on confirmed presentation start, never while capture is
     // starting or when reopening a console for an already active stream.
-    if (havePresentationState && sharing && !wasSharing && n <= request) {
+    if (havePresentationState &&
+        sharing &&
+        !wasSharing &&
+        n <= request &&
+        agent.state['source_id'] == null) {
       windowManager.minimize();
     }
     wasSharing = sharing;
@@ -530,6 +534,17 @@ class _ConsoleState extends State<Console> with WindowListener {
         .where((r) => r['online'] == true && selected.contains(r['id']))
         .map((r) => r['id'] as String)
         .toSet();
+    final canSwitch =
+        agent.connected &&
+        !agent.commandBusy &&
+        (phase == 'idle' || phase == 'sharing');
+    final sourceId = agent.state['source_id'];
+    var sourceName = 'Teacher';
+    for (final row in agent.students) {
+      if (row['id'] == sourceId) {
+        sourceName = row['name'] as String? ?? 'Student';
+      }
+    }
     final canUseTools = toolRecipients.isNotEmpty;
     return Scaffold(
       body: Stack(
@@ -600,6 +615,8 @@ class _ConsoleState extends State<Console> with WindowListener {
                               ? 'Working…'
                               : phase == 'sharing'
                               ? 'Sharing screen'
+                              : phase == 'switching'
+                              ? 'Switching source…'
                               : phase == 'starting'
                               ? 'Starting…'
                               : 'Stopping…',
@@ -671,13 +688,15 @@ class _ConsoleState extends State<Console> with WindowListener {
                     final actions = Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        if (agent.connected && phase == 'idle') ...[
+                        if (agent.connected &&
+                            (phase == 'idle' || phase == 'sharing')) ...[
                           if (onlineSelected.length == 1) ...[
                             OutlinedButton.icon(
                               style: toolbarButton(),
-                              onPressed: idle
+                              onPressed:
+                                  canSwitch && onlineSelected.single != sourceId
                                   ? () => agent.command(
-                                      'share_student',
+                                      'switch_source',
                                       onlineSelected,
                                     )
                                   : null,
@@ -686,6 +705,26 @@ class _ConsoleState extends State<Console> with WindowListener {
                             ),
                             const SizedBox(width: 8),
                           ],
+                          if (sourceId != null) ...[
+                            OutlinedButton.icon(
+                              style: toolbarButton(),
+                              onPressed: canSwitch
+                                  ? () => agent.command('switch_source')
+                                  : null,
+                              icon: const Icon(
+                                Icons.screen_share_outlined,
+                                size: 16,
+                              ),
+                              label: const Text('Back to Teacher'),
+                            ),
+                            const SizedBox(width: 8),
+                          ],
+                        ],
+                        if (phase == 'sharing') ...[
+                          Text('Presenting: $sourceName'),
+                          const SizedBox(width: 8),
+                        ],
+                        if (agent.connected && phase == 'idle') ...[
                           FilledButton.icon(
                             style: toolbarButton(),
                             onPressed: idle && online > 0
@@ -715,7 +754,9 @@ class _ConsoleState extends State<Console> with WindowListener {
                           ],
                         ],
                         if (agent.connected &&
-                            (phase == 'sharing' || phase == 'starting'))
+                            (phase == 'sharing' ||
+                                phase == 'starting' ||
+                                phase == 'switching'))
                           FilledButton.icon(
                             style: toolbarButton().copyWith(
                               backgroundColor: const WidgetStatePropertyAll(

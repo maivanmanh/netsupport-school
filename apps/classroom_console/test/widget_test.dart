@@ -63,9 +63,7 @@ void main() {
     await tester.pumpWidget(ClassroomApp(agent: a));
     if (Platform.isMacOS) {
       await tester.pumpAndSettle();
-      expect(find.text('Set up macOS permissions'), findsOneWidget);
-      await tester.tap(find.text('Continue'));
-      await tester.pumpAndSettle();
+      expect(find.text('Set up macOS permissions'), findsNothing);
     }
     expect(find.text('Lab PC 01'), findsOneWidget);
     expect(find.byType(StudentFileDrop), findsOneWidget);
@@ -137,9 +135,7 @@ void main() {
     await tester.pumpWidget(ClassroomApp(agent: a));
     if (Platform.isMacOS) {
       await tester.pumpAndSettle();
-      expect(find.text('Set up macOS permissions'), findsOneWidget);
-      await tester.tap(find.text('Continue'));
-      await tester.pumpAndSettle();
+      expect(find.text('Set up macOS permissions'), findsNothing);
     }
     await tester.pumpAndSettle();
     if (Platform.isMacOS) {
@@ -184,9 +180,7 @@ void main() {
       await tester.pumpWidget(ClassroomApp(agent: a));
       if (Platform.isMacOS) {
         await tester.pumpAndSettle();
-        expect(find.text('Set up macOS permissions'), findsOneWidget);
-        await tester.tap(find.text('Continue'));
-        await tester.pumpAndSettle();
+        expect(find.text('Set up macOS permissions'), findsNothing);
       }
       await tester.pumpAndSettle();
       int columns() =>

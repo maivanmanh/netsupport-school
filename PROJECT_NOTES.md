@@ -34,3 +34,12 @@ quyền đọc được với kết quả thử kết nối; lỗi kết nối k
 quyền. Screen Recording cần restart Teacher sau khi cấp. Không sửa privacy grants
 hoặc xóa/reset các mục của hệ thống bằng tự động hóa. Xem
 `docs/22_MACOS_PERMISSION_ONBOARDING.md`.
+
+
+## Cấp quyền thủ công, không dùng Computer Use (09-10-2026)
+
+Chủ dự án yêu cầu: khi gặp quyền macOS còn thiếu trong lượt thử nghiệm, tạm dừng
+và liệt kê đầy đủ đường dẫn app/helper cùng loại quyền để chủ máy cấp thủ công.
+Không dùng Computer Use để thao tác cấp quyền. Không reset/xóa/đổi privacy grants.
+Checklist chỉ tự hiện lần đầu khi cả hai quyền Recording chưa được cấp; lưu dấu
+đã xem, không hiện lại mỗi lần mở Teacher. Nút toolbar vẫn mở theo yêu cầu.

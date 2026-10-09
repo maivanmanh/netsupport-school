@@ -173,3 +173,27 @@ Windows texture reads never block on the producer. A lock miss/invalid header/fu
 buffer pool retains the last complete RGBA frame through counted raster leases.
 Three buffers bound memory; held buffers are immutable. `cached_frame_returns`
 is included with existing copy/lock/sequence counters in the Observe UI log.
+
+
+### Quick class source handoff (owner authorized, 2026-10-09)
+
+The Teacher toolbar keeps **Control & present Student** available during class
+presentation and adds **Back to Teacher** for Student sources. An authenticated
+`switch_source` command selects one online Student, or an empty selection returns
+to Teacher. Target validation precedes any stop; an offline/multiple selection
+leaves the current presentation running. Selecting the current source is a no-op.
+
+Exactly one pending handoff is admitted. Existing capture/relay is stopped, its
+worker exits and is joined, and its class Control lease/window is released before
+the normal new-source start path runs. Each new source uses a fresh stream ID,
+existing receiver rejoin/keyframe recovery and bounded pipeline. There is a brief
+handoff gap, not seamless pixel continuity. No receiver is manually restarted.
+A 10-second pending-stop deadline cancels the target rather than starting a second
+worker. Stop cancels a pending target. An old surface-specific Control-close
+cannot stop a newer view. New Student Control stays cooperative and cursor-visible.
+Source failure still ends class sharing and shows the error; Teacher may choose
+another source. No automatic fallback encoder is started.
+
+The Teacher main window is not automatically minimized when Student Control
+starts. Native Windows/macOS handoff integration is recorded separately from unit
+checks and 35–40 physical Windows x64 Ethernet acceptance.

@@ -3979,3 +3979,27 @@ left idle for owner use. Detailed reports preserve motion losses and deferred
 physical35–40 x64 Ethernet, optical latency, fixed1080p soak/sleep/DPI/Defender tests.
 Next: lab acceptance ladder and source-upload/preview load measurements; use added
 relay timeout/error counters to diagnose send loss before changing media policy.
+
+
+## 2026-10-09 — quick source switching, startup checklist correction
+
+Implemented switch_source with one pending target, validation/no-op before Stop,
+worker exit/join before new start, class Control cleanup, fresh stream IDs, bounded
+pending-stop deadline and Stop cancellation. Toolbar works during presentation,
+returns to Teacher and keeps main UI from minimizing on Student Control start.
+Automatic permission checklist now once per persistent profile, only with both
+Recording grants explicitly missing; manual toolbar/banners retained. Owner asks
+manual full-path permission handoff and no Computer Use for permission actions.
+Rust198 pass/2 ignored, Flutter13 pass, analyzer clean, paired-source-switch-20261009
+build succeeds. Next prepare mixed Windows.102/Mac.254 packages and manually grant
+any missing Mac permissions before native switching. No native handoff pass yet;
+see diagnostics/2026-10-09-source-switch.md for exact paths, tests and lab deferrals.
+
+
+Native mixed-peer prepare/hash/codesign finished. Mac Student GUI read-only check
+reports Recording false, so paused native handoff at owner's explicit permission
+boundary. Full paths are recorded in diagnostics/2026-10-09-source-switch.md.
+No Computer Use/privacy automation. Teacher onboarding marker persisted true.
+Exact next step: owner grants Mac Student Recording/Accessibility and verifies
+Teacher Console/helper Recording, then restart unchanged Teacher and run prepared
+mixed-endpoint handoff harness. Native switching and lab scaling remain unverified.

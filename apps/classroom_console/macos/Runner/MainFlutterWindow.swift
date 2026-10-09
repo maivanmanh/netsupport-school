@@ -105,9 +105,13 @@ class MainFlutterWindow: NSWindow {
             DispatchQueue.main.async { result(FlutterError(code: "restart_failed", message: error.localizedDescription, details: nil)) }
           }
         }
+      case "markOnboardingSeen":
+        UserDefaults.standard.set(true, forKey: "classroom.permissions.onboardingSeen")
+        result(nil)
       case "status":
         ClassroomPermissions.helper(["--permission-status"]) { helper in
-          result(["screen": CGPreflightScreenCaptureAccess(),
+          result(["onboardingSeen": UserDefaults.standard.bool(forKey: "classroom.permissions.onboardingSeen"),
+                  "screen": CGPreflightScreenCaptureAccess(),
                   "accessibility": AXIsProcessTrusted(),
                   "helperScreen": helper["screen"] ?? NSNull(),
                   "helperError": helper["error"] ?? NSNull(),

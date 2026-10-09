@@ -11,6 +11,28 @@ Future<void> showMacPermissions(BuildContext context, Agent agent) =>
       builder: (_) => MacPermissionsDialog(agent: agent),
     );
 
+/// Auto-onboarding is once per installation/profile, only with two explicitly
+/// missing Recording grants. Unknown helper status never creates a startup modal.
+Future<void> maybeShowMacPermissions(BuildContext context, Agent agent) async {
+  try {
+    final status = await _permissions.invokeMapMethod<String, dynamic>(
+      'status',
+    );
+    if (status == null || status['onboardingSeen'] == true) return;
+    final anyGranted =
+        status['screen'] == true || status['helperScreen'] == true;
+    final noneGranted =
+        status['screen'] == false && status['helperScreen'] == false;
+    if (!anyGranted && !noneGranted) return;
+    await _permissions.invokeMethod<void>('markOnboardingSeen');
+    if (context.mounted && noneGranted) {
+      await showMacPermissions(context, agent);
+    }
+  } catch (_) {
+    // Startup stays usable; capture errors and the explicit toolbar remain.
+  }
+}
+
 /// Only public, process-local OS checks and explicit LAN probes are authoritative.
 /// Missing plugin/helper support remains unknown rather than a granted checkmark.
 class MacPermissionsDialog extends StatefulWidget {

@@ -4,6 +4,16 @@ Owner-authorized scope (2026-10-08): add a first-launch permission checklist to
 Teacher, with reasons, status indicators, request/settings buttons and Continue.
 Windows does not show this macOS-only dialog. The toolbar can reopen it.
 
+Owner correction (2026-10-09): automatic onboarding is once per persistent app
+profile, and only when both Console and Agent Screen Recording are explicitly
+not granted. A grant on either identity suppresses it. Unknown/helper-check errors
+also suppress a startup modal. Native UserDefaults stores that it was seen before
+opening; Continue/dismissal, restart, ad-hoc rebuilds and subsequently revoked
+Recording do not force it open again. This marker never represents a permission
+grant. The banner, capture errors and explicit toolbar still guide missing access.
+Local Network has no public universal status API, so an unknown LAN result alone
+does not trigger automatic onboarding.
+
 ## What is checked
 
 - Console Screen Recording: `CGPreflightScreenCaptureAccess` in Flutter's native

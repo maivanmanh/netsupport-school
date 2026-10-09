@@ -51,6 +51,9 @@ void main() {
           if (call.method == 'restartConsole') {
             restartArguments = call.arguments;
           }
+          if (call.method == 'markOnboardingSeen') {
+            status = {...status, 'onboardingSeen': true};
+          }
           if (call.method == 'status') return status;
           if (call.method == 'probeNetwork') return network;
           return true;
@@ -94,6 +97,65 @@ void main() {
     agent.dispose();
   }
 
+  Future<PermissionAgent> autoOpen(WidgetTester tester) async {
+    final agent = PermissionAgent()..state = {'phase': 'idle'};
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => TextButton(
+              onPressed: () => maybeShowMacPermissions(context, agent),
+              child: const Text('Auto'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('Auto'));
+    await tester.pumpAndSettle();
+    return agent;
+  }
+
+  testWidgets('automatic checklist shows only once when both grants missing', (
+    tester,
+  ) async {
+    final agent = await autoOpen(tester);
+    expect(find.text('Set up macOS permissions'), findsOneWidget);
+    expect(calls.where((c) => c == 'markOnboardingSeen'), hasLength(1));
+    await tester.tap(find.text('Continue'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Auto'));
+    await tester.pumpAndSettle();
+    expect(find.text('Set up macOS permissions'), findsNothing);
+    agent.dispose();
+  });
+  testWidgets('partial grant skips startup checklist and remembers it', (
+    tester,
+  ) async {
+    status = {...status, 'screen': true};
+    final agent = await autoOpen(tester);
+    expect(find.text('Set up macOS permissions'), findsNothing);
+    expect(calls, contains('markOnboardingSeen'));
+    agent.dispose();
+  });
+  testWidgets('unknown helper does not show or remember automatic checklist', (
+    tester,
+  ) async {
+    status = {...status, 'helperScreen': null};
+    final agent = await autoOpen(tester);
+    expect(find.text('Set up macOS permissions'), findsNothing);
+    expect(calls, isNot(contains('markOnboardingSeen')));
+    agent.dispose();
+  });
+  testWidgets('revoked grants do not reopen a previously seen checklist', (
+    tester,
+  ) async {
+    status = {...status, 'onboardingSeen': true};
+    final agent = await autoOpen(tester);
+    expect(find.text('Set up macOS permissions'), findsNothing);
+    expect(calls, isNot(contains('markOnboardingSeen')));
+    agent.dispose();
+  });
   testWidgets('polls grants without requesting or resetting privacy', (
     tester,
   ) async {

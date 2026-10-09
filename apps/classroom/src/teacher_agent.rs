@@ -58,6 +58,7 @@ struct Snapshot {
     student_download: Value,
     presentation: Option<RoomPresentation>,
     source_id: Option<String>,
+    next_source: Option<String>,
 }
 #[derive(Deserialize)]
 struct Command {
@@ -76,6 +77,65 @@ struct Request {
 struct Session {
     stop: Arc<AtomicBool>,
     worker: thread::JoinHandle<Result<()>>,
+}
+/// Exactly one handoff, admitted before stopping the current source. The next
+/// worker is created only after the old worker has exited and been joined.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SourceTarget {
+    Teacher,
+    Student(String),
+}
+impl SourceTarget {
+    fn parse(selected: &[String]) -> std::result::Result<Self, &'static str> {
+        match selected {
+            [] => Ok(Self::Teacher),
+            [id] if !id.is_empty() => Ok(Self::Student(id.clone())),
+            _ => Err("Select exactly one online Student or return to Teacher"),
+        }
+    }
+    fn label(&self) -> String {
+        match self {
+            Self::Teacher => "teacher".into(),
+            Self::Student(id) => id.clone(),
+        }
+    }
+    fn start(self) -> Command {
+        let (action, selected) = match self {
+            Self::Teacher => ("share_class", Vec::new()),
+            Self::Student(id) => ("share_student", vec![id]),
+        };
+        Command {
+            id: 0,
+            action: action.into(),
+            selected,
+            input: Value::Null,
+        }
+    }
+}
+#[derive(Default)]
+struct SourceSwitch(Option<(SourceTarget, Instant)>);
+impl SourceSwitch {
+    fn queue(&mut self, target: SourceTarget) -> std::result::Result<(), &'static str> {
+        if self.0.is_some() {
+            return Err("A source switch is already in progress");
+        }
+        self.0 = Some((target, Instant::now()));
+        Ok(())
+    }
+    fn ready(&mut self, old_worker_present: bool) -> Option<Command> {
+        if old_worker_present {
+            return None;
+        }
+        self.0.take().map(|(target, _)| target.start())
+    }
+    fn cancel(&mut self) {
+        self.0 = None;
+    }
+    fn expired(&self, now: Instant) -> bool {
+        self.0
+            .as_ref()
+            .is_some_and(|(_, began)| now.duration_since(*began) >= Duration::from_secs(10))
+    }
 }
 struct Endpoint {
     path: PathBuf,
@@ -141,7 +201,7 @@ fn state_json(state: &Snapshot, sent: &mut HashMap<String, u64>) -> Value {
         "tray_available":state.tray,"ui_request":state.ui_request,"open_settings":state.open_settings,
         "students":students,"observe":state.observe,"tools":state.tools,"lifecycle":state.lifecycle,
         "settings":state.settings,"diagnostics":state.diagnostics,"student_download":state.student_download,
-        "observe_focus":state.observe_focus,"source_id":state.source_id})
+        "observe_focus":state.observe_focus,"source_id":state.source_id,"next_source":state.next_source})
 }
 async fn client(
     mut socket: TcpStream,
@@ -333,6 +393,7 @@ pub(super) fn run(
         student_download: json!({"phase":"off"}),
         presentation: None,
         source_id: None,
+        next_source: None,
     };
     let (states, receiver) = watch::channel(snapshot.clone());
     let (commands, mut requests) = mpsc::channel::<Request>(16);
@@ -380,6 +441,7 @@ pub(super) fn run(
     info!(ipc_port=port,bind_ip=%bind_ip,control_port=config.network.control_port,"Flutter Teacher agent ready");
     let mut student_download: Option<super::student_bootstrap::Share> = None;
     let mut session: Option<Session> = None;
+    let mut source_switch = SourceSwitch::default();
     let mut observe: Option<super::observe_coordinator::View> = None;
     // The persistent coordinator owns UI launches, including windows that are
     // still starting or outlive a reopened main console.
@@ -440,7 +502,9 @@ pub(super) fn run(
                 let window_closed = observe_windows
                     .get_mut(source)
                     .is_some_and(|c| !matches!(c.try_wait(), Ok(None)));
-                if snapshot.phase != "stopping" && (view_failed || window_closed) {
+                if !matches!(snapshot.phase.as_str(), "stopping" | "switching")
+                    && (view_failed || window_closed)
+                {
                     if let Some(active) = session.as_ref() {
                         active.stop.store(true, Ordering::Release);
                     }
@@ -473,24 +537,48 @@ pub(super) fn run(
                     }
                     Err(_) => snapshot.error = Some("Media worker stopped unexpectedly".into()),
                 }
-                if let Some(selected) = pending_diagnostics
-                    .take()
-                    .or_else(|| config.diagnostics.auto_collect.then(Vec::new))
-                {
-                    if let Err(error) = diagnostics.start(
-                        Arc::clone(&tools_hub),
-                        roster.lock().unwrap().snapshot(),
-                        &selected,
-                        snapshot.stream_id,
-                        bind_ip,
-                    ) {
-                        snapshot.error = Some(format!("{error:#}"));
+                if source_switch.0.is_none() {
+                    if let Some(selected) = pending_diagnostics
+                        .take()
+                        .or_else(|| config.diagnostics.auto_collect.then(Vec::new))
+                    {
+                        if let Err(error) = diagnostics.start(
+                            Arc::clone(&tools_hub),
+                            roster.lock().unwrap().snapshot(),
+                            &selected,
+                            snapshot.stream_id,
+                            bind_ip,
+                        ) {
+                            snapshot.error = Some(format!("{error:#}"));
+                        }
                     }
                 }
                 publish_due = Instant::now();
             }
+            if source_switch.expired(Instant::now()) {
+                source_switch.cancel();
+                snapshot.next_source = None;
+                snapshot.phase = if session.is_some() {
+                    "stopping"
+                } else {
+                    "idle"
+                }
+                .into();
+                snapshot.error = Some("Previous source did not stop in time; select a source again after Stop completes".into());
+                publish_due = Instant::now();
+            }
             for _ in 0..32 {
-                let Ok(request) = requests.try_recv() else {
+                let mut is_handoff = false;
+                let request = if let Some(command) = source_switch.ready(session.is_some()) {
+                    is_handoff = true;
+                    snapshot.next_source = None;
+                    // A queued handoff was already acknowledged; revalidate the
+                    // source with the same normal start path at execution time.
+                    let (reply, _) = tokio::sync::oneshot::channel();
+                    Request { command, reply }
+                } else if let Ok(request) = requests.try_recv() {
+                    request
+                } else {
                     break;
                 };
                 let started = Instant::now();
@@ -1205,6 +1293,64 @@ pub(super) fn run(
                         }
                         Ok(())
                     }
+                    "switch_source" => {
+                        let target = SourceTarget::parse(&command.selected);
+                        let rows = roster.lock().unwrap().snapshot();
+                        match target {
+                            Err(error) => Err(error),
+                            Ok(_) if !matches!(snapshot.phase.as_str(), "idle" | "sharing") => {
+                                Err("Wait for the current presentation transition")
+                            }
+                            Ok(SourceTarget::Student(ref target))
+                                if !rows.iter().any(|r| r.online && &r.instance_id == target) =>
+                            {
+                                Err("Student is offline")
+                            }
+                            Ok(SourceTarget::Student(_)) if !config.monitoring.enabled => {
+                                Err("Enable monitoring to request Student screen publishing")
+                            }
+                            Ok(SourceTarget::Student(_)) if console.is_none() => {
+                                Err("Teacher console is required for Student class control")
+                            }
+                            Ok(SourceTarget::Student(_))
+                                if snapshot.source_id.is_none()
+                                    && (observe.is_some()
+                                        || observe_windows
+                                            .values_mut()
+                                            .any(|c| matches!(c.try_wait(), Ok(None)))) =>
+                            {
+                                Err("Close Observe/Control windows before presenting a Student")
+                            }
+                            Ok(SourceTarget::Student(ref target))
+                                if snapshot.source_id.as_ref() == Some(target) =>
+                            {
+                                Ok(())
+                            }
+                            Ok(SourceTarget::Teacher)
+                                if session.is_some()
+                                    && snapshot.source_id.is_none()
+                                    && snapshot.scope == "class" =>
+                            {
+                                Ok(())
+                            }
+                            Ok(target) => {
+                                let label = target.label();
+                                source_switch.queue(target).map(|()| {
+                                    snapshot.next_source = Some(label.clone());
+                                    snapshot.phase = "switching".into();
+                                    snapshot.error = None;
+                                    if let Some(active) = session.as_ref() {
+                                        active.stop.store(true, Ordering::Release);
+                                    }
+                                    presentation.send_replace(None);
+                                    // Release the old lease before killing its
+                                    // owned window in the worker completion path.
+                                    if snapshot.source_id.is_some() { observe.take(); }
+                                    info!(from=?snapshot.source_id,to=%label,"Teacher source handoff queued");
+                                })
+                            }
+                        }
+                    }
                     "share_student" if session.is_none() => {
                         observe_windows.retain(|_, child| matches!(child.try_wait(), Ok(None)));
                         let rows = roster.lock().unwrap().snapshot();
@@ -1241,6 +1387,13 @@ pub(super) fn run(
                             let (view, child) = match setup {
                                 Ok(value) => value,
                                 Err(error) => {
+                                    if is_handoff {
+                                        snapshot.phase = "idle".into();
+                                        snapshot.error = Some(format!(
+                                            "Cannot start Student class control: {error:#}"
+                                        ));
+                                        publish_due = Instant::now();
+                                    }
                                     let _ = request.reply.send(json!({"type":"ack","id":id,"ok":false,"error":format!("Cannot start Student class control: {error:#}")}));
                                     continue;
                                 }
@@ -1336,6 +1489,8 @@ pub(super) fn run(
                         }
                     }
                     "stop" => {
+                        source_switch.cancel();
+                        snapshot.next_source = None;
                         if let Some(active) = session.as_ref() {
                             active.stop.store(true, Ordering::Release);
                             presentation.send_replace(None);
@@ -1375,6 +1530,13 @@ pub(super) fn run(
                     }
                     _ => Err("Command unavailable in the current presentation state"),
                 };
+                if is_handoff {
+                    if let Err(error) = &response {
+                        snapshot.phase = "idle".into();
+                        snapshot.error =
+                            Some(format!("Cannot switch presentation source: {error}"));
+                    }
+                }
                 let _ = request.reply.send(
                     json!({"type":"ack","id":id,"ok":response.is_ok(),"error":response.err(),"job_id":job_id,"result":payload}),
                 );
@@ -1499,6 +1661,35 @@ fn cleanup_staged_files(outbox: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn source_switch_waits_for_old_worker_and_keeps_one_target() {
+        let mut handoff = SourceSwitch::default();
+        handoff.queue(SourceTarget::Student("A".into())).unwrap();
+        assert!(handoff.queue(SourceTarget::Teacher).is_err());
+        assert!(handoff.ready(true).is_none());
+        let next = handoff.ready(false).unwrap();
+        assert_eq!(next.action, "share_student");
+        assert_eq!(next.selected, ["A"]);
+        assert!(handoff.ready(false).is_none());
+    }
+    #[test]
+    fn source_switch_stop_cancels_pending_start_and_deadline_is_bounded() {
+        let mut handoff = SourceSwitch::default();
+        handoff.queue(SourceTarget::Teacher).unwrap();
+        let began = handoff.0.as_ref().unwrap().1;
+        assert!(!handoff.expired(began + Duration::from_secs(9)));
+        assert!(handoff.expired(began + Duration::from_secs(10)));
+        handoff.cancel();
+        assert!(handoff.ready(false).is_none());
+        handoff.queue(SourceTarget::Teacher).unwrap();
+        assert_eq!(handoff.ready(false).unwrap().action, "share_class");
+    }
+    #[test]
+    fn source_switch_target_rejects_multiple_or_empty_ids() {
+        assert_eq!(SourceTarget::parse(&[]).unwrap(), SourceTarget::Teacher);
+        assert!(SourceTarget::parse(&["".into()]).is_err());
+        assert!(SourceTarget::parse(&["A".into(), "B".into()]).is_err());
+    }
     #[tokio::test]
     async fn rejects_oversized_prefix_before_allocating_body() {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
