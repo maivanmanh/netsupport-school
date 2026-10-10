@@ -239,6 +239,7 @@ mod windows_teacher {
 pub use windows_teacher::WindowsTeacherTray;
 
 pub struct StudentDesktop {
+    badge: super::monitoring_badge::Badge,
     connection_status: super::student_connection_ui::ConnectionStatus,
     pub connection_preference: Option<std::sync::Arc<super::classroom_tools::Inbox>>,
     pub tools: Option<super::student_tools_ui::StudentToolsUi>,
@@ -272,6 +273,7 @@ impl StudentDesktop {
             }
         };
         Ok(Self {
+            badge: super::monitoring_badge::Badge::default(),
             tools: None,
             connection_status: super::student_connection_ui::ConnectionStatus::default(),
             connection_preference: None,
@@ -283,6 +285,9 @@ impl StudentDesktop {
         })
     }
     pub fn pump(&mut self, status: &str, presenting: bool) {
+        if let Some(inbox) = &self.connection_preference {
+            self.badge.pump(inbox, presenting);
+        }
         let enabled = self.connection_preference.as_ref().is_some_and(|i| {
             i.connection_popup
                 .load(std::sync::atomic::Ordering::Acquire)
@@ -295,7 +300,9 @@ impl StudentDesktop {
             self.host.update();
         }
         if let Some(tray) = self.tray.as_mut() {
-            tray.update(status, !presenting);
+            let terminals = self.connection_preference.as_ref().map_or(0, |i| i.terminal_active.load(std::sync::atomic::Ordering::Acquire));
+            let status = if terminals > 0 { format!("{status} · Administrator remote terminal active ({terminals})") } else { status.to_owned() };
+            tray.update(&status, !presenting);
             if let Some(command) = tray.poll() {
                 tracing::info!(?command, presenting, "Student tray command");
                 match command {

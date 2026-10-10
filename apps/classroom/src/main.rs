@@ -63,6 +63,7 @@ mod process_metrics;
 mod quality;
 mod refinement;
 mod remote_input;
+mod remote_terminal;
 mod startup;
 mod stream_profile;
 mod student_bootstrap;
@@ -70,6 +71,7 @@ mod student_broadcast;
 mod student_connection_ui;
 mod student_file_ui;
 mod student_fps_badge;
+mod monitoring_badge;
 mod student_lock;
 mod student_presentation;
 mod student_settings;
@@ -273,6 +275,9 @@ enum RestartRequest {
 }
 
 fn main() -> Result<()> {
+    if let Some(code) = remote_terminal::compat::early_operation() {
+        std::process::exit(code);
+    }
     if let Some(result) = macos_permissions::early_operation() {
         return result;
     }
@@ -308,6 +313,10 @@ async fn run(
     log_guard: &mut Option<compact_log::LogGuard>,
     restart_profile: &mut Option<RestartRequest>,
 ) -> Result<()> {
+    if std::env::args_os().nth(1).is_some_and(|v| v == "--terminal-worker") {
+        let path = std::env::args_os().nth(2).context("Terminal worker context missing")?;
+        return remote_terminal::worker::run(std::path::Path::new(&path)).await;
+    }
     let mut cli = Cli::parse();
     let student_only = env!("CARGO_BIN_NAME") == "ClassroomStudent";
     if student_only {
@@ -2022,6 +2031,7 @@ async fn run_student_media(
     };
     let inbox = std::sync::Arc::new(classroom_tools::Inbox::default());
     inbox.initialize_connection_popup(profile_path, config.tools.connection_popup);
+    inbox.badge.lock().unwrap().load(profile_path)?;
     if let Some(desktop) = desktop.as_mut() {
         desktop.connection_preference = Some(std::sync::Arc::clone(&inbox));
     }
@@ -2051,6 +2061,8 @@ async fn run_student_media(
             SocketAddrV4::new(teacher_ip, config.network.control_port + 1),
             registration.instance_id.clone(),
             std::sync::Arc::clone(&presenting),
+            std::sync::Arc::clone(&inbox.badge_broadcast_suppressed),
+            std::sync::Arc::clone(&inbox.badge_broadcast_suppression_applied),
             config.clone(),
         )
     });

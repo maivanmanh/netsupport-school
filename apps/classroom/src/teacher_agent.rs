@@ -99,7 +99,7 @@ impl SourceTarget {
             Self::Student(id) => id.clone(),
         }
     }
-    fn start(self) -> Command {
+    fn start(self, preview_path: Option<String>) -> Command {
         let (action, selected) = match self {
             Self::Teacher => ("share_class", Vec::new()),
             Self::Student(id) => ("share_student", vec![id]),
@@ -108,25 +108,31 @@ impl SourceTarget {
             id: 0,
             action: action.into(),
             selected,
-            input: Value::Null,
+            input: preview_path.map_or(Value::Null, |path| json!({"preview_path":path})),
         }
     }
 }
 #[derive(Default)]
-struct SourceSwitch(Option<(SourceTarget, Instant)>);
+struct SourceSwitch(Option<(SourceTarget, Instant, Option<String>)>);
 impl SourceSwitch {
-    fn queue(&mut self, target: SourceTarget) -> std::result::Result<(), &'static str> {
+    fn queue(
+        &mut self,
+        target: SourceTarget,
+        preview_path: Option<String>,
+    ) -> std::result::Result<(), &'static str> {
         if self.0.is_some() {
             return Err("A source switch is already in progress");
         }
-        self.0 = Some((target, Instant::now()));
+        self.0 = Some((target, Instant::now(), preview_path));
         Ok(())
     }
     fn ready(&mut self, old_worker_present: bool) -> Option<Command> {
         if old_worker_present {
             return None;
         }
-        self.0.take().map(|(target, _)| target.start())
+        self.0
+            .take()
+            .map(|(target, _, preview_path)| target.start(preview_path))
     }
     fn cancel(&mut self) {
         self.0 = None;
@@ -134,7 +140,7 @@ impl SourceSwitch {
     fn expired(&self, now: Instant) -> bool {
         self.0
             .as_ref()
-            .is_some_and(|(_, began)| now.duration_since(*began) >= Duration::from_secs(10))
+            .is_some_and(|(_, began, _)| now.duration_since(*began) >= Duration::from_secs(10))
     }
 }
 struct Endpoint {
@@ -220,6 +226,7 @@ async fn client(
     commands: mpsc::Sender<Request>,
     clients: Arc<AtomicUsize>,
     consoles: Arc<AtomicUsize>,
+    tools: Arc<super::classroom_tools::Hub>,
 ) -> Result<()> {
     let hello = tokio::time::timeout(Duration::from_secs(3), read_frame(&mut socket, MAX_COMMAND))
         .await??;
@@ -234,13 +241,25 @@ async fn client(
     anyhow::ensure!(count < MAX_CLIENTS, "too many console clients");
     // Observe is an independent IPC client, not a main console. Its presence
     // must not prevent the tray/Finder from reopening a closed Teacher window.
-    let _console_owned = if hello["ui_role"] == "observe" || hello["ui_role"] == "automation" {
+    let _console_owned = if hello["ui_role"] == "observe"
+        || hello["ui_role"] == "automation"
+        || hello["ui_role"] == "terminal"
+    {
         None
     } else {
         consoles.fetch_add(1, Ordering::AcqRel);
         Some(ClientCount(consoles))
     };
     socket.set_nodelay(true)?;
+    if hello["ui_role"] == "terminal" {
+        let session = hello["session"]
+            .as_str()
+            .context("Terminal session missing")?;
+        return tools
+            .6
+            .attach(socket, session, hello["last_seq"].as_u64().unwrap_or(0))
+            .await;
+    }
     let mut sent = HashMap::new();
     let initial = state.borrow_and_update().clone();
     send_frame(&mut socket, &state_json(&initial, &mut sent)).await?;
@@ -323,6 +342,7 @@ pub(super) fn run(
         Arc::clone(&roster),
     ));
     let tools_hub = Arc::new(super::classroom_tools::Hub::default());
+    tools_hub.load_badges(parent.join("monitoring-badges.json"))?;
     tools_hub.set_connection_popup(config.tools.connection_popup);
     let mut diagnostics = super::diagnostics::Collector::new(config, parent)?;
     let tools_server = super::classroom_tools::teacher(
@@ -412,6 +432,7 @@ pub(super) fn run(
     let consoles = Arc::new(AtomicUsize::new(0));
     let console_connections = Arc::clone(&consoles);
     let auth = Arc::clone(&token);
+    let terminal_tools = Arc::clone(&tools_hub);
     let ipc = tokio::spawn(async move {
         let mut tasks = tokio::task::JoinSet::new();
         loop {
@@ -419,7 +440,7 @@ pub(super) fn run(
                 accepted = listener.accept() => {
                     let (socket,_) = accepted?;
                     // Pending handshake sockets are bounded as well as authenticated clients.
-                    if tasks.len() < MAX_CLIENTS { tasks.spawn(client(socket,Arc::clone(&auth),receiver.clone(),commands.clone(),Arc::clone(&connections),Arc::clone(&console_connections))); }
+                    if tasks.len() < MAX_CLIENTS { tasks.spawn(client(socket,Arc::clone(&auth),receiver.clone(),commands.clone(),Arc::clone(&connections),Arc::clone(&console_connections),Arc::clone(&terminal_tools))); }
                 }
                 Some(_) = tasks.join_next(), if !tasks.is_empty() => {}
             }
@@ -597,6 +618,102 @@ pub(super) fn run(
                 let mut job_id: Option<String> = None;
                 let mut payload: Option<Value> = None;
                 let response = match command.action.as_str() {
+                    "terminal_pair" => {
+                        let rows = roster.lock().unwrap().snapshot();
+                        if let Some(row) = rows
+                            .iter()
+                            .find(|r| r.online && command.selected.first() == Some(&r.instance_id))
+                        {
+                            match super::remote_terminal::provision(
+                                path.parent().unwrap_or(Path::new(".")),
+                                &row.instance_id,
+                                bind_ip,
+                            ) {
+                                Ok(value) => {
+                                    payload = Some(value);
+                                    Ok(())
+                                }
+                                Err(error) => {
+                                    snapshot.error = Some(error.to_string());
+                                    Err("Could not prepare terminal pairing")
+                                }
+                            }
+                        } else {
+                            Err("Select one online Student")
+                        }
+                    }
+                    "terminal_desktop" => match crate::classroom_tools::user_folder("Desktop") {
+                        Ok(folder) => {
+                            payload = Some(json!({"path":folder}));
+                            Ok(())
+                        }
+                        Err(error) => {
+                            snapshot.error = Some(error.to_string());
+                            Err("Teacher Desktop is unavailable")
+                        }
+                    },
+                    "terminal_open" => {
+                        let rows = roster.lock().unwrap().snapshot();
+                        if let Some(row) = rows
+                            .iter()
+                            .find(|r| r.online && command.selected.first() == Some(&r.instance_id))
+                        {
+                            let outcome = tools_hub
+                                .6
+                                .open(path.parent().unwrap_or(Path::new(".")), &row.instance_id)
+                                .and_then(|session| {
+                                    if let Err(error) = tools_hub.terminal_start(
+                                        &row.instance_id,
+                                        &session,
+                                        command
+                                            .input
+                                            .get("compatibility")
+                                            .and_then(Value::as_bool)
+                                            .unwrap_or(true),
+                                    ) {
+                                        tools_hub.6.close(&session);
+                                        return Err(error);
+                                    }
+                                    Ok(session)
+                                });
+                            match outcome {
+                                Ok(session) => {
+                                    payload = Some(json!({"session":session}));
+                                    Ok(())
+                                }
+                                Err(error) => {
+                                    snapshot.error = Some(error.to_string());
+                                    Err("Remote Terminal could not start; check pairing and Student policy")
+                                }
+                            }
+                        } else {
+                            Err("Student is offline")
+                        }
+                    }
+                    "terminal_close" => {
+                        if let Some(session) = command.input["session"].as_str() {
+                            tools_hub.6.close(session);
+                            Ok(())
+                        } else {
+                            Err("Terminal session missing")
+                        }
+                    }
+                    "terminal_revoke" => {
+                        if let Some(student) = command.selected.first() {
+                            match tools_hub
+                                .6
+                                .revoke(path.parent().unwrap_or(Path::new(".")), student)
+                            {
+                                Ok(()) => Ok(()),
+                                Err(error) => {
+                                    snapshot.error = Some(error.to_string());
+                                    Err("Could not revoke terminal pairing")
+                                }
+                            }
+                        } else {
+                            Err("Student missing")
+                        }
+                    }
                     "thumbnail_size" => command.input["width"]
                         .as_u64()
                         .filter(|v| [240, 360, 480].contains(v))
@@ -710,8 +827,15 @@ pub(super) fn run(
                                         .arg(&row.instance_id)
                                         .arg("--observe-name")
                                         .arg(&row.hostname)
+                                        .arg("--observe-ip")
+                                        .arg(row.endpoint.ip().to_string())
                                         .arg("--ipc-file")
                                         .arg(path);
+                                    if let Some(preview) =
+                                        command.input["preview_path"].as_str()
+                                    {
+                                        launch.arg("--observe-preview").arg(preview);
+                                    }
                                     for (input, flag) in [
                                         ("center_x", "--teacher-center-x"),
                                         ("center_y", "--teacher-center-y"),
@@ -768,6 +892,25 @@ pub(super) fn run(
                         }
                         publish_due = Instant::now();
                         Ok(())
+                    }
+                    "monitoring_badge" => {
+                        let enabled = command.input["enabled"].as_bool();
+                        let rows = roster.lock().unwrap().snapshot();
+                        let ids: Vec<_> = rows
+                            .iter()
+                            .filter(|r| {
+                                command.selected.is_empty()
+                                    || command.selected.contains(&r.instance_id)
+                            })
+                            .map(|r| r.instance_id.clone())
+                            .collect();
+                        match enabled {
+                            Some(enabled) => tools_hub.set_badges(&ids, enabled).map_err(|e| {
+                                warn!(error=%e,"Monitoring badge request failed");
+                                "Could not change monitoring badge"
+                            }),
+                            None => Err("Missing enabled flag"),
+                        }
                     }
                     "tool_message"
                     | "tool_file"
@@ -1197,7 +1340,8 @@ pub(super) fn run(
                             Err("Teacher console executable unavailable")
                         }
                     }
-                    "files_window" => {
+                    "files_window" | "terminal_window" => {
+                        let terminal_window = command.action == "terminal_window";
                         files_windows.retain(|_, child| matches!(child.try_wait(), Ok(None)));
                         let rows = roster.lock().unwrap().snapshot();
                         let Some(row) = rows
@@ -1207,7 +1351,12 @@ pub(super) fn run(
                             let _ = request.reply.send(json!({"type":"ack","id":id,"ok":false,"error":"Student is offline"}));
                             continue;
                         };
-                        if let Some(child) = files_windows.get(&row.instance_id) {
+                        let window_key = if terminal_window {
+                            format!("terminal:{}", super::classroom_tools::nonce()?)
+                        } else {
+                            row.instance_id.clone()
+                        };
+                        if let Some(child) = files_windows.get(&window_key) {
                             snapshot.observe_focus.0 = format!("files:{}", row.instance_id);
                             snapshot.observe_focus.1 += 1;
                             snapshot.observe_focus.2 = child.id();
@@ -1217,7 +1366,11 @@ pub(super) fn run(
                             Err("Close a file window before opening another")
                         } else if let Some(console) = console {
                             match std::process::Command::new(console)
-                                .arg("--files-id")
+                                .arg(if terminal_window {
+                                    "--terminal-id"
+                                } else {
+                                    "--files-id"
+                                })
                                 .arg(&row.instance_id)
                                 .arg("--files-name")
                                 .arg(&row.hostname)
@@ -1231,7 +1384,7 @@ pub(super) fn run(
                                     snapshot.observe_focus.2 = child.id();
                                     publish_due = Instant::now();
                                     info!(student_id=%row.instance_id,pid=child.id(),"File window launched");
-                                    files_windows.insert(row.instance_id.clone(), child);
+                                    files_windows.insert(window_key, child);
                                     Ok(())
                                 }
                                 Err(error) => {
@@ -1373,7 +1526,10 @@ pub(super) fn run(
                             }
                             Ok(target) => {
                                 let label = target.label();
-                                source_switch.queue(target).map(|()| {
+                                let preview_path = command.input["preview_path"]
+                                    .as_str()
+                                    .map(str::to_owned);
+                                source_switch.queue(target, preview_path).map(|()| {
                                     snapshot.next_source = Some(label.clone());
                                     snapshot.phase = "switching".into();
                                     snapshot.error = None;
@@ -1413,14 +1569,22 @@ pub(super) fn run(
                                     Arc::clone(&observe_jobs),
                                 );
                             let setup = control_view.and_then(|view| {
-                                let child = std::process::Command::new(console.unwrap())
+                                let mut launch = std::process::Command::new(console.unwrap());
+                                launch
                                     .arg("--observe-id")
                                     .arg(&source.instance_id)
                                     .arg("--observe-name")
                                     .arg(&source.hostname)
+                                    .arg("--observe-ip")
+                                    .arg(source.endpoint.ip().to_string())
                                     .arg("--ipc-file")
-                                    .arg(path)
-                                    .spawn()?;
+                                    .arg(path);
+                                if let Some(preview) =
+                                    command.input["preview_path"].as_str()
+                                {
+                                    launch.arg("--observe-preview").arg(preview);
+                                }
+                                let child = launch.spawn()?;
                                 Ok((view, child))
                             });
                             let (view, child) = match setup {
@@ -1708,8 +1872,10 @@ mod tests {
     #[test]
     fn source_switch_waits_for_old_worker_and_keeps_one_target() {
         let mut handoff = SourceSwitch::default();
-        handoff.queue(SourceTarget::Student("A".into())).unwrap();
-        assert!(handoff.queue(SourceTarget::Teacher).is_err());
+        handoff
+            .queue(SourceTarget::Student("A".into()), None)
+            .unwrap();
+        assert!(handoff.queue(SourceTarget::Teacher, None).is_err());
         assert!(handoff.ready(true).is_none());
         let next = handoff.ready(false).unwrap();
         assert_eq!(next.action, "share_student");
@@ -1719,13 +1885,13 @@ mod tests {
     #[test]
     fn source_switch_stop_cancels_pending_start_and_deadline_is_bounded() {
         let mut handoff = SourceSwitch::default();
-        handoff.queue(SourceTarget::Teacher).unwrap();
+        handoff.queue(SourceTarget::Teacher, None).unwrap();
         let began = handoff.0.as_ref().unwrap().1;
         assert!(!handoff.expired(began + Duration::from_secs(9)));
         assert!(handoff.expired(began + Duration::from_secs(10)));
         handoff.cancel();
         assert!(handoff.ready(false).is_none());
-        handoff.queue(SourceTarget::Teacher).unwrap();
+        handoff.queue(SourceTarget::Teacher, None).unwrap();
         assert_eq!(handoff.ready(false).unwrap().action, "share_class");
     }
     #[test]

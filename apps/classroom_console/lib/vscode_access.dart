@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'agent.dart';
 
@@ -52,6 +53,10 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
   List<_Extension> extensions = [];
   Set<String> selected = {};
   bool enabled = false;
+  bool baselineEnabled = false;
+  Set<String> baselineSelected = {};
+  bool get changed =>
+      enabled != baselineEnabled || !setEquals(selected, baselineSelected);
   List<String> fetchErrors = [];
   final search = TextEditingController();
   bool busy = false;
@@ -116,6 +121,8 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
     copilot = agent.preferences['copilot_network_block'] == true;
     final previous = agent.preferences['vscode_allowed'];
     if (previous is List) selected = previous.map((v) => '$v').toSet();
+    baselineEnabled = enabled;
+    baselineSelected = Set.of(selected);
   }
 
   void waitForAgent() {
@@ -322,7 +329,7 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
   }
 
   Future<void> apply() async {
-    if (busy) return;
+    if (busy || !changed) return;
     if (enabled && selected.isEmpty) {
       setState(
         () =>
@@ -350,7 +357,6 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
       ),
     );
     if (!mounted || confirmedByTeacher != true) return;
-    save();
     setState(() {
       busy = true;
       applied = false;
@@ -406,6 +412,11 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
     setState(() {
       busy = false;
       applied = confirmed;
+      if (confirmed) {
+        baselineEnabled = enabled;
+        baselineSelected = Set.of(selected);
+        save();
+      }
       error =
           confirmationError ??
           (confirmed
@@ -523,10 +534,12 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
                           children: [
                             Switch(
                               value: enabled,
-                              onChanged: (v) => setState(() {
-                                enabled = v;
-                                applied = false;
-                              }),
+                              onChanged: busy
+                                  ? null
+                                  : (v) => setState(() {
+                                      enabled = v;
+                                      applied = false;
+                                    }),
                             ),
                             const SizedBox(width: 4),
                             const Text(
@@ -626,14 +639,16 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
                                           : null,
                                       dense: true,
                                       value: checked,
-                                      onChanged: (v) => setState(() {
-                                        applied = false;
-                                        if (v == true) {
-                                          selected.add(e.id);
-                                        } else {
-                                          selected.remove(e.id);
-                                        }
-                                      }),
+                                      onChanged: busy
+                                          ? null
+                                          : (v) => setState(() {
+                                              applied = false;
+                                              if (v == true) {
+                                                selected.add(e.id);
+                                              } else {
+                                                selected.remove(e.id);
+                                              }
+                                            }),
                                       title: Row(
                                         children: [
                                           Expanded(
@@ -766,18 +781,10 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.end,
                     children: [
-                      TextButton(
-                        onPressed: busy || copilotBusy
-                            ? null
-                            : () {
-                                save();
-                                agent.finishApplication();
-                              },
-                        child: Text(applied ? 'Close' : 'Cancel'),
-                      ),
-                      const SizedBox(width: 8),
                       FilledButton.icon(
-                        onPressed: busy || copilotBusy || loading ? null : apply,
+                        onPressed: busy || copilotBusy || loading || !changed
+                            ? null
+                            : apply,
                         icon: busy
                             ? const SizedBox(
                                 width: 16,
@@ -832,7 +839,7 @@ class _CopilotRow extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                'GitHub Copilot / Copilot Chat',
+                'Block GitHub Copilot / Copilot Chat',
                 style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
               ),
               const Text(
@@ -856,7 +863,7 @@ class _CopilotRow extends StatelessWidget {
           )
         else
           Text(
-            '$applied/$eligible applied',
+            '$applied/$eligible PC blocked',
             style: TextStyle(
               fontSize: 12,
               fontWeight: FontWeight.w700,

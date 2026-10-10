@@ -29,6 +29,37 @@ pub struct ObserveRequests {
     /// Teacher's enhanced-profile offer (codecs it decodes, fps ceiling).
     offer: (Vec<String>, u32),
 }
+
+struct BroadcastBadgeSuppression {
+    active: Arc<AtomicBool>,
+    applied: Arc<AtomicBool>,
+}
+impl BroadcastBadgeSuppression {
+    fn start(state: &Arc<AtomicBool>, applied: &Arc<AtomicBool>) -> Self {
+        applied.store(false, Ordering::Release);
+        state.store(true, Ordering::Release);
+        Self {
+            active: Arc::clone(state),
+            applied: Arc::clone(applied),
+        }
+    }
+}
+impl Drop for BroadcastBadgeSuppression {
+    fn drop(&mut self) {
+        self.active.store(false, Ordering::Release);
+        self.applied.store(false, Ordering::Release);
+    }
+}
+fn wait_badge_hidden(applied: &AtomicBool) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !applied.load(Ordering::Acquire) {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    true
+}
 impl ObserveRequests {
     pub fn with_offer(offer: (Vec<String>, u32)) -> Self {
         Self {
@@ -485,6 +516,8 @@ pub fn student(
     address: SocketAddrV4,
     identity: String,
     presenting: Arc<AtomicBool>,
+    badge_broadcast_suppressed: Arc<AtomicBool>,
+    badge_broadcast_suppression_applied: Arc<AtomicBool>,
     config: classroom_config::Config,
 ) -> Worker {
     let runtime = tokio::runtime::Handle::current();
@@ -503,6 +536,8 @@ pub fn student(
                     &mut stream,
                     &identity,
                     &presenting,
+                    &badge_broadcast_suppressed,
+                    &badge_broadcast_suppression_applied,
                     &canceled,
                     &config,
                     &runtime,
@@ -526,6 +561,8 @@ fn capture_requests(
     socket: &mut TcpStream,
     identity: &str,
     presenting: &Arc<AtomicBool>,
+    badge_broadcast_suppressed: &Arc<AtomicBool>,
+    badge_broadcast_suppression_applied: &Arc<AtomicBool>,
     stop: &AtomicBool,
     config: &classroom_config::Config,
     runtime: &tokio::runtime::Handle,
@@ -539,6 +576,7 @@ fn capture_requests(
         }),
     )?;
     let mut publisher: Option<super::observation::Publisher> = None;
+    let mut badge_suppression: Option<BroadcastBadgeSuppression> = None;
     let mut capture: Option<PlatformCapture> = None;
     let mut retiring = CaptureRetirement::default();
     let mut sequence = 0_u64;
@@ -551,6 +589,7 @@ fn capture_requests(
             let requested_at = Instant::now();
             let mut response = protocol::ObserveMessage::default();
             if command.action == "start" && !presenting.load(Ordering::Acquire) {
+                badge_suppression.take();
                 publisher.take();
                 if let Some(old) = capture.take() {
                     retiring.retire(old)?;
@@ -559,24 +598,39 @@ fn capture_requests(
                 let SocketAddr::V4(local) = socket.local_addr()? else {
                     anyhow::bail!("IPv4 required")
                 };
-                match super::observation::Publisher::start(
-                    config,
-                    &command,
-                    *local.ip(),
-                    runtime,
-                    Arc::clone(presenting),
-                    match socket.peer_addr()? {
-                        SocketAddr::V4(p) => *p.ip(),
-                        SocketAddr::V6(_) => anyhow::bail!("IPv4 Observe peer required"),
-                    },
-                ) {
-                    Ok(p) => {
-                        response.port = u32::from(p.port);
-                        response.token.clone_from(&p.token);
-                        response.codec.clone_from(&p.profile);
-                        publisher = Some(p);
+                if command.class_broadcast {
+                    badge_suppression = Some(BroadcastBadgeSuppression::start(
+                        badge_broadcast_suppressed,
+                        badge_broadcast_suppression_applied,
+                    ));
+                }
+                let can_start = !command.class_broadcast
+                    || wait_badge_hidden(badge_broadcast_suppression_applied);
+                if !can_start {
+                    response.error = "Could not confirm monitoring badge hidden".into();
+                } else {
+                    match super::observation::Publisher::start(
+                        config,
+                        &command,
+                        *local.ip(),
+                        runtime,
+                        Arc::clone(presenting),
+                        match socket.peer_addr()? {
+                            SocketAddr::V4(p) => *p.ip(),
+                            SocketAddr::V6(_) => anyhow::bail!("IPv4 Observe peer required"),
+                        },
+                    ) {
+                        Ok(p) => {
+                            response.port = u32::from(p.port);
+                            response.token.clone_from(&p.token);
+                            response.codec.clone_from(&p.profile);
+                            publisher = Some(p);
+                        }
+                        Err(e) => response.error = format!("{e:#}"),
                     }
-                    Err(e) => response.error = format!("{e:#}"),
+                }
+                if publisher.is_none() {
+                    badge_suppression.take();
                 }
             } else {
                 response.error = "Student is watching a presentation".into();
@@ -603,6 +657,7 @@ fn capture_requests(
             .is_some_and(super::observation::Publisher::is_finished)
         {
             publisher.take();
+            badge_suppression.take();
         }
         // Read control immediately after each response. Rate-limit only snapshots,
         // never the Observe command waiting on this connection.
@@ -622,6 +677,7 @@ fn capture_requests(
         };
         if presenting.load(Ordering::Acquire) {
             publisher.take();
+            badge_suppression.take();
             capture = None;
             previous = None;
             frame.state = "paused".into();
@@ -891,6 +947,8 @@ mod tests {
                 &mut student,
                 "test",
                 &Arc::new(AtomicBool::new(true)),
+                &Arc::new(AtomicBool::new(false)),
+                &Arc::new(AtomicBool::new(false)),
                 &canceled,
                 &classroom_config::Config::load(None).unwrap().0,
                 runtime.handle(),

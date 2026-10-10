@@ -1,3 +1,168 @@
+# 2026-10-10 — Repair Observe startup texture readiness deadlock
+
+Owner reported Observe stuck at Connecting after the blurred-preview change.
+Runtime observe-ui logs confirmed source_sequence advancing (145 to 405),
+connected=true, but sequence=0 and copy_attempts=0. The earlier diagnosis that
+native connectivity was delaying readiness was incomplete: Flutter Texture was
+not mounted until its copied sequence advanced, which requires rendering that
+Texture first. Keep Texture mounted below the loading overlay, then fade away
+only the overlay over 500 ms after copied pixels are ready. Initial/reconnect
+labels remain separate. The regression now models source frames arriving before
+copied frames and asserts Texture is present during loading. Focused startup
+regression, Dart format and git diff --check passed.
+
+Paired build `paired-observe-texture-startup-fix-20261010` completed (Teacher,
+Mac Student, Windows x64 Student and bundled fresh ZIPs), installed at the stable
+Teacher path and restarted. Actual Observe windows passed on Mac `.2` and
+Windows `.94`: 1920x1080 native pixels copied, sequences 98/108 and measured
+render intervals 15.31/19.73 FPS. This is startup repair evidence, not a sustained
+performance benchmark. Both test windows were closed after verification;
+Teacher remains running. No Student redeploy or privacy grant change.
+Evidence: `target/observe-texture-startup-runtime.json` and
+`target/build-observe-texture-startup-fix.log`. Exact next step: owner visually
+checks initial blur/fade and normal Observe/Control use.
+
+# 2026-10-10 — Blurred thumbnail preview while opening Observe/Control
+
+Observe/Control windows now use the selected Student's latest roster thumbnail
+as a temporary blurred background while the live media path initializes. The
+preview is staged only when its reported age is at most 10 seconds, deleted
+after the child window reads it, and omitted when unavailable (including the
+ListView/no-thumbnail case). A 500 ms fade transitions to the live texture only
+after a fresh frame is available. “Control & present Student” carries the same
+preview through the deferred source-switch handoff. Existing reconnect UI is
+unchanged.
+
+Paired build `paired-observe-thumbnail-loading-20261010` completed for Teacher,
+Mac Student and Windows x64 Student; Teacher bundles the fresh Student ZIP.
+Teacher was installed at `target/present-recovery-build/Classroom Console.app`,
+build ID `1791607385-paired-observe-thumbnail-loading-20261010`, and IPC became
+ready with Mac Student `.2` online. The current roster did not report Windows
+`.94` online. No Student was redeployed. Dart format and `git diff --check`
+passed. No tests were run. Runtime visual confirmation of the blurred preview
+and 500 ms live transition remains pending.
+
+# 2026-10-10 — Keep initial Observe loading state until native media is live
+
+The initial Observe surface could briefly present reconnect UI because a cached
+native sequence was treated as enough to end fast startup polling, even while
+the receiver reported `connected=false`. `live` now requires the native receiver
+to be connected, startup polling stays at 100 ms until live/error/timeout, and
+the blurred thumbnail remains until the first usable live frame. Reconnect UI
+and the last Student frame are retained only after the session has been live
+once. A regression test covers initial `connected=false` followed by true.
+
+Teacher presentation controls now distinguish sharing the Teacher screen from
+presenting a Student. Labels explain the audience and action, a divider separates
+the Student-specific controls, and the Control/present action is hidden while
+the Teacher screen is being shared; that state exposes Stop sharing. Student
+source switching and Back to Teacher remain available while a Student source is
+being presented. The per-Student context menu uses the same clearer label and
+is disabled during Teacher-screen sharing.
+
+Focused Flutter verification passed: the new Observe startup regression,
+`source_switch_test.dart`, and `widget_test.dart`. The full
+`observe_test.dart` suite still has failures in older cases whose test agents do
+not declare the Student online and whose 800 px test window overflows the
+existing Observe toolbar by 57 px; those are outside this patch. `dart format`
+and `git diff --check` passed.
+
+Paired build `paired-observe-first-live-toolbar-v2-20261010` completed for
+Teacher, Mac Student and Windows x64 Student. Teacher is installed at
+`target/present-recovery-build/Classroom Console.app`, build ID
+`1791608444-paired-observe-first-live-toolbar-v2-20261010`. IPC became ready;
+Mac `.2` and Windows `.94` are online. Students were not redeployed. Runtime
+visual confirmation of the startup transition remains pending. See
+`apps/classroom_console/lib/observe.dart` and `main.dart`.
+
+# 2026-10-10 — Keep Teacher capture errors out of Observe/Control windows
+
+The Observe UI previously fell back to `Agent.error`, which mirrors the
+Teacher-wide snapshot error. A Teacher ScreenCaptureKit/TCC failure could
+therefore appear inside an unrelated Student Observe/Control window. The window
+now renders only its own view/mode/native errors and shows the shared connection
+error only when its IPC connection is down. The Teacher console continues to
+receive the global error. Paired build
+`paired-observe-error-scope-20261010` completed and was installed at the stable
+Teacher path, build ID `1791606965-paired-observe-error-scope-20261010`. Both
+`.94` and `.2` reconnected online. Dart formatter and `git diff --check` passed;
+no automated/runtime reproduction was run. Manual confirmation with an open
+Observe window and a separate denied Teacher share remains. See `observe.dart`.
+
+# 2026-10-10 — Add Student IP to Observe/Control window title
+
+Teacher now passes the selected Student endpoint IP alongside its hostname when
+opening the independent Observe window. The native window title keeps the IP
+while changing its mode label between `Observe` and `Control`. Paired build
+`paired-observe-window-title-ip-20261010` completed and was installed at the
+stable Teacher path; build ID `1791606608-paired-observe-window-title-ip-20261010`.
+Mac `.2` and Windows `.94` reconnected online. Dart formatter reported no changes
+and `git diff --check` passed. No runtime title screenshot or automated tests run.
+See the current change in `apps/classroom/src/teacher_agent.rs`,
+`apps/classroom_console/lib/main.dart`, and `apps/classroom_console/lib/observe.dart`.
+
+# 2026-10-10 — Temporarily hide monitoring badge during classroom sharing
+
+When a Student receives a Teacher or class-source presentation, its badge
+overlay is destroyed for the presentation duration while the desired ON state
+and persisted preference remain unchanged. A Student selected as class source
+sets suppression before capture and waits for UI-thread confirmation that the
+overlay is hidden; if it cannot confirm within two seconds, capture fails closed
+instead of broadcasting badge pixels. Overlay is recreated after sharing ends.
+
+Paired build `paired-badge-hide-during-sharing-v2-20261010` completed for Teacher,
+Mac Student and Windows x64 Student/Guard. Teacher installed at
+`target/present-recovery-build`, build ID
+`1791605670-paired-badge-hide-during-sharing-v2-20261010`. Windows `.94` updated
+and confirmed build ID `1791605697-paired-badge-hide-during-sharing-v2-20261010`.
+Mac `.2` received the update but did not reconnect, so Classroom automatically
+restored its previous binary; it is currently online on the prior build. Build
+and runtime share-flow behavior remain unverified on Mac. No tests were run per
+workflow direction; `git diff --check` passed. Teacher/student suppression still
+needs a manual share/stop check on the available endpoints. See badge diagnostics.
+
+# 2026-10-10 — Monitoring Badge toggle UI refinement
+
+Distinguished badge controls from Activity Monitoring by using a badge icon in
+the toolbar/menu/dialog. The bulk dialog now has one state-aware action (turn on,
+turn off, or turn on for all when a selection is mixed). Right-click toggles one
+Student directly with a state-aware label and no confirmation. Flutter format,
+analyze and `git diff --check` passed. Paired build
+`paired-badge-toggle-ui-20261010` rebuilt Teacher and both Student packages;
+Teacher is installed at the stable path and running build ID
+`1791604992-paired-badge-toggle-ui-20261010`. Both `.2` and `.94` are online.
+Student packages were built but not deployed because this revision only changes
+Teacher UI. Manual visual confirmation of the new controls remains. See the
+earlier badge diagnostics below.
+
+# 2026-10-10 — Student Monitoring Badge, bulk control and 75% background
+
+Teacher toolbar now explains that the eye button opens the badge controls for
+selected Students, or the whole room when none are selected. Per-computer context
+menu remains available. The red background is composited at 75%; text and pulsing
+dot stay opaque. Badge state persists through disconnect and Teacher restart, and
+only an explicit Teacher OFF removes it.
+
+Paired release `paired-monitoring-badge-final-20261010` rebuilt Teacher, Mac
+Student and Windows x64 Student/Guard from one source tree. Teacher was installed
+at `target/present-recovery-build`. Windows `.94` and Mac `.2` updated through the
+Teacher updater; the first Mac attempt rolled back after a reconnect timeout, so
+it was retried after Teacher restart. The retry completed with the exact version
+and build ID, and both Students are online.
+
+Verification: five focused Rust badge tests passed; Flutter analyze and the
+focused dialog test passed. On both real Students, the runtime test passed bulk
+enable/native display acknowledgement, individual OFF isolation, latest-command
+ordering, and five repeated native create/destroy cycles; prior preferences were
+restored. A Teacher restart while both badges were ON also preserved desired state
+and both Students reconnected with ON acknowledgements. The subsequent Mac retry
+was again verified by the same dual-Student runtime test. An external Windows
+EnumWindows probe via scheduled task did not return its JSON; Windows Student's
+native overlay/style checks and display acknowledgement ran successfully, but the
+separate external style enumeration remains unverified. 35–40 physical Windows
+PC validation remains a classroom follow-up. See
+`diagnostics/2026-10-10-student-monitoring-badge.md`.
+
 ## 2026-10-10 — Windows .94 Copilot enforcement retest
 
 Fixed invalid WFP_UINT8 weight 16 and Guard mutex blocking tools heartbeat during
@@ -4335,3 +4500,25 @@ of the mismatch remains unproven. Mac check and Flutter analyze passed; paired
 build and Teacher/Windows deployment complete, no automated tests run. Windows
 reconnected and confirmed the new build; Apply/Chat checks remain manual. See
 [evidence and limits](diagnostics/2026-10-09-vscode-policy-confirmation.md).
+
+## 2026-10-10 — Native Remote Terminal, runtime work in progress
+
+Implemented native ConPTY/POSIX PTY with pinned TLS, managed pairing,
+non-elevated Windows shell, bounded streaming/reconnect and native Flutter xterm;
+updated Copilot dialog labels and dirty-state Apply. Paired build
+`paired-native-terminal-interrupt-20261010` deployed to Teacher, Windows `.94`,
+and Mac `.2`. Both Students online. Windows native commands, resize, ordinary
+user token, UI reconnect and immediate output passed. **Ctrl+C does not yet stop
+ping; full terminal acceptance and network reconnect fixture remain pending.**
+Existing Flutter 9 failures also reproduce at clean HEAD; Guard 15 tests pass.
+See [runtime checkpoint](diagnostics/2026-10-10-native-remote-terminal.md).
+
+Mac `.2` requires manual privacy grants for:
+`/Users/mvmanh/Classroom/Classroom Student.app` (Screen Recording, Accessibility).
+Teacher recording after signing requires:
+`/Users/mvmanh/Development/netsupport-school/target/present-recovery-build/Classroom Console.app`
+and its `Contents/Helpers/Classroom Agent.app`; restart after grants.
+Do not automate privacy changes. Owner additionally requested a Windows CMD
+Unix-like command compatibility layer with tests; this is not implemented or
+shipped yet. Resume with permission/restart, Ctrl+C repair, Mac zsh validation,
+then compatibility implementation and one consolidated paired build.

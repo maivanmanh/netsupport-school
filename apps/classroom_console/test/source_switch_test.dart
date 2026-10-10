@@ -56,7 +56,7 @@ void main() {
       );
       final agent = SwitchAgent()
         ..state = {
-          'phase': 'sharing',
+          'phase': 'idle',
           'source_id': null,
           'students': [
             {
@@ -76,10 +76,19 @@ void main() {
       await tester.pumpWidget(ClassroomApp(agent: agent));
       await tester.pumpAndSettle();
       expect(find.text('Set up macOS permissions'), findsNothing);
+      agent.state['phase'] = 'sharing';
+      agent.notifyListeners();
+      await tester.pumpAndSettle();
+      expect(find.text('Stop sharing'), findsOneWidget);
+      expect(find.text('Control Student + present to class'), findsNothing);
+      agent.state['phase'] = 'idle';
+      agent.notifyListeners();
+      await tester.pumpAndSettle();
+      windowCalls.clear();
       // Context-menu target works without enabling checkbox selection.
       await tester.tap(find.text('Student B'), buttons: kSecondaryMouseButton);
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Control & present Student'));
+      await tester.tap(find.text('Control Student + present to class'));
       await tester.pumpAndSettle();
       expect(agent.commands.last.$1, 'switch_source');
       expect(agent.commands.last.$2, ['B']);
@@ -87,13 +96,13 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.byType(Checkbox).first);
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Control & present Student'));
+      await tester.tap(find.text('Control Student + present to class'));
       await tester.pumpAndSettle();
       expect(agent.commands.last.$1, 'switch_source');
       expect(agent.commands.last.$2, ['A']);
       agent.rejection =
           'Close Observe/Control windows before presenting a Student';
-      await tester.tap(find.text('Control & present Student'));
+      await tester.tap(find.text('Control Student + present to class'));
       await tester.pump();
       // Even an immediate authoritative state update cannot erase the feedback.
       agent.error = null;
@@ -115,7 +124,10 @@ void main() {
       expect(
         tester
             .widget<OutlinedButton>(
-              find.widgetWithText(OutlinedButton, 'Control & present Student'),
+              find.widgetWithText(
+                OutlinedButton,
+                'Control Student + present to class',
+              ),
             )
             .onPressed,
         isNull,
@@ -123,10 +135,10 @@ void main() {
       await tester.tap(find.byType(Checkbox).first);
       await tester.tap(find.byType(Checkbox).at(1));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Control & present Student'));
+      await tester.tap(find.text('Control Student + present to class'));
       expect(agent.commands.last.$1, 'switch_source');
       expect(agent.commands.last.$2, ['B']);
-      await tester.tap(find.text('Back to Teacher'));
+      await tester.tap(find.text('Back to Teacher screen'));
       expect(agent.commands.last.$1, 'switch_source');
       expect(agent.commands.last.$2, isEmpty);
       (agent.state['students'] as List)[1]['online'] = false;
@@ -136,7 +148,10 @@ void main() {
       expect(
         tester
             .widget<OutlinedButton>(
-              find.widgetWithText(OutlinedButton, 'Control & present Student'),
+              find.widgetWithText(
+                OutlinedButton,
+                'Control Student + present to class',
+              ),
             )
             .onPressed,
         isNull,

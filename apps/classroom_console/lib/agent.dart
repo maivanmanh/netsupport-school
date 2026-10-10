@@ -71,7 +71,10 @@ class Agent extends ChangeNotifier {
       option('--files-id') != null ||
       option('--activity-id') != null ||
       option('--internet-ids') != null ||
-      option('--vscode-ids') != null;
+      option('--vscode-ids') != null ||
+      option('--terminal-id') != null;
+  // Terminal windows share the authenticated coordinator, but stream raw bytes
+  // over their own bounded attachment rather than roster snapshots.
   String? pendingObserveFocus;
 
   void ingestState(Map<String, dynamic> value) {
@@ -676,11 +679,21 @@ class Agent extends ChangeNotifier {
     pendingObserveFocus = '${row['id']}';
     notice = 'Opening Observe · ${row['name']}';
     notifyListeners();
+    String? previewPath;
+    try {
+      previewPath = await stageObservePreview(row);
+    } catch (e) {
+      await log('Observe preview staging failed: $e');
+    }
     final bounds = await windowManager.getBounds();
     await command(
       'observe_window',
       ['${row['id']}'],
-      {'center_x': bounds.center.dx, 'center_y': bounds.center.dy},
+      {
+        'center_x': bounds.center.dx,
+        'center_y': bounds.center.dy,
+        if (previewPath != null) 'preview_path': previewPath,
+      },
     );
     // Give immediate feedback during native engine startup. Repeated clicks
     // are coalesced by the persistent Rust coordinator and focus its window.
@@ -692,6 +705,23 @@ class Agent extends ChangeNotifier {
         notifyListeners();
       }
     });
+  }
+
+  Future<String?> stageObservePreview(Map<String, dynamic> row) async {
+    final id = '${row['id']}';
+    final age = (row['thumbnail_age_ms'] as num?)?.toInt();
+    final bytes = images[id];
+    if (age == null || age > 10000 || bytes == null || bytes.isEmpty) {
+      return null;
+    }
+    final directory = dataDirectory;
+    if (directory == null) return null;
+    final previews = Directory('${directory.path}/observe-previews');
+    await previews.create(recursive: true);
+    final safeId = id.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
+    final file = File('${previews.path}/$safeId.jpg');
+    await file.writeAsBytes(bytes, flush: true);
+    return file.path;
   }
 
   // Small high-rate input bypasses command progress/ack waits. The socket, Rust

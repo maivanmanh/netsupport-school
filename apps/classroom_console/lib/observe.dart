@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -23,9 +24,12 @@ class ObserveWindow extends StatefulWidget {
     required this.agent,
     required this.studentId,
     required this.name,
+    this.ip = '',
+    this.previewImage,
   });
   final Agent agent;
-  final String studentId, name;
+  final String studentId, name, ip;
+  final Uint8List? previewImage;
   @override
   State<ObserveWindow> createState() => _ObserveWindowState();
 }
@@ -49,6 +53,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
   String? lastFrameSurface;
   bool openingObserve = false;
   bool previouslyOnline = true;
+  bool hasEverBeenLive = false;
   int reconnectAttempts = 0;
   bool reconnecting = false;
   String? lastStateSignature;
@@ -228,7 +233,9 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
 
   void syncWindowTitle() {
     final controlling = mode != 'observe' && view['phase'] == 'live';
-    final title = '${controlling ? 'Control' : 'Observe'} · ${widget.name}';
+    final address = widget.ip.isEmpty ? '' : ' · ${widget.ip}';
+    final title =
+        '${controlling ? 'Control' : 'Observe'} · ${widget.name}$address';
     if (title == lastWindowTitle) return;
     lastWindowTitle = title;
     unawaited(windowManager.setTitle(title));
@@ -331,6 +338,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
       studentOnline &&
       path == view['surface'] &&
       !reconnecting &&
+      stats['connected'] != false &&
       (stats['sequence'] as num? ?? 0) > 0;
   bool get studentOnline => widget.agent.students.any(
     (row) => row['id'] == widget.studentId && row['online'] == true,
@@ -584,6 +592,11 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
 
   void reconcileRecovery() {
     if (!mounted || closing || !started || classControl) return;
+    // The initial startup window can briefly have a texture/statistics surface
+    // before the first usable frame is confirmed. Keep showing the blurred
+    // thumbnail until `live` is true; reconnect UI is only valid after a real
+    // session has first been established.
+    if (live) hasEverBeenLive = true;
     final now = recoveryClock.elapsed;
     final online = studentOnline;
     final returnedOnline = online && !previouslyOnline;
@@ -768,7 +781,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
     } finally {
       if (fastPolling &&
           !closing &&
-          (firstFrameLogged ||
+          (live ||
               view['phase'] == 'error' ||
               view['phase'] == 'ended' ||
               (fastPollUntil != null &&
@@ -1018,6 +1031,60 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
   }
 
   Widget video(Size size, {Size? source, BoxFit? fit}) {
+    Widget pendingPreview() {
+      final preview = widget.previewImage;
+      return Stack(
+        fit: StackFit.expand,
+        children: [
+          if (preview != null)
+            ImageFiltered(
+              imageFilter: ui.ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+              child: Image.memory(
+                preview,
+                fit: BoxFit.cover,
+                filterQuality: FilterQuality.medium,
+                gaplessPlayback: true,
+              ),
+            )
+          else
+            const ColoredBox(color: Color(0xff17212b)),
+          ColoredBox(color: Colors.black.withValues(alpha: 0.38)),
+          Center(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 13),
+              decoration: BoxDecoration(
+                color: const Color(0xb51a2631),
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(color: const Color(0x55ffffff)),
+              ),
+              child: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SizedBox(
+                    width: 17,
+                    height: 17,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
+                  ),
+                  SizedBox(width: 12),
+                  Text(
+                    'Connecting to student…',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
     Widget textureView() {
       if (fit == BoxFit.cover &&
           source != null &&
@@ -1065,6 +1132,10 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
         ),
       );
     }
+
+    final surfaceReady =
+        texture != null &&
+        (live || (hasEverBeenLive && lastFreshFrame != null));
 
     return RepaintBoundary(
       key: screenshotBoundary,
@@ -1127,7 +1198,23 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
+                  // Keep the Texture in the render tree during startup. Native
+                  // `sequence` advances only when Flutter requests its pixels;
+                  // waiting for it before mounting Texture deadlocks readiness.
                   if (texture != null) textureView(),
+                  AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 500),
+                    switchInCurve: Curves.easeOutCubic,
+                    switchOutCurve: Curves.easeInCubic,
+                    transitionBuilder: (child, animation) =>
+                        FadeTransition(opacity: animation, child: child),
+                    child: KeyedSubtree(
+                      key: ValueKey(surfaceReady),
+                      child: surfaceReady
+                          ? const SizedBox.expand()
+                          : pendingPreview(),
+                    ),
+                  ),
                   if (controls && remoteCursor != null)
                     Positioned.fill(
                       child: IgnorePointer(
@@ -1165,22 +1252,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                         ),
                       ),
                     ),
-                  if (!live && lastFreshFrame == null)
-                    const ColoredBox(
-                      color: Color(0xff17212b),
-                      child: Center(
-                        child: Text(
-                          'Connecting to student…',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 24,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                    ),
-                  if (!live && lastFreshFrame != null)
+                  if (hasEverBeenLive && !live && lastFreshFrame != null)
                     ColoredBox(
                       color: Colors.black.withValues(alpha: 0.48),
                       child: Center(
@@ -1245,11 +1317,14 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
 
   @override
   Widget build(BuildContext context) {
+    // `agent.error` belongs to the shared Teacher snapshot (for example,
+    // Teacher ScreenCaptureKit failures). Never show that unrelated error in
+    // this Student's Observe/Control window while the IPC connection is live.
     final error =
         modeError ??
         nativeError ??
         view['error'] as String? ??
-        widget.agent.error;
+        (widget.agent.connected ? null : widget.agent.error);
     return Scaffold(
       body: DropTarget(
         enable: !closing && !preparingFile,

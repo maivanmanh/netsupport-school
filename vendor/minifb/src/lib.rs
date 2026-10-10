@@ -411,6 +411,8 @@ impl Window {
     pub fn get_window_handle(&self) -> *mut c_void {
         self.0.get_window_handle()
     }
+    #[cfg(windows)]
+    pub fn extended_style(&self) -> isize { self.0.extended_style() }
 
     /// Updates the window with a 32-bit pixel buffer. The encoding for each pixel is `0RGB`:
     /// The upper 8-bits are ignored, the next 8-bits are for the red channel, the next 8-bits
@@ -568,6 +570,12 @@ impl Window {
     pub fn update_alpha_overlay(&mut self, pixels: &[u32], width: usize, height: usize) -> Result<()> {
         self.0.update_alpha_overlay(pixels, width, height)
     }
+    #[cfg(windows)]
+    pub fn update_alpha_overlay_opacity(&mut self, pixels: &[u32], width: usize, height: usize, opacity: u8) -> Result<()> {
+        self.0.update_alpha_overlay_opacity(pixels, width, height, opacity)
+    }
+    #[cfg(windows)]
+    pub fn primary_overlay_geometry(&self) -> [isize; 4] { self.0.primary_overlay_geometry() }
     pub fn set_passive_overlay(&mut self, alpha: u8) {
         #[cfg(any(target_os = "windows", target_os = "macos"))]
         self.0.set_passive_overlay(alpha);

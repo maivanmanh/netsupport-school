@@ -91,13 +91,13 @@ void main() {
     await tester.tap(find.byType(Checkbox));
     await tester.pump(const Duration(milliseconds: 400));
     await tester.pumpAndSettle();
-    expect(find.text('Share selected (1)'), findsOneWidget);
+    expect(find.text('Share Teacher to selected (1)'), findsOneWidget);
     expect(tester.takeException(), isNull);
     tester.view.physicalSize = const Size(740, 520);
     await tester.pumpAndSettle();
     await tester.tap(find.byIcon(Icons.format_list_bulleted));
     await tester.pumpAndSettle();
-    expect(find.text('Share selected (1)'), findsOneWidget);
+    expect(find.text('Share Teacher to selected (1)'), findsOneWidget);
     expect(tester.takeException(), isNull);
     a.state['phase'] = 'starting';
     a.notifyListeners();
@@ -107,6 +107,7 @@ void main() {
     a.notifyListeners();
     await tester.pumpAndSettle();
     expect(find.text('Stop sharing'), findsOneWidget);
+    expect(find.text('Control Student + present to class'), findsNothing);
     expect(windowCalls.where((m) => m == 'minimize').length, 1);
     a.notifyListeners();
     await tester.pumpAndSettle();

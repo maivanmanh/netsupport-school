@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
@@ -16,11 +17,13 @@ import 'student_file_drop.dart';
 import 'file_collection.dart';
 import 'launch_apps.dart';
 import 'open_website.dart';
+import 'monitoring_badge.dart';
 import 'power_controls.dart';
 import 'internet_access.dart';
 import 'activity_window.dart';
 import 'files_window.dart';
 import 'vscode_access.dart';
+import 'remote_terminal.dart';
 
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -55,6 +58,7 @@ Future<void> main(List<String> args) async {
   final activityId = agent.option('--activity-id');
   final internetIds = agent.option('--internet-ids');
   final vscodeIds = agent.option('--vscode-ids');
+  final terminalId = agent.option('--terminal-id');
   const lifecycle = MethodChannel('classroom/lifecycle');
   lifecycle.setMethodCallHandler((call) async {
     if (call.method == 'reopenConsole' &&
@@ -62,12 +66,30 @@ Future<void> main(List<String> args) async {
             filesId != null ||
             activityId != null ||
             internetIds != null ||
-            vscodeIds != null)) {
+            vscodeIds != null ||
+            terminalId != null)) {
       await agent.command('show_console');
     }
   });
   Rect? observeBounds;
+  Uint8List? observePreview;
   if (observeId != null) {
+    final previewPath = agent.option('--observe-preview');
+    if (previewPath != null) {
+      final previewFile = File(previewPath);
+      try {
+        if (await previewFile.exists() &&
+            await previewFile.length() <= 4 * 1024 * 1024) {
+          observePreview = await previewFile.readAsBytes();
+        }
+      } catch (_) {
+        // The live Observe session still opens if the optional preview expired.
+      } finally {
+        try {
+          if (await previewFile.exists()) await previewFile.delete();
+        } catch (_) {}
+      }
+    }
     final x = double.tryParse(agent.option('--teacher-center-x') ?? '');
     final y = double.tryParse(agent.option('--teacher-center-y') ?? '');
     final center = x != null && y != null ? Offset(x, y) : null;
@@ -89,7 +111,17 @@ Future<void> main(List<String> args) async {
   final Widget home;
   final Size windowSize, minimumSize;
   final String title;
-  if (filesId != null) {
+  if (terminalId != null) {
+    final name = agent.option('--files-name') ?? 'Student';
+    home = RemoteTerminalWindow(
+      agent: agent,
+      studentId: terminalId,
+      name: name,
+    );
+    windowSize = const Size(1000, 650);
+    minimumSize = const Size(640, 400);
+    title = 'Remote Terminal · $name';
+  } else if (filesId != null) {
     final name = agent.option('--files-name') ?? 'Student';
     home = FilesWindow(agent: agent, studentId: filesId, name: name);
     windowSize = const Size(1180, 720);
@@ -127,13 +159,20 @@ Future<void> main(List<String> args) async {
     title = 'VS Code extensions · $audience';
   } else if (observeId != null) {
     final name = agent.option('--observe-name') ?? 'Student';
-    home = ObserveWindow(agent: agent, studentId: observeId, name: name);
+    final ip = agent.option('--observe-ip') ?? '';
+    home = ObserveWindow(
+      agent: agent,
+      studentId: observeId,
+      name: name,
+      ip: ip,
+      previewImage: observePreview,
+    );
     windowSize = observeBounds?.size ?? const Size(1280, 800);
     minimumSize = Size(
       (observeBounds?.width ?? 800).clamp(0, 800),
       (observeBounds?.height ?? 600).clamp(0, 600),
     );
-    title = 'Observe · $name';
+    title = 'Observe · $name${ip.isEmpty ? '' : ' · $ip'}';
   } else {
     home = ClassroomApp(agent: agent);
     windowSize = const Size(1280, 820);
@@ -145,7 +184,8 @@ Future<void> main(List<String> args) async {
       activityId != null ||
       internetIds != null ||
       vscodeIds != null ||
-      observeId != null;
+      observeId != null ||
+      terminalId != null;
   runApp(
     dependent
         ? MaterialApp(
@@ -347,10 +387,30 @@ class _ConsoleState extends State<Console> with WindowListener {
 
   Future<void> collectMenu(Map<String, dynamic> row, Offset at) async {
     if (row['online'] != true) return;
+    final studentId = '${row['id']}';
+    final badgeEnabled = badgeState(agent, studentId)['enabled'] == true;
     final choice = await showMenu<String>(
       context: context,
       position: RelativeRect.fromLTRB(at.dx, at.dy, at.dx, at.dy),
       items: [
+        PopupMenuItem(
+          value: 'monitoring_badge',
+          enabled: agent.connected && !agent.commandBusy,
+          child: ListTile(
+            dense: true,
+            leading: Icon(badgeEnabled ? Icons.badge : Icons.badge_outlined),
+            title: Text(badgeEnabled ? 'Tắt giám sát' : 'Bật giám sát'),
+            subtitle: Text(badgeLabel(agent, studentId)),
+          ),
+        ),
+        const PopupMenuItem(
+          value: 'terminal',
+          child: ListTile(
+            dense: true,
+            leading: Icon(Icons.terminal),
+            title: Text('Remote Terminal…'),
+          ),
+        ),
         const PopupMenuItem(
           value: 'files',
           child: ListTile(
@@ -382,17 +442,35 @@ class _ConsoleState extends State<Console> with WindowListener {
           enabled:
               agent.connected &&
               !agent.commandBusy &&
-              ['idle', 'sharing'].contains(agent.state['phase']) &&
+              (agent.state['phase'] == 'idle' ||
+                  (agent.state['phase'] == 'sharing' &&
+                      agent.state['source_id'] != null)) &&
               agent.state['source_id'] != row['id'],
           child: const ListTile(
             dense: true,
             leading: Icon(Icons.present_to_all),
-            title: Text('Control & present Student'),
+            title: Text('Control Student + present to class'),
           ),
         ),
       ],
     );
-    if (choice == 'files') {
+    if (!mounted) return;
+    if (choice == 'monitoring_badge') {
+      try {
+        await agent.commandChecked(
+          'monitoring_badge',
+          [studentId],
+          {'enabled': !badgeEnabled},
+        );
+      } catch (error) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Không đổi được trạng thái giám sát: $error')),
+        );
+      }
+    } else if (choice == 'terminal') {
+      await agent.command('terminal_window', ['${row['id']}']);
+    } else if (choice == 'files') {
       await agent.openFiles(row);
     } else if (choice == 'observe') {
       await inspect(row);
@@ -493,7 +571,21 @@ class _ConsoleState extends State<Console> with WindowListener {
 
   Future<void> presentStudent(Iterable<String> ids) async {
     try {
-      await agent.commandChecked('switch_source', ids, const {});
+      final selected = ids.toList();
+      String? previewPath;
+      if (selected.length == 1) {
+        try {
+          final row = agent.students.firstWhere(
+            (student) => student['id'] == selected.single,
+          );
+          previewPath = await agent.stageObservePreview(row);
+        } catch (error) {
+          await agent.log('Student broadcast preview staging failed: $error');
+        }
+      }
+      await agent.commandChecked('switch_source', selected, {
+        if (previewPath != null) 'preview_path': previewPath,
+      });
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -842,63 +934,65 @@ class _ConsoleState extends State<Console> with WindowListener {
                     final actions = Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        if (agent.connected &&
-                            (phase == 'idle' || phase == 'sharing')) ...[
-                          if (selected.length == 1) ...[
-                            Tooltip(
-                              message: onlineSelected.isEmpty
-                                  ? 'Selected Student is offline'
-                                  : 'Control this Student and present its screen to the class',
-                              child: OutlinedButton.icon(
-                                style: toolbarButton(),
-                                onPressed:
-                                    canSwitch &&
-                                        onlineSelected.length == 1 &&
-                                        onlineSelected.single != sourceId
-                                    ? () => presentStudent(onlineSelected)
-                                    : null,
-                                icon: const Icon(
-                                  Icons.present_to_all,
-                                  size: 16,
-                                ),
-                                label: const Text('Control & present Student'),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                          ],
-                          if (sourceId != null) ...[
-                            OutlinedButton.icon(
+                        if (agent.connected && phase == 'idle') ...[
+                          Tooltip(
+                            message:
+                                'Broadcast the Teacher screen to every online Student',
+                            child: FilledButton.icon(
                               style: toolbarButton(),
-                              onPressed: canSwitch
-                                  ? () => agent.command('switch_source')
+                              onPressed: idle && online > 0
+                                  ? () => agent.command('share_class')
                                   : null,
-                              icon: const Icon(
-                                Icons.screen_share_outlined,
-                                size: 16,
-                              ),
-                              label: const Text('Back to Teacher'),
+                              icon: const Icon(Icons.cast, size: 16),
+                              label: const Text('Share Teacher screen'),
                             ),
-                            const SizedBox(width: 8),
-                          ],
+                          ),
                         ],
-                        if (phase == 'sharing') ...[
-                          Text('Presenting: $sourceName'),
+                        if (agent.connected &&
+                            phase == 'idle' &&
+                            selected.isNotEmpty) ...[
+                          const SizedBox(width: 12),
+                          Container(
+                            width: 1,
+                            height: 28,
+                            color: const Color(0xffcbd4dc),
+                            margin: const EdgeInsets.symmetric(horizontal: 2),
+                          ),
+                          const SizedBox(width: 10),
+                        ],
+                        if (agent.connected &&
+                            (phase == 'idle' ||
+                                (phase == 'sharing' && sourceId != null)) &&
+                            selected.length == 1) ...[
+                          Tooltip(
+                            message: onlineSelected.isEmpty
+                                ? 'Selected Student is offline'
+                                : 'Open this Student in Control and broadcast their screen to the class',
+                            child: OutlinedButton.icon(
+                              style: toolbarButton(),
+                              onPressed:
+                                  canSwitch &&
+                                      onlineSelected.length == 1 &&
+                                      onlineSelected.single != sourceId
+                                  ? () => presentStudent(onlineSelected)
+                                  : null,
+                              icon: const Icon(Icons.present_to_all, size: 16),
+                              label: const Text(
+                                'Control Student + present to class',
+                              ),
+                            ),
+                          ),
                           const SizedBox(width: 8),
                         ],
-                        if (agent.connected && phase == 'idle') ...[
-                          FilledButton.icon(
-                            style: toolbarButton(),
-                            onPressed: idle && online > 0
-                                ? () => agent.command('share_class')
-                                : null,
-                            icon: const Icon(Icons.cast, size: 16),
-                            label: const Text('Share class'),
-                          ),
-                          if (onlineSelected.isNotEmpty) ...[
-                            const SizedBox(width: 8),
-                            OutlinedButton.icon(
+                        if (agent.connected &&
+                            phase == 'idle' &&
+                            selected.isNotEmpty)
+                          Tooltip(
+                            message:
+                                'Broadcast the Teacher screen only to the selected online Students',
+                            child: OutlinedButton.icon(
                               style: toolbarButton(),
-                              onPressed: idle
+                              onPressed: idle && onlineSelected.isNotEmpty
                                   ? () => agent.command(
                                       'share_selected',
                                       onlineSelected,
@@ -909,10 +1003,27 @@ class _ConsoleState extends State<Console> with WindowListener {
                                 size: 16,
                               ),
                               label: Text(
-                                'Share selected (${onlineSelected.length})',
+                                'Share Teacher to selected (${onlineSelected.length})',
                               ),
                             ),
-                          ],
+                          ),
+                        if (phase == 'sharing' && sourceId != null) ...[
+                          OutlinedButton.icon(
+                            style: toolbarButton(),
+                            onPressed: canSwitch
+                                ? () => agent.command('switch_source')
+                                : null,
+                            icon: const Icon(
+                              Icons.screen_share_outlined,
+                              size: 16,
+                            ),
+                            label: const Text('Back to Teacher screen'),
+                          ),
+                          const SizedBox(width: 10),
+                        ],
+                        if (phase == 'sharing') ...[
+                          Text('Presenting: $sourceName'),
+                          const SizedBox(width: 8),
                         ],
                         if (agent.connected &&
                             (phase == 'sharing' ||
@@ -990,6 +1101,26 @@ class _ConsoleState extends State<Console> with WindowListener {
                               Icons.rocket_launch_outlined,
                               size: 18,
                             ),
+                          ),
+                          IconButton(
+                            tooltip:
+                                'Đang giám sát • mở để bật/tắt ${selectionMode && selected.isNotEmpty ? 'các máy đã chọn' : 'toàn bộ phòng máy'}',
+                            visualDensity: VisualDensity.compact,
+                            onPressed:
+                                agent.connected &&
+                                    !agent.commandBusy &&
+                                    agent.students.isNotEmpty
+                                ? () => showMonitoringBadge(
+                                    context,
+                                    agent,
+                                    selectionMode && selected.isNotEmpty
+                                        ? selected.toList()
+                                        : agent.students
+                                              .map((r) => '${r['id']}')
+                                              .toList(),
+                                  )
+                                : null,
+                            icon: const Icon(Icons.badge_outlined, size: 18),
                           ),
                           IconButton(
                             tooltip: selectionMode && onlineSelected.isNotEmpty
@@ -1630,10 +1761,28 @@ class _ConsoleState extends State<Console> with WindowListener {
     final internet = restrictedStudents(agent)['${r['id']}'];
     final locked = lockedIds.contains(r['id']);
     final clipboardBlocked = clipboardBlockedIds.contains(r['id']);
-    if (!locked && !clipboardBlocked && internet == null) return dot;
+    final badge = badgeState(agent, '${r['id']}');
+    if (!locked &&
+        !clipboardBlocked &&
+        internet == null &&
+        badge['enabled'] != true &&
+        badge['status'] != 'error') {
+      return dot;
+    }
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
+        if (badge['enabled'] == true || badge['status'] == 'error')
+          Tooltip(
+            message: badgeLabel(agent, '${r['id']}'),
+            child: Icon(
+              Icons.visibility,
+              size: 15,
+              color: badge['status'] == 'applied'
+                  ? const Color(0xffc91f28)
+                  : const Color(0xffdb8a22),
+            ),
+          ),
         if (internet != null)
           Tooltip(
             message: 'Internet: ${modeLabel(internet)}',

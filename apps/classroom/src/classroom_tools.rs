@@ -217,6 +217,8 @@ struct Job {
 }
 #[derive(Default)]
 struct State {
+    badge: HashMap<String, BadgeState>,
+    badge_path: Option<PathBuf>,
     jobs: VecDeque<Job>,
     queues: HashMap<String, VecDeque<ToolPacket>>,
     peers: HashMap<String, u64>,
@@ -239,6 +241,29 @@ struct State {
     /// the Teacher, not one per retry).
     last_alert: HashMap<String, Instant>,
 }
+struct BadgeState {
+    enabled: bool,
+    actual: Option<bool>,
+    revision: String,
+    status: String,
+    error: String,
+    changed: Instant,
+}
+impl BadgeState {
+    fn new(enabled: bool) -> Result<Self> {
+        Ok(Self {
+            enabled,
+            actual: None,
+            revision: nonce()?,
+            status: "pending".into(),
+            error: String::new(),
+            changed: Instant::now(),
+        })
+    }
+    fn snapshot(&self) -> Value {
+        json!({"enabled":self.enabled,"actual":self.actual,"status":self.status,"error":self.error})
+    }
+}
 #[derive(Default)]
 pub struct Hub(
     Mutex<State>,
@@ -247,8 +272,101 @@ pub struct Hub(
     Mutex<fs_jobs::FsState>,
     AtomicBool,
     Mutex<HashMap<String, Value>>,
+    pub(crate) crate::remote_terminal::teacher::Manager,
 );
 impl Hub {
+    pub fn load_badges(&self, path: PathBuf) -> Result<()> {
+        let saved: HashMap<String, bool> = match fs::read(&path) {
+            Ok(data) => serde_json::from_slice(&data)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
+            Err(e) => return Err(e.into()),
+        };
+        anyhow::ensure!(saved.len() <= 256, "Too many saved badge preferences");
+        let mut s = self.0.lock().unwrap();
+        s.badge_path = Some(path);
+        for (id, on) in saved {
+            s.badge.insert(id, BadgeState::new(on)?);
+        }
+        Ok(())
+    }
+    pub fn set_badges(&self, ids: &[String], enabled: bool) -> Result<()> {
+        anyhow::ensure!(
+            !ids.is_empty() && ids.len() <= 256,
+            "Select at least one computer"
+        );
+        let mut s = self.0.lock().unwrap();
+        anyhow::ensure!(
+            s.badge.len() + ids.iter().filter(|id| !s.badge.contains_key(*id)).count() <= 256,
+            "Badge preference limit reached"
+        );
+        let mut saved: HashMap<String, bool> = s
+            .badge
+            .iter()
+            .map(|(id, b)| (id.clone(), b.enabled))
+            .collect();
+        for id in ids {
+            saved.insert(id.clone(), enabled);
+        }
+        if let Some(path) = &s.badge_path {
+            let tmp = path.with_extension("tmp");
+            fs::write(&tmp, serde_json::to_vec(&saved)?)?;
+            crate::monitoring_badge::atomic_replace(&tmp, path)?;
+        }
+        for id in ids {
+            let mut b = BadgeState::new(enabled)?;
+            if s.capabilities
+                .get(id)
+                .is_none_or(|c| c["monitoring_badge"] != 1)
+            {
+                b.status = if s.peers.contains_key(id) {
+                    "unsupported"
+                } else {
+                    "offline"
+                }
+                .into();
+            }
+            s.badge.insert(id.clone(), b);
+        }
+        Ok(())
+    }
+    fn badge_ack(&self, student: &str, p: &ToolPacket) -> Result<()> {
+        anyhow::ensure!(
+            matches!(p.status.as_str(), "complete" | "error")
+                && p.done <= 1
+                && p.text.len() <= 2000,
+            "Invalid badge acknowledgement"
+        );
+        let mut s = self.0.lock().unwrap();
+        if let Some(b) = s.badge.get_mut(student).filter(|b| b.revision == p.id) {
+            anyhow::ensure!(
+                p.status != "complete" || (p.done == 1) == b.enabled,
+                "Badge state mismatch"
+            );
+            b.actual = Some(p.done == 1);
+            b.status = if p.status == "complete" {
+                "applied"
+            } else {
+                "error"
+            }
+            .into();
+            b.error = p.text.chars().take(300).collect();
+        }
+        Ok(())
+    }
+    pub fn terminal_start(&self, student: &str, id: &str, compatibility: bool) -> Result<()> {
+        let mut state = self.0.lock().unwrap();
+        anyhow::ensure!(
+            state.peers.contains_key(student),
+            "Student tools unavailable"
+        );
+        let queue = state.queues.entry(student.into()).or_default();
+        anyhow::ensure!(queue.len() < 16, "Student tools queue full");
+        let mut p = packet("terminal_start");
+        p.id = id.into();
+        p.text = if compatibility { "compat" } else { "native" }.into();
+        queue.push_back(p);
+        Ok(())
+    }
     pub fn set_connection_popup(&self, enabled: bool) {
         self.1.store(enabled, Ordering::Release);
     }
@@ -312,6 +430,13 @@ impl Hub {
                 }
             }
         }
+        for b in s.badge.values_mut() {
+            if b.status == "pending" && b.changed.elapsed() > Duration::from_secs(10) {
+                b.status = "timeout".into();
+                b.error = "Student did not confirm badge display within 10 seconds".into();
+            }
+        }
+        let badges: HashMap<_, _> = s.badge.iter().map(|(id, b)| (id, b.snapshot())).collect();
         let fs_jobs = self.fs_snapshot();
         let mut locked: Vec<&String> = s.locked.iter().collect();
         locked.sort();
@@ -320,7 +445,7 @@ impl Hub {
         let mut vscode_blocked: Vec<&String> = s.vscode_blocked.iter().collect();
         vscode_blocked.sort();
         let copilot_blocked: Vec<&String> = s.copilot_blocked.iter().collect();
-        json!({"connection_popup":self.connection_popup(),"fs_jobs":fs_jobs,"locked":locked,"clipboard_blocked":clipboard_blocked,"vscode_blocked":vscode_blocked,"copilot_blocked":copilot_blocked,"internet":s.internet,"capabilities":s.capabilities,"ready":s.peers.keys().collect::<Vec<_>>(),"jobs":s.jobs.iter().map(|j|json!({"id":j.packet.id,"kind":j.packet.action,"name":j.packet.name,"size":j.packet.size,"text":j.packet.text.chars().take(240).collect::<String>(),"targets":j.targets.iter().map(|(id,t)|json!({"id":id,"status":t.status,"done":t.done,"reply":t.reply,"error":t.error})).collect::<Vec<_>>()})).collect::<Vec<_>>()})
+        json!({"monitoring_badges":badges,"connection_popup":self.connection_popup(),"fs_jobs":fs_jobs,"locked":locked,"clipboard_blocked":clipboard_blocked,"vscode_blocked":vscode_blocked,"copilot_blocked":copilot_blocked,"internet":s.internet,"capabilities":s.capabilities,"ready":s.peers.keys().collect::<Vec<_>>(),"jobs":s.jobs.iter().map(|j|json!({"id":j.packet.id,"kind":j.packet.action,"name":j.packet.name,"size":j.packet.size,"text":j.packet.text.chars().take(240).collect::<String>(),"targets":j.targets.iter().map(|(id,t)|json!({"id":id,"status":t.status,"done":t.done,"reply":t.reply,"error":t.error})).collect::<Vec<_>>()})).collect::<Vec<_>>()})
     }
     /// Hashes a staged file off the caller's thread, then offers it to every
     /// recipient that has not been cancelled meanwhile. The hash lets Students
@@ -699,6 +824,9 @@ impl Hub {
         .map(|_| ())
     }
     fn event(&self, student: &str, p: &ToolPacket) -> Result<()> {
+        if p.status == "error" && self.6.failed(&p.id, student, &p.text) {
+            return Ok(());
+        }
         let mut s = self.0.lock().unwrap();
         let State {
             jobs,
@@ -897,6 +1025,10 @@ impl Hub {
                 "unix_ms": media_core::unix_us() / 1000,
             }));
         }
+        if let Some(b) = state.badge.get_mut(student) {
+            b.status = "offline".into();
+            b.actual = None;
+        }
         state.peers.remove(student);
         state.capabilities.remove(student);
         state.locked.remove(student);
@@ -1029,6 +1161,9 @@ fn serve(
     if hello.action == "download" {
         return serve_file(s, &hello, hub, stop, slots);
     }
+    if hello.action == "terminal_connect" {
+        return hub.6.serve(s.try_clone()?, &hello.id, &hello.student);
+    }
     if let Some(result) = fs_jobs::serve(s, &hello, hub) {
         return result;
     }
@@ -1081,13 +1216,33 @@ fn serve(
             st.copilot_blocked.remove(&hello.student);
         }
         if let Some(c) = &capability {
-            st.capabilities.insert(hello.student.clone(), json!({"dev_update":c["dev_update"],"connection_popup":c["connection_popup"],"fs":c["fs"],"screenshot":c["screenshot"],"website":c["website"],"launch":c["launch"],"power":c["power"],"guard":c["guard"],"copilot_network":c["copilot_network"],"activity":c["activity"],"vscode":c["vscode"],"vscode_list":c["vscode_list"],"os":c["os"],"arch":c["arch"],"build":c["build"],"pid":c["pid"]}));
+            if c["monitoring_badge"] == 1 && !st.badge.contains_key(&hello.student) {
+                let enabled = c["badge_enabled"].as_bool().unwrap_or(false);
+                st.badge
+                    .insert(hello.student.clone(), BadgeState::new(enabled)?);
+            }
+        }
+        if capability
+            .as_ref()
+            .is_none_or(|c| c["monitoring_badge"] != 1)
+        {
+            if let Some(b) = st.badge.get_mut(&hello.student) {
+                b.status = "unsupported".into();
+                b.actual = None;
+            }
+        }
+        if let Some(c) = &capability {
+            st.capabilities.insert(hello.student.clone(), json!({"monitoring_badge":c["monitoring_badge"],"terminal":c["terminal"],"dev_update":c["dev_update"],"connection_popup":c["connection_popup"],"fs":c["fs"],"screenshot":c["screenshot"],"website":c["website"],"launch":c["launch"],"power":c["power"],"guard":c["guard"],"copilot_network":c["copilot_network"],"activity":c["activity"],"vscode":c["vscode"],"vscode_list":c["vscode_list"],"os":c["os"],"arch":c["arch"],"build":c["build"],"pid":c["pid"]}));
         }
         g
     };
     let popup_supported = capability
         .as_ref()
         .is_some_and(|c| c["connection_popup"] == 1);
+    let badge_supported = capability
+        .as_ref()
+        .is_some_and(|c| c["monitoring_badge"] == 1);
+    let mut last_badge = None;
     let mut last_popup = None;
     let activity_supported = capability.as_ref().is_some_and(|c| c["activity"] == 1);
     let mut last_activity_monitoring = None;
@@ -1107,11 +1262,40 @@ fn serve(
                 registered(roster, &hello.student, peer),
                 "Student left classroom"
             );
-            if p.action == "event" {
+            if p.action == "monitoring_badge_ack" {
+                hub.badge_ack(&hello.student, &p)?;
+                send(s, &packet("ok"))?;
+            } else if p.action == "event" {
                 hub.event(&hello.student, &p)?;
                 send(s, &packet("ok"))?;
             } else {
                 anyhow::ensure!(p.action == "poll", "Invalid tools action");
+                let badge = {
+                    let mut st = hub.0.lock().unwrap();
+                    if badge_supported {
+                        let entry = st.badge.get_mut(&hello.student);
+                        entry.and_then(|b| {
+                            if last_badge.as_ref() == Some(&b.revision) {
+                                return None;
+                            }
+                            b.status = "pending".into();
+                            b.error.clear();
+                            b.actual = None;
+                            b.changed = Instant::now();
+                            let mut p = packet("monitoring_badge");
+                            p.id = b.revision.clone();
+                            p.status = if b.enabled { "on" } else { "off" }.into();
+                            Some(p)
+                        })
+                    } else {
+                        None
+                    }
+                };
+                if let Some(badge) = badge {
+                    last_badge = Some(badge.id.clone());
+                    send(s, &badge)?;
+                    continue;
+                }
                 let popup = hub.connection_popup();
                 if popup_supported && last_popup != Some(popup) {
                     let mut preference = packet("connection_status");
@@ -1236,6 +1420,11 @@ fn publish_timeout(size: u64) -> Duration {
 }
 #[derive(Default)]
 pub struct Inbox {
+    pub(crate) badge: Mutex<crate::monitoring_badge::Request>,
+    /// Keep the source Student's badge out of its class-broadcast capture.
+    pub(crate) badge_broadcast_suppressed: Arc<AtomicBool>,
+    /// UI-thread acknowledgement that the source badge window is hidden.
+    pub(crate) badge_broadcast_suppression_applied: Arc<AtomicBool>,
     messages: Mutex<VecDeque<ToolPacket>>,
     message_session: Mutex<String>,
     message_epoch: AtomicU64,
@@ -1243,6 +1432,7 @@ pub struct Inbox {
     transfers: Mutex<VecDeque<Transfer>>,
     pub update_exit: AtomicBool,
     pub connection_popup: AtomicBool,
+    pub terminal_active: AtomicUsize,
     connection_popup_path: Mutex<Option<PathBuf>>,
     lock: Mutex<Option<String>>,
     lock_epoch: AtomicU64,
@@ -1274,6 +1464,11 @@ pub struct Transfer {
 }
 const MAX_TRANSFERS: usize = 32;
 impl Inbox {
+    pub(crate) fn badge_ack(&self, p: ToolPacket) {
+        let mut events = self.events.lock().unwrap();
+        events.retain(|old| old.action != "monitoring_badge_ack");
+        events.push_back(p);
+    }
     pub fn initialize_connection_popup(&self, profile: &Path, default: bool) {
         let path = profile.with_file_name("connection-popup.txt");
         let enabled = fs::read_to_string(&path).map_or(default, |s| s.trim() == "on");
@@ -1492,6 +1687,7 @@ pub fn student(
     let worker = thread::spawn(move || {
         let mut download: Option<Download> = None;
         let mut pending_downloads = VecDeque::<ToolPacket>::new();
+        let mut terminals = Vec::<crate::remote_terminal::Worker>::new();
         let mut upload: Option<thread::JoinHandle<()>> = None;
         let mut diagnostic_request: Option<ToolPacket> = None;
         let guard = Arc::new(crate::guard::for_student(
@@ -1538,8 +1734,12 @@ pub fn student(
                         json!(u8::from(cfg!(any(windows, target_os = "macos"))));
                     capabilities["vscode_blocked"] =
                         json!(u8::from(super::vscode_control::is_applied()));
+                    capabilities["monitoring_badge"] =
+                        json!(u8::from(crate::monitoring_badge::supported()));
+                    capabilities["badge_enabled"] = json!(inbox.badge.lock().unwrap().enabled);
                     capabilities["screenshot"] = json!(1);
                     capabilities["website"] = json!(1);
+                    capabilities["terminal"] = json!(u8::from(crate::remote_terminal::available()));
                     hello.text = capabilities.to_string();
                     send(&mut s, &hello)?;
                     let ack = read(&mut s)?;
@@ -1550,6 +1750,10 @@ pub fn student(
                     inbox.bind_message_session(&ack.token);
                     info!("Student classroom tools ready");
                     while !cancel.load(Ordering::Acquire) {
+                        terminals.retain_mut(|worker| !worker.finished());
+                        inbox
+                            .terminal_active
+                            .store(terminals.len(), Ordering::Release);
                         for _ in 0..16 {
                             let p = inbox.events.lock().unwrap().pop_front();
                             let Some(p) = p else { break };
@@ -1614,7 +1818,34 @@ pub fn student(
                             }
                         }
                         match p.action.as_str() {
+                            "monitoring_badge" => {
+                                anyhow::ensure!(
+                                    matches!(p.status.as_str(), "on" | "off") && p.id.len() == 32,
+                                    "Invalid badge request"
+                                );
+                                let mut b = inbox.badge.lock().unwrap();
+                                b.enabled = p.status == "on";
+                                b.revision = Some(p.id);
+                            }
                             "collect_diagnostics" => diagnostic_request = Some(p),
+                            "terminal_start" => {
+                                let outcome = if terminals.len() >= 4 {
+                                    Err(anyhow::anyhow!("Student terminal limit reached"))
+                                } else {
+                                    crate::remote_terminal::start(
+                                        address,
+                                        identity.clone(),
+                                        p.id.clone(),
+                                        p.text != "native",
+                                    )
+                                };
+                                match outcome {
+                                    Ok(worker) => terminals.push(worker),
+                                    Err(error) => {
+                                        inbox.event(&p.id, "error", &format!("{error:#}"), 0)
+                                    }
+                                }
+                            }
                             "fs_list" => {
                                 fs_jobs::list(address, identity.clone(), p, &list_active);
                             }
@@ -2053,7 +2284,7 @@ fn receive_file_to_folder(
 /// for the home folder), following Windows shell redirection such as OneDrive.
 #[cfg(windows)]
 #[allow(unsafe_code)]
-fn user_folder(name: &str) -> Result<PathBuf> {
+pub(crate) fn user_folder(name: &str) -> Result<PathBuf> {
     use windows::Win32::{
         System::Com::CoTaskMemFree,
         UI::Shell::{
@@ -2106,7 +2337,7 @@ fn real_home() -> Result<PathBuf> {
         .context("User home missing")
 }
 #[cfg(not(windows))]
-fn user_folder(name: &str) -> Result<PathBuf> {
+pub(crate) fn user_folder(name: &str) -> Result<PathBuf> {
     let home = real_home()?;
     Ok(if name.is_empty() {
         home
@@ -2615,5 +2846,118 @@ mod tests {
         assert_eq!(hub.snapshot()["jobs"][0]["targets"][0]["status"], "queued");
         hub.disconnected("student-a", 9);
         assert_eq!(hub.snapshot()["jobs"][0]["targets"][0]["status"], "error");
+    }
+}
+
+#[cfg(test)]
+mod monitoring_badge_tests {
+    use super::*;
+    #[test]
+    fn explicit_state_survives_disconnect_and_teacher_restart() {
+        let root = std::env::temp_dir().join(format!("badge-hub-{}", nonce().unwrap()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("badges.json");
+        let hub = Hub::default();
+        hub.load_badges(path.clone()).unwrap();
+        {
+            let mut s = hub.0.lock().unwrap();
+            s.peers.insert("pc".into(), 7);
+            s.capabilities
+                .insert("pc".into(), json!({"monitoring_badge":1}));
+        }
+        hub.set_badges(&["pc".into()], true).unwrap();
+        let revision = hub.0.lock().unwrap().badge["pc"].revision.clone();
+        hub.badge_ack(
+            "pc",
+            &ToolPacket {
+                id: revision.clone(),
+                status: "complete".into(),
+                done: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(hub.snapshot()["monitoring_badges"]["pc"]["actual"], true);
+        hub.disconnected("pc", 7);
+        assert_eq!(hub.snapshot()["monitoring_badges"]["pc"]["enabled"], true);
+        let restored = Hub::default();
+        restored.load_badges(path).unwrap();
+        assert_eq!(
+            restored.snapshot()["monitoring_badges"]["pc"]["enabled"],
+            true
+        );
+        hub.set_badges(&["pc".into()], false).unwrap();
+        hub.badge_ack(
+            "pc",
+            &ToolPacket {
+                id: revision,
+                status: "complete".into(),
+                done: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(hub.snapshot()["monitoring_badges"]["pc"]["enabled"], false);
+        assert!(hub.snapshot()["monitoring_badges"]["pc"]["actual"].is_null());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn errors_timeouts_and_mismatched_ack_are_visible() {
+        let hub = Hub::default();
+        hub.set_badges(&["pc".into()], true).unwrap();
+        let revision = hub.0.lock().unwrap().badge["pc"].revision.clone();
+        assert!(hub
+            .badge_ack(
+                "pc",
+                &ToolPacket {
+                    id: revision.clone(),
+                    status: "complete".into(),
+                    done: 0,
+                    ..Default::default()
+                }
+            )
+            .is_err());
+        hub.badge_ack(
+            "pc",
+            &ToolPacket {
+                id: revision,
+                status: "error".into(),
+                text: "No desktop".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            hub.snapshot()["monitoring_badges"]["pc"]["error"],
+            "No desktop"
+        );
+        {
+            let mut s = hub.0.lock().unwrap();
+            let b = s.badge.get_mut("pc").unwrap();
+            b.status = "pending".into();
+            b.changed = Instant::now() - Duration::from_secs(11);
+        }
+        assert_eq!(
+            hub.snapshot()["monitoring_badges"]["pc"]["status"],
+            "timeout"
+        );
+    }
+    #[test]
+    fn student_preference_survives_restart_and_explicit_off() {
+        let root = std::env::temp_dir().join(format!("badge-student-{}", nonce().unwrap()));
+        fs::create_dir_all(&root).unwrap();
+        let profile = root.join("profile.json");
+        let mut r = crate::monitoring_badge::Request::default();
+        r.load(&profile).unwrap();
+        r.enabled = true;
+        r.persist().unwrap();
+        let mut restored = crate::monitoring_badge::Request::default();
+        restored.load(&profile).unwrap();
+        assert!(restored.enabled);
+        restored.enabled = false;
+        restored.persist().unwrap();
+        r.load(&profile).unwrap();
+        assert!(!r.enabled);
+        fs::remove_dir_all(root).unwrap();
     }
 }

@@ -1006,3 +1006,64 @@ void mfb_round_overlay(void* ptr) {
     view.layer.masksToBounds = YES;
     view.layer.allowsEdgeAntialiasing = YES;
 }
+
+// Classroom monitoring indicator: no activation, no desktop input, no global alpha.
+@interface ClassroomMonitoringPanel : NSPanel
+@end
+@implementation ClassroomMonitoringPanel
+- (BOOL)canBecomeKeyWindow { return NO; }
+- (BOOL)canBecomeMainWindow { return NO; }
+@end
+@interface ClassroomMonitoringView : NSView
+@property CGFloat dotOpacity;
+@end
+@implementation ClassroomMonitoringView
+- (BOOL)isOpaque { return NO; }
+- (void)drawRect:(NSRect)dirtyRect {
+    (void)dirtyRect;
+    [[NSColor clearColor] setFill]; NSRectFillUsingOperation(self.bounds, NSCompositingOperationCopy);
+    [[NSColor colorWithSRGBRed:201.0/255 green:31.0/255 blue:40.0/255 alpha:0.88] setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:6 yRadius:6] fill];
+    [[NSColor colorWithWhite:1 alpha:self.dotOpacity] setFill];
+    [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(12, (self.bounds.size.height-8)/2, 8, 8)] fill];
+    NSDictionary* attrs = @{NSFontAttributeName:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold],
+                            NSForegroundColorAttributeName:[NSColor whiteColor]};
+    NSString* label = @"ĐANG GIÁM SÁT";
+    NSSize size = [label sizeWithAttributes:attrs];
+    [label drawAtPoint:NSMakePoint(28, (self.bounds.size.height-size.height)/2) withAttributes:attrs];
+}
+@end
+void* mfb_monitoring_create(void) {
+    @autoreleasepool {
+        NSDictionary* attrs = @{NSFontAttributeName:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold]};
+        NSSize text = [@"ĐANG GIÁM SÁT" sizeWithAttributes:attrs];
+        ClassroomMonitoringPanel* panel = [[ClassroomMonitoringPanel alloc]
+            initWithContentRect:NSMakeRect(0,0,ceil(text.width)+40,ceil(text.height)+16)
+            styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
+            backing:NSBackingStoreBuffered defer:NO];
+        if (!panel) return NULL;
+        [panel setReleasedWhenClosed:NO]; [panel setOpaque:NO];
+        [panel setBackgroundColor:[NSColor clearColor]]; [panel setHasShadow:NO];
+        [panel setIgnoresMouseEvents:YES]; [panel setHidesOnDeactivate:NO];
+        [panel setLevel:NSScreenSaverWindowLevel];
+        [panel setCollectionBehavior:NSWindowCollectionBehaviorCanJoinAllSpaces |
+            NSWindowCollectionBehaviorIgnoresCycle | NSWindowCollectionBehaviorFullScreenAuxiliary];
+        ClassroomMonitoringView* view = [[ClassroomMonitoringView alloc] initWithFrame:[[panel contentView] bounds]];
+        view.dotOpacity = 1; [panel setContentView:view]; [view release];
+        return panel;
+    }
+}
+bool mfb_monitoring_draw(void* ptr, double opacity) {
+    @autoreleasepool {
+        NSPanel* panel = (NSPanel*)ptr;
+        NSArray* screens = [NSScreen screens]; if (!panel || screens.count == 0) return false;
+        NSRect screen = [[screens objectAtIndex:0] frame]; NSRect frame = panel.frame;
+        [panel setFrameTopLeftPoint:NSMakePoint(NSMaxX(screen)-16-frame.size.width, NSMaxY(screen)-16)];
+        ClassroomMonitoringView* view = (ClassroomMonitoringView*)panel.contentView;
+        view.dotOpacity = opacity; [view setNeedsDisplay:YES]; [view displayIfNeeded];
+        [panel orderFrontRegardless]; return panel.visible;
+    }
+}
+void mfb_monitoring_destroy(void* ptr) {
+    NSPanel* panel = (NSPanel*)ptr; [panel orderOut:nil]; [panel close]; [panel release];
+}

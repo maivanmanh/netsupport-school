@@ -580,7 +580,9 @@ impl Window {
 
             if opts.none {
                 flags = winuser::WS_POPUP;
-                if opts.visible {flags |= winuser::WS_VISIBLE;}
+                if opts.visible {
+                    flags |= winuser::WS_VISIBLE;
+                }
             }
 
             flags
@@ -625,8 +627,16 @@ impl Window {
             rect.right -= rect.left;
             rect.bottom -= rect.top;
 
+            let ex_style = if name == "Classroom monitoring notice" {
+                winuser::WS_EX_LAYERED
+                    | winuser::WS_EX_TRANSPARENT
+                    | winuser::WS_EX_NOACTIVATE
+                    | winuser::WS_EX_TOOLWINDOW
+            } else {
+                0
+            };
             winuser::CreateWindowExW(
-                0,
+                ex_style,
                 class_name.as_ptr(),
                 window_name.as_ptr(),
                 flags,
@@ -648,7 +658,9 @@ impl Window {
             );
             None
         } else {
-            if opts.visible { unsafe { winuser::ShowWindow(handle, winuser::SW_NORMAL) }; }
+            if opts.visible {
+                unsafe { winuser::ShowWindow(handle, winuser::SW_NORMAL) };
+            }
             Some((handle, hinstance))
         }
     }
@@ -766,6 +778,9 @@ impl Window {
     pub fn get_window_handle(&self) -> *mut c_void {
         self.hwnd as *mut c_void
     }
+    pub fn extended_style(&self) -> isize {
+        unsafe { winuser::GetWindowLongPtrW(self.hwnd, winuser::GWL_EXSTYLE) }
+    }
 
     #[inline]
     pub fn set_position(&mut self, x: isize, y: isize) {
@@ -784,9 +799,19 @@ impl Window {
 
     #[inline]
     pub fn outer_frame(&self) -> [isize; 4] {
-        let mut r = windef::RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        let mut r = windef::RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
         unsafe { winuser::GetWindowRect(self.hwnd, &mut r) };
-        [r.left as isize, r.top as isize, (r.right - r.left) as isize, (r.bottom - r.top) as isize]
+        [
+            r.left as isize,
+            r.top as isize,
+            (r.right - r.left) as isize,
+            (r.bottom - r.top) as isize,
+        ]
     }
 
     pub fn set_outer_origin(&mut self, x: isize, y: isize) {
@@ -803,6 +828,28 @@ impl Window {
         }
     }
 
+    pub fn primary_overlay_geometry(&self) -> [isize; 4] {
+        unsafe {
+            let monitor = winuser::MonitorFromWindow(self.hwnd, winuser::MONITOR_DEFAULTTOPRIMARY);
+            let mut info: winuser::MONITORINFO = std::mem::zeroed();
+            info.cbSize = std::mem::size_of::<winuser::MONITORINFO>() as u32;
+            if winuser::GetMonitorInfoW(monitor, &mut info) == 0 {
+                return [
+                    0,
+                    0,
+                    winuser::GetSystemMetrics(winuser::SM_CXSCREEN) as isize,
+                    winuser::GetSystemMetrics(winuser::SM_CYSCREEN) as isize,
+                ];
+            }
+            let r = info.rcMonitor;
+            [
+                r.left as isize,
+                r.top as isize,
+                (r.right - r.left) as isize,
+                (r.bottom - r.top) as isize,
+            ]
+        }
+    }
     pub fn work_area(&self) -> [isize; 4] {
         unsafe {
             let monitor = winuser::MonitorFromWindow(self.hwnd, winuser::MONITOR_DEFAULTTOPRIMARY);
@@ -812,7 +859,12 @@ impl Window {
                 return [0, 0, 1280, 720];
             }
             let r = info.rcWork;
-            [r.left as isize, r.top as isize, (r.right - r.left) as isize, (r.bottom - r.top) as isize]
+            [
+                r.left as isize,
+                r.top as isize,
+                (r.right - r.left) as isize,
+                (r.bottom - r.top) as isize,
+            ]
         }
     }
 
@@ -956,10 +1008,27 @@ impl Window {
     }
 
     #[inline]
-    pub fn request_close(&mut self) { unsafe {winuser::PostMessageW(self.hwnd,winuser::WM_CLOSE,0,0);} }
+    pub fn request_close(&mut self) {
+        unsafe {
+            winuser::PostMessageW(self.hwnd, winuser::WM_CLOSE, 0, 0);
+        }
+    }
     pub fn set_visible(&mut self, visible: bool) {
-        unsafe { winuser::ShowWindow(self.hwnd, if visible {winuser::SW_RESTORE} else {winuser::SW_HIDE}); }
-        if visible { unsafe {winuser::SetForegroundWindow(self.hwnd);} }
+        unsafe {
+            winuser::ShowWindow(
+                self.hwnd,
+                if visible {
+                    winuser::SW_RESTORE
+                } else {
+                    winuser::SW_HIDE
+                },
+            );
+        }
+        if visible {
+            unsafe {
+                winuser::SetForegroundWindow(self.hwnd);
+            }
+        }
     }
     // Keep notification painting out of the foreground/key-focus path.
     pub fn resize_notification(&mut self, width: usize, height: usize) -> Result<()> {
@@ -967,9 +1036,16 @@ impl Window {
         // synchronous WM_SIZE dispatch. No activation, new HWND or window teardown.
         unsafe {
             set_window_long(self.hwnd, self as *mut Self as _);
-            if winuser::SetWindowPos(self.hwnd, std::ptr::null_mut(), 0, 0,
-                width as i32 * self.scale_factor, height as i32 * self.scale_factor,
-                winuser::SWP_NOMOVE | winuser::SWP_NOZORDER | winuser::SWP_NOACTIVATE) == 0 {
+            if winuser::SetWindowPos(
+                self.hwnd,
+                std::ptr::null_mut(),
+                0,
+                0,
+                width as i32 * self.scale_factor,
+                height as i32 * self.scale_factor,
+                winuser::SWP_NOMOVE | winuser::SWP_NOZORDER | winuser::SWP_NOACTIVATE,
+            ) == 0
+            {
                 return Err(Error::UpdateFailed("Could not resize notification".into()));
             }
         }
@@ -982,7 +1058,9 @@ impl Window {
         // SetClipboardData succeeds, then the OS owns it. Always close clipboard.
         unsafe {
             let memory = winbase::GlobalAlloc(winbase::GMEM_MOVEABLE, wide.len() * 2);
-            if memory.is_null() { return Err(Error::UpdateFailed("Clipboard allocation failed".into())); }
+            if memory.is_null() {
+                return Err(Error::UpdateFailed("Clipboard allocation failed".into()));
+            }
             let data = winbase::GlobalLock(memory);
             if data.is_null() {
                 winbase::GlobalFree(memory);
@@ -994,8 +1072,8 @@ impl Window {
                 winbase::GlobalFree(memory);
                 return Err(Error::UpdateFailed("Clipboard busy".into()));
             }
-            let ok = winuser::EmptyClipboard() != 0 &&
-                !winuser::SetClipboardData(winuser::CF_UNICODETEXT, memory as _).is_null();
+            let ok = winuser::EmptyClipboard() != 0
+                && !winuser::SetClipboardData(winuser::CF_UNICODETEXT, memory as _).is_null();
             winuser::CloseClipboard();
             if !ok {
                 winbase::GlobalFree(memory);
@@ -1014,11 +1092,17 @@ impl Window {
             }
             let result = (|| {
                 let memory = winuser::GetClipboardData(winuser::CF_UNICODETEXT);
-                if memory.is_null() { return Ok(String::new()); }
+                if memory.is_null() {
+                    return Ok(String::new());
+                }
                 let count = winbase::GlobalSize(memory as _) / 2;
-                if count > 65536 { return Err(Error::UpdateFailed("Clipboard text too large".into())); }
+                if count > 65536 {
+                    return Err(Error::UpdateFailed("Clipboard text too large".into()));
+                }
                 let data = winbase::GlobalLock(memory as _) as *const u16;
-                if data.is_null() { return Err(Error::UpdateFailed("Clipboard unavailable".into())); }
+                if data.is_null() {
+                    return Err(Error::UpdateFailed("Clipboard unavailable".into()));
+                }
                 let wide = std::slice::from_raw_parts(data, count);
                 let len = wide.iter().position(|c| *c == 0).unwrap_or(count);
                 let value = String::from_utf16_lossy(&wide[..len]);
@@ -1033,23 +1117,47 @@ impl Window {
         // SAFETY: owned HWND; Windows owns the region on success, otherwise release it.
         unsafe {
             let mut rect: windef::RECT = std::mem::zeroed();
-            if winuser::GetClientRect(self.hwnd, &mut rect) == 0 { return; }
+            if winuser::GetClientRect(self.hwnd, &mut rect) == 0 {
+                return;
+            }
             let region = wingdi::CreateEllipticRgn(0, 0, rect.right, rect.bottom);
             if !region.is_null() && winuser::SetWindowRgn(self.hwnd, region, 1) == 0 {
                 wingdi::DeleteObject(region as _);
             }
         }
     }
-    pub fn update_alpha_overlay(&mut self, pixels: &[u32], width: usize, height: usize) -> Result<()> {
-        if width == 0 || height == 0 || width > i32::MAX as usize || height > i32::MAX as usize ||
-            width.checked_mul(height) != Some(pixels.len()) {
-            return Err(Error::UpdateFailed("Invalid alpha overlay dimensions".into()));
+    pub fn update_alpha_overlay(
+        &mut self,
+        pixels: &[u32],
+        width: usize,
+        height: usize,
+    ) -> Result<()> {
+        self.update_alpha_overlay_opacity(pixels, width, height, 200)
+    }
+    pub fn update_alpha_overlay_opacity(
+        &mut self,
+        pixels: &[u32],
+        width: usize,
+        height: usize,
+        opacity: u8,
+    ) -> Result<()> {
+        if width == 0
+            || height == 0
+            || width > i32::MAX as usize
+            || height > i32::MAX as usize
+            || width.checked_mul(height) != Some(pixels.len())
+        {
+            return Err(Error::UpdateFailed(
+                "Invalid alpha overlay dimensions".into(),
+            ));
         }
         // SAFETY: UI-thread owned HWND; bounded input copied into an owned top-down
         // DIB. Restore the selected bitmap before releasing every GDI resource.
         unsafe {
             let dc = wingdi::CreateCompatibleDC(std::ptr::null_mut());
-            if dc.is_null() { return Err(Error::UpdateFailed("Overlay DC allocation failed".into())); }
+            if dc.is_null() {
+                return Err(Error::UpdateFailed("Overlay DC allocation failed".into()));
+            }
             let mut info: wingdi::BITMAPINFO = std::mem::zeroed();
             info.bmiHeader.biSize = std::mem::size_of::<wingdi::BITMAPINFOHEADER>() as u32;
             info.bmiHeader.biWidth = width as i32;
@@ -1057,35 +1165,71 @@ impl Window {
             info.bmiHeader.biPlanes = 1;
             info.bmiHeader.biBitCount = 32;
             let mut bits = std::ptr::null_mut();
-            let bitmap = wingdi::CreateDIBSection(dc, &info, wingdi::DIB_RGB_COLORS,
-                &mut bits, std::ptr::null_mut(), 0);
+            let bitmap = wingdi::CreateDIBSection(
+                dc,
+                &info,
+                wingdi::DIB_RGB_COLORS,
+                &mut bits,
+                std::ptr::null_mut(),
+                0,
+            );
             if bitmap.is_null() || bits.is_null() {
-                if !bitmap.is_null() { wingdi::DeleteObject(bitmap as _); }
+                if !bitmap.is_null() {
+                    wingdi::DeleteObject(bitmap as _);
+                }
                 wingdi::DeleteDC(dc);
-                return Err(Error::UpdateFailed("Overlay bitmap allocation failed".into()));
+                return Err(Error::UpdateFailed(
+                    "Overlay bitmap allocation failed".into(),
+                ));
             }
             std::ptr::copy_nonoverlapping(pixels.as_ptr(), bits as *mut u32, pixels.len());
             let old = wingdi::SelectObject(dc, bitmap as _);
             // SetLayeredWindowAttributes disables UpdateLayeredWindow until the
             // layered style is reset. Remove the old binary ellipse as well.
             if !self.alpha_overlay_ready {
-            winuser::SetWindowRgn(self.hwnd, std::ptr::null_mut(), 0);
-            let style = winuser::GetWindowLongW(self.hwnd, winuser::GWL_EXSTYLE);
-            winuser::SetWindowLongW(self.hwnd, winuser::GWL_EXSTYLE, style & !(winuser::WS_EX_LAYERED as i32));
-            winuser::SetWindowLongW(self.hwnd, winuser::GWL_EXSTYLE, style | winuser::WS_EX_LAYERED as i32);
+                winuser::SetWindowRgn(self.hwnd, std::ptr::null_mut(), 0);
+                let style = winuser::GetWindowLongW(self.hwnd, winuser::GWL_EXSTYLE);
+                winuser::SetWindowLongW(
+                    self.hwnd,
+                    winuser::GWL_EXSTYLE,
+                    style & !(winuser::WS_EX_LAYERED as i32),
+                );
+                winuser::SetWindowLongW(
+                    self.hwnd,
+                    winuser::GWL_EXSTYLE,
+                    style | winuser::WS_EX_LAYERED as i32,
+                );
                 self.alpha_overlay_ready = true;
             }
-            let mut size = windef::SIZE { cx: width as i32, cy: height as i32 };
+            let mut size = windef::SIZE {
+                cx: width as i32,
+                cy: height as i32,
+            };
             let mut origin = windef::POINT { x: 0, y: 0 };
-            let mut blend = wingdi::BLENDFUNCTION { BlendOp: wingdi::AC_SRC_OVER,
-                BlendFlags: 0, SourceConstantAlpha: 200, AlphaFormat: wingdi::AC_SRC_ALPHA };
-            let ok = winuser::UpdateLayeredWindow(self.hwnd, std::ptr::null_mut(), std::ptr::null_mut(),
-                &mut size, dc, &mut origin, 0, &mut blend, winuser::ULW_ALPHA);
+            let mut blend = wingdi::BLENDFUNCTION {
+                BlendOp: wingdi::AC_SRC_OVER,
+                BlendFlags: 0,
+                SourceConstantAlpha: opacity,
+                AlphaFormat: wingdi::AC_SRC_ALPHA,
+            };
+            let ok = winuser::UpdateLayeredWindow(
+                self.hwnd,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut size,
+                dc,
+                &mut origin,
+                0,
+                &mut blend,
+                winuser::ULW_ALPHA,
+            );
             let error = std::io::Error::last_os_error();
             wingdi::SelectObject(dc, old);
             wingdi::DeleteObject(bitmap as _);
             wingdi::DeleteDC(dc);
-            if ok == 0 { return Err(Error::UpdateFailed(format!("Alpha overlay: {error}"))); }
+            if ok == 0 {
+                return Err(Error::UpdateFailed(format!("Alpha overlay: {error}")));
+            }
         }
         Ok(())
     }
@@ -1093,19 +1237,48 @@ impl Window {
         // SAFETY: owned HWND, owner UI thread; only presentation attributes change.
         unsafe {
             let style = winuser::GetWindowLongW(self.hwnd, winuser::GWL_EXSTYLE);
-            winuser::SetWindowLongW(self.hwnd, winuser::GWL_EXSTYLE, style |
-                (winuser::WS_EX_LAYERED | winuser::WS_EX_TRANSPARENT |
-                 winuser::WS_EX_NOACTIVATE | winuser::WS_EX_TOOLWINDOW) as i32);
+            winuser::SetWindowLongW(
+                self.hwnd,
+                winuser::GWL_EXSTYLE,
+                style
+                    | (winuser::WS_EX_LAYERED
+                        | winuser::WS_EX_TRANSPARENT
+                        | winuser::WS_EX_NOACTIVATE
+                        | winuser::WS_EX_TOOLWINDOW) as i32,
+            );
+            if self.alpha_overlay_ready {
+                return;
+            }
             winuser::SetLayeredWindowAttributes(self.hwnd, 0, alpha, winuser::LWA_ALPHA);
         }
     }
     pub fn show_inactive_topmost(&mut self) {
-        unsafe { winuser::SetWindowPos(self.hwnd, winuser::HWND_TOPMOST, 0, 0, 0, 0,
-            winuser::SWP_SHOWWINDOW | winuser::SWP_NOSIZE | winuser::SWP_NOMOVE | winuser::SWP_NOACTIVATE); }
+        unsafe {
+            winuser::SetWindowPos(
+                self.hwnd,
+                winuser::HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                winuser::SWP_SHOWWINDOW
+                    | winuser::SWP_NOSIZE
+                    | winuser::SWP_NOMOVE
+                    | winuser::SWP_NOACTIVATE,
+            );
+        }
     }
-    pub fn show_inactive(&mut self) { unsafe { winuser::ShowWindow(self.hwnd, winuser::SW_SHOWNOACTIVATE); } }
-    pub fn is_visible(&self) -> bool { unsafe {winuser::IsWindowVisible(self.hwnd) != 0} }
-    pub fn set_close_to_hide(&mut self, enabled: bool) { self.close_to_hide = enabled; }
+    pub fn show_inactive(&mut self) {
+        unsafe {
+            winuser::ShowWindow(self.hwnd, winuser::SW_SHOWNOACTIVATE);
+        }
+    }
+    pub fn is_visible(&self) -> bool {
+        unsafe { winuser::IsWindowVisible(self.hwnd) != 0 }
+    }
+    pub fn set_close_to_hide(&mut self, enabled: bool) {
+        self.close_to_hide = enabled;
+    }
 
     pub fn is_open(&self) -> bool {
         self.is_open
@@ -1139,7 +1312,7 @@ impl Window {
             while pumped < 256
                 && pump_started.elapsed() < std::time::Duration::from_millis(4)
                 && winuser::PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, winuser::PM_REMOVE)
-                != 0
+                    != 0
             {
                 pumped += 1;
                 let acc_condition =

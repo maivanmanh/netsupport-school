@@ -32,6 +32,89 @@ class ObserveAgent extends Agent {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  testWidgets(
+    'initial connection keeps the blurred preview until native media is connected',
+    (t) async {
+      await t.binding.setSurfaceSize(const Size(1200, 800));
+      addTearDown(() => t.binding.setSurfaceSize(null));
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(
+        const MethodChannel('window_manager'),
+        (_) async => null,
+      );
+      var mediaConnected = false;
+      var copiedFrame = false;
+      messenger.setMockMethodCallHandler(
+        const MethodChannel('classroom/observe'),
+        (call) async => call.method == 'attach'
+            ? 4
+            : call.method == 'stats'
+            ? {
+                'width': 1920,
+                'height': 1080,
+                'sequence': copiedFrame ? 2 : 0,
+                'source_sequence': mediaConnected ? 2 : 0,
+                'native_frames': copiedFrame ? 2 : 0,
+                'connected': mediaConnected,
+              }
+            : null,
+      );
+      final agent = ObserveAgent()
+        ..state = {
+          'observe': {
+            'id': 'pc',
+            'phase': 'live',
+            'mode': 'observe',
+            'surface': '/private/tmp/first-frame',
+          },
+          'students': [
+            {'id': 'pc', 'online': true},
+          ],
+        };
+      await t.pumpWidget(
+        MaterialApp(
+          home: ObserveWindow(agent: agent, studentId: 'pc', name: 'PC'),
+        ),
+      );
+      agent.notifyListeners();
+      await t.pump(const Duration(milliseconds: 350));
+      expect(find.text('Connecting to student…'), findsOneWidget);
+      expect(find.text('Reconnecting to student…'), findsNothing);
+      expect(find.textContaining('Window closes in'), findsNothing);
+      // A native texture only copies pixels when Flutter renders it. It must
+      // already exist underneath loading before copied sequence can advance.
+      expect(find.byType(Texture), findsOneWidget);
+
+      mediaConnected = true;
+      final dynamic observeState = t.state(find.byType(ObserveWindow));
+      await observeState.poll();
+      await t.pump();
+      expect(find.text('Connecting to student…'), findsOneWidget);
+      expect(find.text('Reconnecting to student…'), findsNothing);
+      copiedFrame = true;
+      await observeState.poll();
+      await t.pump(const Duration(milliseconds: 600));
+      await t.pump();
+      expect(observeState.live, isTrue);
+      expect(find.byType(Texture), findsOneWidget);
+      expect(
+        t.widget<AnimatedSwitcher>(find.byType(AnimatedSwitcher)).child?.key,
+        const ValueKey(true),
+      );
+
+      await t.pumpWidget(const SizedBox());
+      agent.dispose();
+      messenger.setMockMethodCallHandler(
+        const MethodChannel('classroom/observe'),
+        null,
+      );
+      messenger.setMockMethodCallHandler(
+        const MethodChannel('window_manager'),
+        null,
+      );
+    },
+  );
   for (final leaseExpiry in [false, true]) {
     testWidgets(
       'Control restores after ${leaseExpiry ? 'lease expiry' : 'receiver reconnect'} only after acknowledgement',
