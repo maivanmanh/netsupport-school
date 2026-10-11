@@ -73,6 +73,8 @@ pub struct AppEntry {
     pub closed_ms: i64,
     pub total_open_ms: i64,
     pub reopened: u32,
+    /// The program's own icon (PNG, base64), extracted from its executable.
+    pub icon_png_base64: Option<String>,
 }
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Report {

@@ -1,4 +1,7 @@
 import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 
 /// A curated icon + colour + friendly name for common Windows programs,
@@ -96,12 +99,36 @@ AppLook lookAppUp(String processName) {
 
 /// A round badge with the app's icon/colour, consistent across the UI.
 class AppBadge extends StatelessWidget {
-  const AppBadge({super.key, required this.app, this.size = 28});
+  const AppBadge({super.key, required this.app, this.size = 28, this.icon});
   final String app;
   final double size;
+
+  /// The program's real icon (base64 PNG) from the Student, when available;
+  /// otherwise the curated stand-in glyph.
+  final String? icon;
   @override
   Widget build(BuildContext context) {
     final look = lookAppUp(app);
+    final real = icon;
+    if (real != null && real.isNotEmpty) {
+      try {
+        return SizedBox(
+          width: size,
+          height: size,
+          child: Image.memory(
+            base64Decode(real),
+            fit: BoxFit.contain,
+            filterQuality: FilterQuality.medium,
+            gaplessPlayback: true,
+            errorBuilder: (_, _, _) => _fallback(look),
+          ),
+        );
+      } catch (_) {}
+    }
+    return _fallback(look);
+  }
+
+  Widget _fallback(AppLook look) {
     return Container(
       width: size,
       height: size,
@@ -114,35 +141,217 @@ class AppBadge extends StatelessWidget {
   }
 }
 
-/// A site icon for a browser tab: the real favicon when we have one
-/// (base64 PNG), otherwise a neutral globe placeholder.
-class SiteIcon extends StatelessWidget {
-  const SiteIcon({super.key, this.favicon, this.size = 18});
-  final String? favicon;
+/// Fetches site icons from the Teacher's own network connection, one lookup
+/// per host for the app's lifetime (a failure is retried after a while). The
+/// Student only has to report the address.
+class FaviconCache {
+  FaviconCache._();
+  static final FaviconCache instance = FaviconCache._();
+  static const _retryAfter = Duration(minutes: 5);
+  static const _maxBytes = 256 * 1024;
+
+  final Map<String, Future<Uint8List?>> _byHost = {};
+  final Map<String, DateTime> _failedAt = {};
+
+  /// The icon for [url]'s site, or null if none could be fetched.
+  Future<Uint8List?> forUrl(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null ||
+        !(uri.scheme == 'http' || uri.scheme == 'https') ||
+        uri.host.isEmpty) {
+      return Future.value(null);
+    }
+    final key = '${uri.scheme}://${uri.authority}';
+    final failed = _failedAt[key];
+    if (failed != null && DateTime.now().difference(failed) > _retryAfter) {
+      _byHost.remove(key);
+      _failedAt.remove(key);
+    }
+    return _byHost.putIfAbsent(key, () async {
+      final icon = await _fetch(uri);
+      if (icon == null) _failedAt[key] = DateTime.now();
+      return icon;
+    });
+  }
+
+  Future<Uint8List?> _fetch(Uri page) async {
+    final origin = Uri(
+      scheme: page.scheme,
+      host: page.host,
+      port: page.hasPort ? page.port : null,
+    );
+    final candidates = <Uri>[];
+    final html = await _get(origin.replace(path: '/'), maxBytes: 200 * 1024);
+    if (html != null) {
+      candidates.addAll(
+        _iconLinks(utf8.decode(html, allowMalformed: true), origin),
+      );
+    }
+    candidates.add(origin.replace(path: '/favicon.ico'));
+    for (final candidate in candidates.take(4)) {
+      final bytes = await _get(candidate, maxBytes: _maxBytes);
+      if (bytes != null && await _decodes(bytes)) return bytes;
+    }
+    // Last resort for sites that block direct requests.
+    final fallback = await _get(
+      Uri.https('www.google.com', '/s2/favicons', {
+        'domain': page.host,
+        'sz': '64',
+      }),
+      maxBytes: _maxBytes,
+    );
+    if (fallback != null && await _decodes(fallback)) return fallback;
+    return null;
+  }
+
+  /// `<link rel="...icon..." href="...">` targets, best first: larger and
+  /// PNG icons ahead of tiny/ICO ones.
+  static List<Uri> _iconLinks(String html, Uri base) {
+    final found = <(int, Uri)>[];
+    for (final m in RegExp(
+      r'<link\b[^>]*>',
+      caseSensitive: false,
+    ).allMatches(html)) {
+      final tag = m.group(0)!;
+      String? attr(String name) => RegExp(
+        '$name\\s*=\\s*(?:"([^"]*)"|\'([^\']*)\'|([^\\s>]+))',
+        caseSensitive: false,
+      ).firstMatch(tag)?.let((x) => x.group(1) ?? x.group(2) ?? x.group(3));
+      final rel = (attr('rel') ?? '').toLowerCase();
+      if (!rel
+          .split(RegExp(r'\s+'))
+          .any(
+            (r) => r == 'icon' || r == 'apple-touch-icon' || r == 'shortcut',
+          )) {
+        continue;
+      }
+      final href = attr('href');
+      if (href == null || href.isEmpty || href.startsWith('data:')) continue;
+      final uri = base.resolve(href);
+      if (uri.scheme != 'http' && uri.scheme != 'https') continue;
+      final size = int.tryParse((attr('sizes') ?? '').split('x').first) ?? 0;
+      final isSvg =
+          href.toLowerCase().contains('.svg') ||
+          (attr('type') ?? '').contains('svg');
+      if (isSvg) continue; // Flutter cannot decode SVG bitmaps
+      final score =
+          size.clamp(0, 256) + (href.toLowerCase().contains('.png') ? 40 : 0);
+      found.add((score, uri));
+    }
+    found.sort((a, b) => b.$1.compareTo(a.$1));
+    return [for (final (_, uri) in found) uri];
+  }
+
+  Future<bool> _decodes(Uint8List bytes) async {
+    try {
+      final codec = await ui.instantiateImageCodec(bytes, targetWidth: 64);
+      final frame = await codec.getNextFrame();
+      frame.image.dispose();
+      codec.dispose();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<Uint8List?> _get(Uri uri, {required int maxBytes}) async {
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 4)
+      ..userAgent = 'Mozilla/5.0 ClassroomTeacher';
+    try {
+      final request = await client
+          .getUrl(uri)
+          .timeout(const Duration(seconds: 5));
+      final response = await request.close().timeout(
+        const Duration(seconds: 5),
+      );
+      if (response.statusCode != 200) {
+        await response.drain<void>();
+        return null;
+      }
+      final out = BytesBuilder(copy: false);
+      await for (final chunk in response.timeout(const Duration(seconds: 6))) {
+        out.add(chunk);
+        if (out.length > maxBytes) return out.takeBytes().sublist(0, maxBytes);
+      }
+      return out.isEmpty ? null : out.takeBytes();
+    } catch (_) {
+      return null;
+    } finally {
+      client.close(force: true);
+    }
+  }
+}
+
+extension<T> on T {
+  R let<R>(R Function(T) f) => f(this);
+}
+
+/// A site icon for a browser tab: the favicon the Student reported if any,
+/// otherwise one the Teacher fetches itself from [url], otherwise a globe.
+class SiteIcon extends StatefulWidget {
+  const SiteIcon({super.key, this.favicon, this.url, this.size = 18});
+  final String? favicon, url;
   final double size;
   @override
+  State<SiteIcon> createState() => _SiteIconState();
+}
+
+class _SiteIconState extends State<SiteIcon> {
+  Uint8List? fetched;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void didUpdateWidget(SiteIcon old) {
+    super.didUpdateWidget(old);
+    if (old.url != widget.url) {
+      fetched = null;
+      _load();
+    }
+  }
+
+  void _load() {
+    final url = widget.url;
+    if (url == null || url.isEmpty) return;
+    FaviconCache.instance.forUrl(url).then((bytes) {
+      if (mounted && bytes != null && widget.url == url) {
+        setState(() => fetched = bytes);
+      }
+    });
+  }
+
+  Widget get _globe =>
+      Icon(Icons.public, size: widget.size, color: Colors.blueGrey);
+
+  @override
   Widget build(BuildContext context) {
-    final b64 = favicon;
-    if (b64 == null || b64.isEmpty) {
-      return Icon(Icons.public, size: size, color: Colors.blueGrey);
+    Uint8List? bytes = fetched;
+    if (bytes == null) {
+      final b64 = widget.favicon;
+      if (b64 != null && b64.isNotEmpty) {
+        try {
+          bytes = base64Decode(b64);
+        } catch (_) {}
+      }
     }
-    try {
-      final bytes = base64Decode(b64);
-      return ClipRRect(
-        borderRadius: BorderRadius.circular(3),
-        child: Image.memory(
-          bytes,
-          width: size,
-          height: size,
-          fit: BoxFit.cover,
-          gaplessPlayback: true,
-          errorBuilder: (_, _, _) =>
-              Icon(Icons.public, size: size, color: Colors.blueGrey),
-        ),
-      );
-    } catch (_) {
-      return Icon(Icons.public, size: size, color: Colors.blueGrey);
-    }
+    if (bytes == null) return _globe;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(3),
+      child: Image.memory(
+        bytes,
+        width: widget.size,
+        height: widget.size,
+        fit: BoxFit.contain,
+        filterQuality: FilterQuality.medium,
+        gaplessPlayback: true,
+        errorBuilder: (_, _, _) => _globe,
+      ),
+    );
   }
 }
 

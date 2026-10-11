@@ -47,6 +47,22 @@ pub struct History {
     /// window/tab scan; keeping the last result here means a cycle that
     /// skips it doesn't make downloads flicker away in the meantime).
     downloads: Mutex<Vec<DownloadEntry>>,
+    /// Results of expensive lookups (executable icons, tab addresses from a
+    /// browser's history database, site icons), so a 6-second scan does not
+    /// re-copy databases for something it already resolved.
+    lookups: Mutex<HashMap<String, (Option<String>, i64)>>,
+}
+
+/// A failed lookup is retried after this long (a page may simply not be in
+/// the browser's history database yet).
+const RETRY_MISSING_MS: i64 = 60_000;
+const MAX_LOOKUPS: usize = 2_000;
+
+pub enum Lookup {
+    /// Already resolved (or recently tried and found nothing).
+    Known(Option<String>),
+    /// Never tried, or the negative result has expired.
+    Needed,
 }
 
 /// One freshly observed item: `(identity, display title, url, favicon)`.
@@ -115,6 +131,7 @@ fn app_entries(map: &HashMap<String, Track>, now: i64) -> Vec<AppEntry> {
             closed_ms: t.closed_ms,
             total_open_ms: t.total_open_ms + if t.open { (now - t.opened_ms).max(0) } else { 0 },
             reopened: t.reopened,
+            icon_png_base64: t.favicon_png_base64.clone(),
         })
         .collect();
     entries.sort_by(|a, b| order(a.open, a.closed_ms.max(a.opened_ms), b.open, b.closed_ms.max(b.opened_ms)));
@@ -161,6 +178,20 @@ impl History {
         let tabs = self.tabs.lock().unwrap();
         (app_entries(&apps, now), tab_entries(&tabs, now))
     }
+    pub fn lookup(&self, key: &str) -> Lookup {
+        match self.lookups.lock().unwrap().get(key) {
+            Some((Some(value), _)) => Lookup::Known(Some(value.clone())),
+            Some((None, tried)) if now_ms() - tried < RETRY_MISSING_MS => Lookup::Known(None),
+            _ => Lookup::Needed,
+        }
+    }
+    pub fn remember(&self, key: &str, value: Option<String>) {
+        let mut map = self.lookups.lock().unwrap();
+        if map.len() >= MAX_LOOKUPS {
+            map.clear();
+        }
+        map.insert(key.to_owned(), (value, now_ms()));
+    }
     pub fn set_downloads(&self, downloads: Vec<DownloadEntry>) {
         *self.downloads.lock().unwrap() = downloads;
     }
@@ -194,6 +225,16 @@ mod tests {
         assert_eq!((apps[0].open, apps[0].reopened), (true, 1));
         assert_eq!(apps[0].title, "b.txt");
         assert!(apps[0].total_open_ms >= closed_total);
+    }
+
+    #[test]
+    fn lookups_keep_hits_and_retry_misses_later() {
+        let history = History::default();
+        assert!(matches!(history.lookup("k"), Lookup::Needed));
+        history.remember("k", Some("v".into()));
+        assert!(matches!(history.lookup("k"), Lookup::Known(Some(v)) if v == "v"));
+        history.remember("miss", None);
+        assert!(matches!(history.lookup("miss"), Lookup::Known(None)));
     }
 
     #[test]
