@@ -72,6 +72,7 @@ class Agent extends ChangeNotifier {
       option('--activity-id') != null ||
       option('--internet-ids') != null ||
       option('--vscode-ids') != null ||
+      option('--hardware-control') != null ||
       option('--apps-ids') != null ||
       option('--terminal-id') != null;
   // Terminal windows share the authenticated coordinator, but stream raw bytes

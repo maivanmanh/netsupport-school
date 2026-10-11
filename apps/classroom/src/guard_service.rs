@@ -280,6 +280,19 @@ mod imp {
         let student_exe = exe_dir()?.join("ClassroomStudent.exe");
         set_status(ServiceState::Running, windows_service::service::ServiceControlAccept::STOP);
         tracing::info!("Classroom Guard service running");
+        let hardware_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let hardware_cancel = std::sync::Arc::clone(&hardware_stop);
+        std::thread::spawn(move || {
+            while !hardware_cancel.load(std::sync::atomic::Ordering::Acquire) {
+                crate::hardware_control::reconcile();
+                for _ in 0..100 {
+                    if hardware_cancel.load(std::sync::atomic::Ordering::Acquire) {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        });
         loop {
             if stop_rx.recv_timeout(POLL).is_ok() {
                 break;
@@ -288,7 +301,11 @@ mod imp {
                 tracing::warn!(%error, "Could not ensure the Student process is running");
             }
         }
-        set_status(ServiceState::Stopped, windows_service::service::ServiceControlAccept::empty());
+        hardware_stop.store(true, std::sync::atomic::Ordering::Release);
+        set_status(
+            ServiceState::Stopped,
+            windows_service::service::ServiceControlAccept::empty(),
+        );
         Ok(())
     }
 

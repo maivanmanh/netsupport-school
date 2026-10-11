@@ -344,6 +344,7 @@ pub(super) fn run(
     ));
     let tools_hub = Arc::new(super::classroom_tools::Hub::default());
     tools_hub.load_badges(parent.join("monitoring-badges.json"))?;
+    tools_hub.load_hardware(parent.join("hardware-policy.json"))?;
     tools_hub.set_connection_popup(config.tools.connection_popup);
     let mut diagnostics = super::diagnostics::Collector::new(config, parent)?;
     let tools_server = super::classroom_tools::teacher(
@@ -483,6 +484,7 @@ pub(super) fn run(
     let mut internet_windows: Vec<std::process::Child> = Vec::new();
     let mut vscode_windows: Vec<std::process::Child> = Vec::new();
     let mut app_windows: Vec<std::process::Child> = Vec::new();
+    let mut hardware_window: Option<std::process::Child> = None;
     // The class rules set today, kept on disk: they survive a Teacher restart
     // and are pushed to any covered Student that is out of step (late
     // joiners, restarted computers). All of them end with the local day.
@@ -936,6 +938,60 @@ pub(super) fn run(
                         }
                         publish_due = Instant::now();
                         Ok(())
+                    }
+                    "hardware_window" => {
+                        if hardware_window
+                            .as_mut()
+                            .is_some_and(|c| !matches!(c.try_wait(), Ok(None)))
+                        {
+                            hardware_window = None;
+                        }
+                        if let Some(child) = hardware_window.as_ref() {
+                            snapshot.observe_focus.0 = "hardware".into();
+                            snapshot.observe_focus.1 += 1;
+                            snapshot.observe_focus.2 = child.id();
+                            publish_due = Instant::now();
+                            Ok(())
+                        } else if let Some(console) = console {
+                            match std::process::Command::new(console)
+                                .arg("--hardware-control")
+                                .arg("all")
+                                .arg("--ipc-file")
+                                .arg(path)
+                                .spawn()
+                            {
+                                Ok(child) => {
+                                    hardware_window = Some(child);
+                                    Ok(())
+                                }
+                                Err(error) => {
+                                    snapshot.error = Some(error.to_string());
+                                    Err("Could not open Hardware Control")
+                                }
+                            }
+                        } else {
+                            Err("Teacher console executable unavailable")
+                        }
+                    }
+                    "hardware_policy" | "hardware_session_end" => {
+                        let ids = roster
+                            .lock()
+                            .unwrap()
+                            .snapshot()
+                            .iter()
+                            .map(|r| r.instance_id.clone())
+                            .collect::<Vec<_>>();
+                        match tools_hub.set_hardware(
+                            &command.input,
+                            &ids,
+                            command.action == "hardware_session_end",
+                        ) {
+                            Ok(()) => Ok(()),
+                            Err(error) => {
+                                snapshot.error = Some(error.to_string());
+                                Err("Hardware policy could not be saved")
+                            }
+                        }
                     }
                     "monitoring_badge" => {
                         let enabled = command.input["enabled"].as_bool();
@@ -2008,6 +2064,12 @@ pub(super) fn run(
     }
     // Also cover a freshly spawned UI that has not attached to IPC yet.
     for child in observe_windows.values_mut() {
+        if matches!(child.try_wait(), Ok(None)) {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+    if let Some(child) = hardware_window.as_mut() {
         if matches!(child.try_wait(), Ok(None)) {
             let _ = child.kill();
             let _ = child.wait();

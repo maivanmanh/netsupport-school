@@ -48,6 +48,7 @@ mod encode_pacer;
 mod fanout;
 mod guard;
 mod guard_service;
+mod hardware_control;
 mod keyframe_gate;
 mod launcher;
 mod macos_permissions;
@@ -278,6 +279,9 @@ enum RestartRequest {
 }
 
 fn main() -> Result<()> {
+    if std::env::args_os().nth(1).is_some_and(|v| v == "--hardware-reset") {
+        return hardware_control::emergency_reset();
+    }
     // Started by Windows in place of a blocked program (see `app_control`).
     if let Some(code) = app_control::early_operation() {
         std::process::exit(code);

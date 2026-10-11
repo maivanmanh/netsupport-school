@@ -4647,3 +4647,53 @@ passed and `git diff --check` passed. Paired build
 Student and Windows x64 Student. Only the Teacher bundle was updated at
 `target/present-recovery-build/Classroom Console.app`; Student endpoints were
 not deployed. The new Teacher and helper are running from the stable path.
+
+## 2026-10-11 — Hardware Control implementation (no Windows runtime test)
+
+- Owner explicitly authorizes Hardware Control and says no Windows machine is
+  available: source implementation/checks only; no endpoint deployment or runtime
+  acceptance. Existing media milestones/physical lab acceptance remain unchanged.
+- Added one dedicated Flutter Hardware Control window, toolbar entry and existing
+  dependent-window focus/cleanup. Five Block/Unblock switches always address the
+  whole room, including future joiners. Group counts and per-PC Pending/Applied/
+  Failed/Unsupported details use real Student OS acknowledgements.
+- Reused private Teacher IPC, tools Hub/Protobuf poll/ack, roster and Guard Service.
+  Teacher persists a revisioned class policy; offline/restarted/new Students get
+  the latest full document. Old ACKs cannot overwrite a newer policy. Hardware
+  has no day/lease/disconnect expiry. Optional restore requires explicit hardware
+  session end; Teacher exit and stopping presentation never imply Unblock.
+- Added bounded Student OS worker and the service's pre-login/offline reconciler.
+  Windows executes an embedded fixed PowerShell script with JSON stdin, 45s
+  deadline, protected mutex, admin/SYSTEM-owned ProgramData state and a flushed
+  atomic rollback journal before mutation. Fresh service heartbeat prevents an
+  older running Guard binary from claiming durable hardware support. Errors
+  before persistence retry, periodic reports refresh status, and stale status fails.
+- Windows backend: removable-disk read/write machine policy; positively identified
+  Wi-Fi/tether adapters; Bluetooth radios with input ancestry protection; camera
+  and microphone capture PnP endpoints. Refuses active/unknown/virtual management
+  route changes. Preserves USB controllers, keyboard/mouse, speakers, previously
+  disabled devices and unrelated registry policies. Unplugged restore entries
+  remain durable. Local Administrator emergency CLI: --hardware-reset.
+- Verified: full Rust suite 249 passed / 2 ignored; focused hardware filter 5
+  passed (includes 2 pre-existing media hardware tests). Windows x64 cross-target
+  cargo check passed for Classroom, ClassroomStudent and ClassroomGuardService.
+  Non-strict Clippy passed with 197 existing warnings and none in the new hardware
+  modules. New Rust modules formatted; git diff --check passed.
+- Flutter analyzer --no-fatal-infos passed (4 existing informational findings);
+  3 Hardware Control tests plus 1 badge regression passed. Actual PowerShell
+  enforcer AST/functions passed mocked contract cases: service heartbeat,
+  management/virtual route, tether and unknown USB Ethernet classification,
+  journal-before-mutation, camera/microphone versus speaker/input, pre-disabled
+  baseline, Bluetooth ancestry, unplug/replug restore, exact storage baseline,
+  reboot and fixed USB media. These are mock/source checks, NOT Windows runtime.
+- Limits: elevated Student and updated installed/running Guard service required
+  for new policy commands; standard-token Agent is Unsupported (no new privilege
+  broker). Hotplug uses periodic scans with a possible access window. USB open
+  handles/cached decisions stay Pending until reboot; fixed USB media/unknown
+  tether drivers report Unsupported. No guarantee against local Administrator or
+  active LAN impersonation; existing tools LAN transport/auth model is unchanged.
+- Details and Windows references: docs/26_HARDWARE_CONTROL.md. No release package
+  built, no active Teacher replaced, no Student deployed, no privacy changes.
+  Exact next step when Windows becomes available: paired fresh roles/updated
+  service, then execute the documented real-device/reboot/standard-user/restore
+  matrix. Do not claim OS runtime or performance acceptance from these checks.

@@ -30,6 +30,7 @@ mod activity_jobs;
 mod app_jobs;
 mod file_tree;
 mod fs_jobs;
+mod hardware;
 mod launch;
 mod power;
 mod screenshot;
@@ -218,6 +219,7 @@ struct Job {
 }
 #[derive(Default)]
 struct State {
+    hardware: hardware::Room,
     badge: HashMap<String, BadgeState>,
     badge_path: Option<PathBuf>,
     jobs: VecDeque<Job>,
@@ -449,7 +451,7 @@ impl Hub {
         let mut apps_blocked: Vec<&String> = s.apps_blocked.iter().collect();
         apps_blocked.sort();
         let copilot_blocked: Vec<&String> = s.copilot_blocked.iter().collect();
-        json!({"monitoring_badges":badges,"connection_popup":self.connection_popup(),"fs_jobs":fs_jobs,"locked":locked,"clipboard_blocked":clipboard_blocked,"vscode_blocked":vscode_blocked,"apps_blocked":apps_blocked,"copilot_blocked":copilot_blocked,"internet":s.internet,"capabilities":s.capabilities,"ready":s.peers.keys().collect::<Vec<_>>(),"jobs":s.jobs.iter().map(|j|json!({"id":j.packet.id,"kind":j.packet.action,"name":j.packet.name,"size":j.packet.size,"text":j.packet.text.chars().take(240).collect::<String>(),"targets":j.targets.iter().map(|(id,t)|json!({"id":id,"status":t.status,"done":t.done,"reply":t.reply,"error":t.error})).collect::<Vec<_>>()})).collect::<Vec<_>>()})
+        json!({"hardware":s.hardware.snapshot(&s.peers, &s.capabilities),"monitoring_badges":badges,"connection_popup":self.connection_popup(),"fs_jobs":fs_jobs,"locked":locked,"clipboard_blocked":clipboard_blocked,"vscode_blocked":vscode_blocked,"apps_blocked":apps_blocked,"copilot_blocked":copilot_blocked,"internet":s.internet,"capabilities":s.capabilities,"ready":s.peers.keys().collect::<Vec<_>>(),"jobs":s.jobs.iter().map(|j|json!({"id":j.packet.id,"kind":j.packet.action,"name":j.packet.name,"size":j.packet.size,"text":j.packet.text.chars().take(240).collect::<String>(),"targets":j.targets.iter().map(|(id,t)|json!({"id":id,"status":t.status,"done":t.done,"reply":t.reply,"error":t.error})).collect::<Vec<_>>()})).collect::<Vec<_>>()})
     }
     /// Hashes a staged file off the caller's thread, then offers it to every
     /// recipient that has not been cancelled meanwhile. The hash lets Students
@@ -1307,7 +1309,7 @@ fn serve(
             }
         }
         if let Some(c) = &capability {
-            st.capabilities.insert(hello.student.clone(), json!({"monitoring_badge":c["monitoring_badge"],"terminal":c["terminal"],"dev_update":c["dev_update"],"connection_popup":c["connection_popup"],"fs":c["fs"],"screenshot":c["screenshot"],"website":c["website"],"launch":c["launch"],"power":c["power"],"guard":c["guard"],"copilot_network":c["copilot_network"],"activity":c["activity"],"vscode":c["vscode"],"vscode_list":c["vscode_list"],"apps":c["apps"],"apps_blocked":c["apps_blocked"],"apps_policy":c["apps_policy"],"internet":c["internet"],"internet_fp":c["internet_fp"],"vscode_fp":c["vscode_fp"],"copilot_blocked":c["copilot_blocked"],"os":c["os"],"arch":c["arch"],"build":c["build"],"pid":c["pid"]}));
+            st.capabilities.insert(hello.student.clone(), json!({"hardware":c["hardware"],"monitoring_badge":c["monitoring_badge"],"terminal":c["terminal"],"dev_update":c["dev_update"],"connection_popup":c["connection_popup"],"fs":c["fs"],"screenshot":c["screenshot"],"website":c["website"],"launch":c["launch"],"power":c["power"],"guard":c["guard"],"copilot_network":c["copilot_network"],"activity":c["activity"],"vscode":c["vscode"],"vscode_list":c["vscode_list"],"apps":c["apps"],"apps_blocked":c["apps_blocked"],"apps_policy":c["apps_policy"],"internet":c["internet"],"internet_fp":c["internet_fp"],"vscode_fp":c["vscode_fp"],"copilot_blocked":c["copilot_blocked"],"os":c["os"],"arch":c["arch"],"build":c["build"],"pid":c["pid"]}));
         }
         g
     };
@@ -1317,6 +1319,8 @@ fn serve(
     let badge_supported = capability
         .as_ref()
         .is_some_and(|c| c["monitoring_badge"] == 1);
+    let hardware_supported = capability.as_ref().is_some_and(|c| c["hardware"] == 1);
+    let mut last_hardware = None;
     let mut last_badge = None;
     let mut last_popup = None;
     let activity_supported = capability.as_ref().is_some_and(|c| c["activity"] == 1);
@@ -1337,7 +1341,10 @@ fn serve(
                 registered(roster, &hello.student, peer),
                 "Student left classroom"
             );
-            if p.action == "monitoring_badge_ack" {
+            if p.action == "hardware_ack" {
+                hub.hardware_ack(&hello.student, &p)?;
+                send(s, &packet("ok"))?;
+            } else if p.action == "monitoring_badge_ack" {
                 hub.badge_ack(&hello.student, &p)?;
                 send(s, &packet("ok"))?;
             } else if p.action == "event" {
@@ -1345,6 +1352,12 @@ fn serve(
                 send(s, &packet("ok"))?;
             } else {
                 anyhow::ensure!(p.action == "poll", "Invalid tools action");
+                if let Some(policy) =
+                    hub.hardware_poll(&hello.student, hardware_supported, &mut last_hardware)?
+                {
+                    send(s, &policy)?;
+                    continue;
+                }
                 let badge = {
                     let mut st = hub.0.lock().unwrap();
                     if badge_supported {
@@ -1543,6 +1556,13 @@ impl Inbox {
         let mut events = self.events.lock().unwrap();
         events.retain(|old| old.action != "monitoring_badge_ack");
         events.push_back(p);
+    }
+    pub(crate) fn hardware_ack(&self, p: ToolPacket) {
+        let mut events = self.events.lock().unwrap();
+        events.retain(|old| old.action != "hardware_ack");
+        if events.len() < 256 {
+            events.push_back(p);
+        }
     }
     pub fn initialize_connection_popup(&self, profile: &Path, default: bool) {
         let path = profile.with_file_name("connection-popup.txt");
@@ -1795,6 +1815,8 @@ pub fn student(
             // relaunches it with the same connection info it already has.
             crate::guard_service::ensure_installed(*address.ip(), address.port().saturating_sub(2));
         }
+        let hardware_request =
+            crate::hardware_control::start(Arc::clone(&inbox), Arc::clone(&cancel), *address.ip());
         let mut fs_run: Option<fs_jobs::Run> = None;
         let mut fs_pending = VecDeque::<ToolPacket>::new();
         let list_active = Arc::new(AtomicUsize::new(0));
@@ -1861,6 +1883,8 @@ pub fn student(
                     let mut capabilities = super::dev_update::capabilities();
                     capabilities["locked"] = json!(u8::from(inbox.lock_state().1.is_some()));
                     capabilities["clipboard_blocked"] = json!(u8::from(inbox.clipboard_blocked()));
+                    capabilities["hardware"] =
+                        json!(u8::from(crate::hardware_control::supported()));
                     capabilities["guard"] = json!(u8::from(guard.supported()));
                     capabilities["copilot_network"] = json!(u8::from(guard.supported()));
                     capabilities["copilot_blocked"] = json!(u8::from(guard.copilot_blocked()));
@@ -1961,6 +1985,16 @@ pub fn student(
                             }
                         }
                         match p.action.as_str() {
+                            "hardware_policy" => {
+                                let policy: crate::hardware_control::Policy =
+                                    serde_json::from_str(&p.text)?;
+                                policy.validate()?;
+                                anyhow::ensure!(
+                                    policy.revision == p.id,
+                                    "Hardware revision mismatch"
+                                );
+                                *hardware_request.lock().unwrap() = Some(policy);
+                            }
                             "monitoring_badge" => {
                                 anyhow::ensure!(
                                     matches!(p.status.as_str(), "on" | "off") && p.id.len() == 32,

@@ -18,6 +18,7 @@ import 'file_collection.dart';
 import 'launch_apps.dart';
 import 'open_website.dart';
 import 'monitoring_badge.dart';
+import 'hardware_control.dart';
 import 'power_controls.dart';
 import 'internet_access.dart';
 import 'activity_window.dart';
@@ -60,6 +61,7 @@ Future<void> main(List<String> args) async {
   final internetIds = agent.option('--internet-ids');
   final vscodeIds = agent.option('--vscode-ids');
   final appsIds = agent.option('--apps-ids');
+  final hardware = agent.option('--hardware-control') != null;
   final terminalId = agent.option('--terminal-id');
   const lifecycle = MethodChannel('classroom/lifecycle');
   lifecycle.setMethodCallHandler((call) async {
@@ -69,6 +71,7 @@ Future<void> main(List<String> args) async {
             activityId != null ||
             internetIds != null ||
             vscodeIds != null ||
+            hardware ||
             appsIds != null ||
             terminalId != null)) {
       await agent.command('show_console');
@@ -114,7 +117,12 @@ Future<void> main(List<String> args) async {
   final Widget home;
   final Size windowSize, minimumSize;
   final String title;
-  if (terminalId != null) {
+  if (hardware) {
+    home = HardwareControlWindow(agent: agent);
+    windowSize = const Size(1100, 760);
+    minimumSize = const Size(820, 560);
+    title = 'Hardware Control · Toàn bộ phòng máy';
+  } else if (terminalId != null) {
     final name = agent.option('--files-name') ?? 'Student';
     home = RemoteTerminalWindow(
       agent: agent,
@@ -196,6 +204,7 @@ Future<void> main(List<String> args) async {
     title = 'Classroom · Teacher console';
   }
   final dependent =
+      hardware ||
       filesId != null ||
       activityId != null ||
       internetIds != null ||
@@ -1148,6 +1157,16 @@ class _ConsoleState extends State<Console> with WindowListener {
                               Icons.rocket_launch_outlined,
                               size: 18,
                             ),
+                          ),
+                          IconButton(
+                            tooltip: 'Hardware Control • toàn bộ phòng máy',
+                            onPressed: agent.connected && !agent.commandBusy
+                                ? () {
+                                    agent.pendingObserveFocus = 'hardware';
+                                    agent.command('hardware_window');
+                                  }
+                                : null,
+                            icon: const Icon(Icons.usb_outlined, size: 18),
                           ),
                           IconButton(
                             tooltip:
