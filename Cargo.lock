@@ -2083,6 +2083,8 @@ version = "1.2.0"
 dependencies = [
  "media-core",
  "minifb",
+ "objc2",
+ "objc2-app-kit",
 ]
 
 [[package]]

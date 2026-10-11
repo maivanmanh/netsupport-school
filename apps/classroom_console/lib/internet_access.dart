@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'agent.dart';
+import 'website_dependencies.dart';
 
 const _teal = Color(0xff156b79);
 const _bg = Color(0xfff3f5f9);
@@ -8,15 +9,36 @@ const _danger = Color(0xffb83b40);
 
 /// A saved, named list of sites (one rule per line; `*` wildcards allowed).
 class SiteList {
-  SiteList({required this.id, required this.name, required this.rules});
+  SiteList({
+    required this.id,
+    required this.name,
+    required this.rules,
+    List<WebsiteGroup>? groups,
+  }) : groups = groups ?? [];
   final String id;
   String name, rules;
+  final List<WebsiteGroup> groups;
   factory SiteList.fromJson(Map<dynamic, dynamic> j) => SiteList(
     id: '${j['id']}',
     name: '${j['name'] ?? 'List'}',
     rules: '${j['rules'] ?? ''}',
+    groups: [
+      for (final g in j['groups'] as List? ?? [])
+        if (g is Map) WebsiteGroup.fromJson(g),
+    ],
   );
-  Map<String, dynamic> toJson() => {'id': id, 'name': name, 'rules': rules};
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'rules': rules,
+    'groups': groups.map((g) => g.toJson()).toList(),
+  };
+}
+
+class _SavedWebsite {
+  const _SavedWebsite(this.list, this.group);
+  final SiteList list;
+  final WebsiteGroup group;
 }
 
 const _presets = <String, String>{
@@ -100,6 +122,13 @@ class InternetWindow extends StatefulWidget {
 class _InternetWindowState extends State<InternetWindow> {
   List<SiteList> lists = [];
   late final text = TextEditingController();
+  final website = TextEditingController();
+  WebsiteScanner? scanner;
+  WebsiteGroup? scanning;
+  String? scanNotice;
+  String browserPath = '';
+  Future<void> _saveChain = Future.value();
+  bool get scanningNow => scanner != null;
   String mode = 'block_all';
   String? listId;
   int lease = 240;
@@ -115,6 +144,32 @@ class _InternetWindowState extends State<InternetWindow> {
       if (l.id == listId) return l;
     }
     return null;
+  }
+
+  List<_SavedWebsite> get savedWebsites => [
+    for (final list in lists)
+      for (final group in list.groups) _SavedWebsite(list, group),
+  ];
+
+  _SavedWebsite? findSavedWebsite(String value) {
+    try {
+      final host = websiteUri(value).host.toLowerCase();
+      for (final saved in savedWebsites) {
+        if (saved.group.host == host) return saved;
+      }
+    } on FormatException {
+      // Partial or invalid input has no exact match yet.
+    }
+    return null;
+  }
+
+  void selectSavedWebsite(_SavedWebsite saved) {
+    if (listId != saved.list.id) select(saved.list.id);
+    website.text = saved.group.url;
+    setState(() {
+      scanNotice =
+          'Already saved in “${saved.list.name}”. Use the saved group or rescan it.';
+    });
   }
 
   @override
@@ -140,8 +195,10 @@ class _InternetWindowState extends State<InternetWindow> {
   }
 
   void applyPreferences() {
+    browserPath = agent.preferences['website_scan_browser'] as String? ?? '';
     lists = [
-      for (final l in (agent.preferences['internet_lists'] as List? ?? const []))
+      for (final l
+          in (agent.preferences['internet_lists'] as List? ?? const []))
         if (l is Map) SiteList.fromJson(l),
     ];
     final last = agent.preferences['internet_last'];
@@ -157,16 +214,28 @@ class _InternetWindowState extends State<InternetWindow> {
   @override
   void dispose() {
     agent.removeListener(waitForAgent);
+    scanner?.cancel();
+    website.dispose();
     text.dispose();
     super.dispose();
   }
 
-  void saveLists() {
+  Future<void> saveLists() async {
     current?.rules = text.text;
-    agent.savePreferences({
+    final changes = <String, dynamic>{
       'internet_lists': lists.map((l) => l.toJson()).toList(),
       'internet_last': {'mode': mode, 'lease': lease, 'list': listId},
-    });
+      'website_scan_browser': browserPath,
+    };
+    final previous = _saveChain;
+    final next = () async {
+      try {
+        await previous;
+      } catch (_) {}
+      await agent.savePreferences(changes);
+    }();
+    _saveChain = next;
+    await next;
   }
 
   void select(String? id) {
@@ -257,18 +326,153 @@ class _InternetWindowState extends State<InternetWindow> {
     setState(() => text.text = existing.isEmpty ? rules : '$existing\n$rules');
   }
 
-  Future<void> apply() async {
-    if (busy) return;
-    final rules = text.text
-        .split('\n')
-        .map((l) => l.trim())
-        .where((l) => l.isNotEmpty)
-        .toList();
+  void toggleDependency(WebsiteDependency dependency, bool allowed) {
+    setState(() {
+      dependency.allowed = allowed;
+      scanNotice = 'Group saved. Press Apply to update Students.';
+    });
+    saveLists();
+  }
+
+  void removeGroup(WebsiteGroup group) {
+    setState(() {
+      current!.groups.remove(group);
+      scanNotice = 'Group removed. Press Apply to update Students.';
+    });
+    saveLists();
+  }
+
+  Future<void> configureBrowser() async {
+    final c = TextEditingController(text: browserPath);
+    final path = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Headless browser'),
+        content: SizedBox(
+          width: 520,
+          child: TextField(
+            controller: c,
+            decoration: const InputDecoration(
+              labelText: 'Chrome / Edge executable path',
+              helperText:
+                  'Leave empty to detect automatically. Each scan uses a separate temporary profile.',
+            ),
+            onSubmitted: (v) => Navigator.pop(context, v),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, c.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    c.dispose();
+    if (path == null || !mounted) return;
+    setState(() => browserPath = path.trim());
+    await saveLists();
+  }
+
+  Future<void> allowWebsite() async {
+    if (scanningNow || busy) return;
+    try {
+      final uri = websiteUri(website.text);
+      final saved = findSavedWebsite(uri.toString());
+      if (saved != null) {
+        if (listId != saved.list.id) select(saved.list.id);
+        setState(() {
+          scanNotice =
+              'Using the saved group in “${saved.list.name}”. Use Rescan to refresh it.';
+        });
+        await apply(closeAfter: false);
+        return;
+      }
+      var list = current;
+      if (list == null) {
+        list = SiteList(
+          id: DateTime.now().microsecondsSinceEpoch.toRadixString(36),
+          name: 'Allowed websites',
+          rules: text.text,
+        );
+        setState(() {
+          lists.add(list!);
+          listId = list.id;
+        });
+      }
+      final group = WebsiteGroup(uri.toString());
+      setState(() {
+        list!.groups.add(group);
+        website.clear();
+      });
+      await saveLists();
+      await scanGroup(group);
+      if (mounted) await apply(closeAfter: false);
+    } catch (e) {
+      if (mounted) setState(() => error = '$e');
+    }
+  }
+
+  Future<void> scanGroup(WebsiteGroup group) async {
+    if (scanningNow || busy) return;
+    final worker = WebsiteScanner();
+    setState(() {
+      scanner = worker;
+      scanning = group;
+      error = null;
+      scanNotice = null;
+    });
+    try {
+      final result = await worker.scan(group.url, browserPath: browserPath);
+      if (!mounted) return;
+      setState(() {
+        group.dependencies = result.dependencies;
+        group.scannedAt = DateTime.now().toUtc();
+        group.status = result.status;
+        group.note = result.note;
+        scanNotice = result.note;
+      });
+      await saveLists();
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          group.status = 'error';
+          group.note = '$e';
+          scanNotice =
+              'The main website will still be allowed; dependency scan failed.';
+          error = '$e';
+        });
+        await saveLists();
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          scanner = null;
+          scanning = null;
+        });
+      }
+    }
+  }
+
+  Future<void> apply({bool closeAfter = true}) async {
+    if (busy || scanningNow) return;
+    final rules =
+        (mode == 'allow_only'
+                ? effectiveWebsiteRules(text.text, current?.groups ?? [])
+                : text.text.split('\n'))
+            .map((l) => l.trim())
+            .where((l) => l.isNotEmpty)
+            .toList();
     if (listMode && rules.every((l) => l.startsWith('#'))) {
       setState(() => error = 'Add at least one site to the list.');
       return;
     }
-    saveLists();
+    await saveLists();
+    if (!mounted) return;
     setState(() {
       busy = true;
       error = null;
@@ -295,7 +499,8 @@ class _InternetWindowState extends State<InternetWindow> {
     final skippedList = (result['result'] as Map?)?['skipped'];
     setState(() {
       busy = false;
-      applied = true;
+      applied = closeAfter;
+      if (!closeAfter) scanNotice = 'Website group saved and policy sent.';
       skipped = [
         if (skippedList is List)
           for (final s in skippedList)
@@ -309,7 +514,7 @@ class _InternetWindowState extends State<InternetWindow> {
     // itself, with a brief confirmation first. If some computers were
     // skipped, stay open so the Teacher can actually read the list instead
     // of it flashing by.
-    if (skipped.isEmpty) {
+    if (skipped.isEmpty && closeAfter) {
       await Future<void>.delayed(const Duration(milliseconds: 900));
       if (mounted) await agent.finishApplication();
     }
@@ -366,7 +571,7 @@ class _InternetWindowState extends State<InternetWindow> {
                 children: [
                   _ModeSidebar(
                     mode: mode,
-                    busy: busy,
+                    busy: busy || scanningNow,
                     onSelect: (m) => setState(() => mode = m),
                   ),
                   const VerticalDivider(width: 1),
@@ -440,6 +645,13 @@ class _InternetWindowState extends State<InternetWindow> {
                         ),
                     ],
                   ),
+                  if (scanNotice != null) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      scanNotice!,
+                      style: const TextStyle(fontSize: 12, color: _teal),
+                    ),
+                  ],
                   if (error != null) ...[
                     const SizedBox(height: 8),
                     Text(
@@ -514,7 +726,9 @@ class _InternetWindowState extends State<InternetWindow> {
                       ),
                       const SizedBox(width: 8),
                       FilledButton.icon(
-                        onPressed: busy || applied ? null : apply,
+                        onPressed: busy || applied || scanningNow
+                            ? null
+                            : () => apply(),
                         icon: busy
                             ? const SizedBox(
                                 width: 16,
@@ -699,28 +913,32 @@ class _ListEditor extends StatelessWidget {
                 for (final l in state.lists)
                   DropdownMenuItem(value: l.id, child: Text(l.name)),
               ],
-              onChanged: state.select,
+              onChanged: state.scanningNow ? null : state.select,
             ),
           ),
           IconButton(
             tooltip: 'New list',
             icon: const Icon(Icons.add),
-            onPressed: state.newList,
+            onPressed: state.scanningNow ? null : state.newList,
           ),
           IconButton(
             tooltip: 'Rename',
             icon: const Icon(Icons.edit_outlined),
-            onPressed: state.current == null ? null : state.rename,
+            onPressed: state.current == null || state.scanningNow
+                ? null
+                : state.rename,
           ),
           IconButton(
             tooltip: 'Delete list',
             icon: const Icon(Icons.delete_outline),
-            onPressed: state.current == null ? null : state.delete,
+            onPressed: state.current == null || state.scanningNow
+                ? null
+                : state.delete,
           ),
           PopupMenuButton<String>(
             tooltip: 'Add a ready-made set of sites',
             icon: const Icon(Icons.playlist_add),
-            onSelected: state.addPreset,
+            onSelected: state.scanningNow ? null : state.addPreset,
             itemBuilder: (_) => [
               for (final p in _presets.keys)
                 PopupMenuItem(value: p, child: Text('Add: $p')),
@@ -730,19 +948,21 @@ class _ListEditor extends StatelessWidget {
       ),
       const SizedBox(height: 10),
       Expanded(
-        child: TextField(
-          controller: state.text,
-          expands: true,
-          maxLines: null,
-          minLines: null,
-          textAlignVertical: TextAlignVertical.top,
-          style: const TextStyle(fontFamily: 'Menlo', fontSize: 12.5),
-          decoration: const InputDecoration(
-            hintText:
-                'One site per line, e.g.\nwikipedia.org\n*.edu.vn\n203.0.113.0/24\n# lines starting with # are notes',
-            border: OutlineInputBorder(),
-          ),
-        ),
+        child: state.mode == 'allow_only'
+            ? _WebsiteGroups(state: state)
+            : TextField(
+                controller: state.text,
+                expands: true,
+                maxLines: null,
+                minLines: null,
+                textAlignVertical: TextAlignVertical.top,
+                style: const TextStyle(fontFamily: 'Menlo', fontSize: 12.5),
+                decoration: const InputDecoration(
+                  hintText:
+                      'One site per line, e.g.\nwikipedia.org\n*.edu.vn\n203.0.113.0/24\n# lines starting with # are notes',
+                  border: OutlineInputBorder(),
+                ),
+              ),
       ),
       const SizedBox(height: 8),
       const Text(
@@ -750,6 +970,278 @@ class _ListEditor extends StatelessWidget {
         '* matches any text. Works for every program on the computer, but '
         'HTTPS shows only the site name, never the page after the /.',
         style: TextStyle(fontSize: 11.5, color: Colors.blueGrey),
+      ),
+    ],
+  );
+}
+
+class _WebsiteGroups extends StatelessWidget {
+  const _WebsiteGroups({required this.state});
+  final _InternetWindowState state;
+  @override
+  Widget build(BuildContext context) => Column(
+    children: [
+      Row(
+        children: [
+          Expanded(
+            child: Autocomplete<_SavedWebsite>(
+              textEditingController: state.website,
+              displayStringForOption: (saved) => saved.group.url,
+              optionsBuilder: (value) {
+                final query = value.text.trim().toLowerCase();
+                if (query.isEmpty) return const [];
+                final normalized = query.replaceFirst(
+                  RegExp(r'^https?://'),
+                  '',
+                );
+                return state.savedWebsites
+                    .where(
+                      (saved) =>
+                          saved.group.url.toLowerCase().contains(query) ||
+                          saved.group.host.contains(normalized),
+                    )
+                    .take(8);
+              },
+              onSelected: state.selectSavedWebsite,
+              fieldViewBuilder: (context, controller, focusNode, onSubmitted) =>
+                  TextField(
+                    controller: controller,
+                    focusNode: focusNode,
+                    enabled: !state.scanningNow,
+                    decoration: const InputDecoration(
+                      labelText: 'Website to allow',
+                      hintText: 'https://flutter.dev',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                      suffixIcon: Icon(Icons.arrow_drop_down),
+                    ),
+                    onSubmitted: (_) => state.allowWebsite(),
+                  ),
+              optionsViewBuilder: (context, onSelected, options) {
+                final saved = options.toList();
+                return Align(
+                  alignment: Alignment.topLeft,
+                  child: Material(
+                    elevation: 5,
+                    borderRadius: BorderRadius.circular(8),
+                    clipBehavior: Clip.antiAlias,
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(
+                        maxWidth: 560,
+                        maxHeight: 240,
+                      ),
+                      child: ListView.separated(
+                        padding: EdgeInsets.zero,
+                        shrinkWrap: true,
+                        itemCount: saved.length,
+                        separatorBuilder: (_, _) => const Divider(height: 1),
+                        itemBuilder: (context, index) {
+                          final item = saved[index];
+                          final highlighted =
+                              AutocompleteHighlightedOption.of(context) ==
+                              index;
+                          return ListTile(
+                            dense: true,
+                            selected: highlighted,
+                            leading: const Icon(Icons.language, size: 19),
+                            title: Text(
+                              item.group.url,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            subtitle: Text(
+                              'Already saved in ${item.list.name} · '
+                              '${item.group.dependencies.length} dependency domains',
+                            ),
+                            trailing: const Icon(Icons.check_circle_outline),
+                            onTap: () => onSelected(item),
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          const SizedBox(width: 8),
+          FilledButton.icon(
+            onPressed: state.scanningNow ? null : state.allowWebsite,
+            icon: const Icon(Icons.add_link, size: 18),
+            label: Text(
+              state.findSavedWebsite(state.website.text) == null
+                  ? 'Allow website'
+                  : 'Use saved group',
+            ),
+          ),
+          IconButton(
+            tooltip: 'Configure Chrome / Edge',
+            onPressed: state.scanningNow ? null : state.configureBrowser,
+            icon: const Icon(Icons.settings_outlined, size: 19),
+          ),
+        ],
+      ),
+      const SizedBox(height: 6),
+      if (state.scanningNow)
+        Row(
+          children: [
+            const SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Scanning ${state.scanning!.host} · up to 15s',
+                style: const TextStyle(fontSize: 12),
+              ),
+            ),
+            TextButton(
+              onPressed: () => state.scanner?.cancel(),
+              child: const Text('Stop'),
+            ),
+          ],
+        )
+      else
+        const Align(
+          alignment: Alignment.centerLeft,
+          child: Text(
+            'Static resource domains are added automatically. Saved groups are reused without scanning.',
+            style: TextStyle(fontSize: 11.5, color: Colors.blueGrey),
+          ),
+        ),
+      const SizedBox(height: 6),
+      Expanded(
+        child: ListView(
+          children: [
+            if (state.current?.groups.isEmpty ?? true)
+              const Padding(
+                padding: EdgeInsets.all(20),
+                child: Text(
+                  'Add a website above, or enter manual rules below.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.blueGrey),
+                ),
+              ),
+            for (final g in state.current?.groups ?? <WebsiteGroup>[])
+              Card(
+                elevation: 0,
+                color: Colors.white,
+                clipBehavior: Clip.antiAlias,
+                child: ExpansionTile(
+                  key: ValueKey(g.url),
+                  tilePadding: const EdgeInsets.symmetric(horizontal: 10),
+                  leading: const Icon(Icons.language, color: _teal, size: 21),
+                  title: Text(
+                    g.host,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 13,
+                    ),
+                  ),
+                  subtitle: Text(
+                    'Allowed in list · ${g.dependencies.where((d) => d.allowed).length} supporting domains · '
+                    '${g.status == 'not_scanned' ? 'Not scanned' : g.status}',
+                    style: const TextStyle(fontSize: 11),
+                  ),
+                  childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                  children: [
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        g.url,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: Colors.blueGrey,
+                        ),
+                      ),
+                    ),
+                    if (g.scannedAt != null)
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          'Last scan: ${g.scannedAt!.toLocal().toString().split('.').first}',
+                          style: const TextStyle(fontSize: 11),
+                        ),
+                      ),
+                    if (g.note.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: Text(
+                          g.note,
+                          style: const TextStyle(fontSize: 11),
+                        ),
+                      ),
+                    for (final d in g.dependencies)
+                      CheckboxListTile(
+                        dense: true,
+                        visualDensity: VisualDensity.compact,
+                        contentPadding: EdgeInsets.zero,
+                        controlAffinity: ListTileControlAffinity.leading,
+                        value: d.allowed,
+                        title: Text(
+                          d.host,
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                        subtitle: Text(
+                          (d.types.toList()..sort()).join(', '),
+                          style: const TextStyle(fontSize: 10.5),
+                        ),
+                        onChanged: state.scanningNow
+                            ? null
+                            : (v) => state.toggleDependency(d, v!),
+                      ),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        TextButton.icon(
+                          onPressed: state.scanningNow
+                              ? null
+                              : () async {
+                                  await state.scanGroup(g);
+                                  if (state.mounted && state.error == null) {
+                                    await state.apply(closeAfter: false);
+                                  }
+                                },
+                          icon: const Icon(Icons.refresh, size: 16),
+                          label: const Text('Rescan'),
+                        ),
+                        TextButton.icon(
+                          onPressed: state.scanningNow
+                              ? null
+                              : () => state.removeGroup(g),
+                          icon: const Icon(Icons.delete_outline, size: 16),
+                          label: const Text('Remove'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ExpansionTile(
+              title: const Text('Manual rules', style: TextStyle(fontSize: 12)),
+              subtitle: const Text(
+                'Existing rules, wildcards and IP ranges',
+                style: TextStyle(fontSize: 11),
+              ),
+              children: [
+                TextField(
+                  controller: state.text,
+                  enabled: !state.scanningNow,
+                  minLines: 4,
+                  maxLines: 6,
+                  style: const TextStyle(fontFamily: 'Menlo', fontSize: 12),
+                  decoration: const InputDecoration(
+                    hintText: 'One site per line',
+                    border: OutlineInputBorder(),
+                  ),
+                  onChanged: (_) => state.saveLists(),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     ],
   );

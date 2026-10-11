@@ -6,6 +6,62 @@ use std::{
 
 use media_core::{DecodedFrameRef, MediaError, Renderer};
 use minifb::{ScaleMode, Window, WindowOptions};
+use objc2::MainThreadMarker;
+use objc2_app_kit::{NSApplication, NSApplicationPresentationOptions, NSWindow};
+
+/// AppKit presentation state is global to this app and must be restored on every
+/// session exit, including a lost Teacher connection or a renderer error.
+#[derive(Debug)]
+struct PresentationLock {
+    main_thread: MainThreadMarker,
+    original_options: NSApplicationPresentationOptions,
+}
+
+impl PresentationLock {
+    fn engage(window: &Window) -> Result<Self, MediaError> {
+        let main_thread = MainThreadMarker::new().ok_or_else(|| {
+            MediaError::Operation(
+                "macOS presentation window must be created on the main thread".to_owned(),
+            )
+        })?;
+        let app = NSApplication::sharedApplication(main_thread);
+        let original_options = app.presentationOptions();
+        let transient_options = original_options
+            & !(NSApplicationPresentationOptions::AutoHideDock
+                | NSApplicationPresentationOptions::AutoHideMenuBar);
+        let focus_options = NSApplicationPresentationOptions::HideDock
+            | NSApplicationPresentationOptions::HideMenuBar
+            | NSApplicationPresentationOptions::DisableAppleMenu
+            | NSApplicationPresentationOptions::DisableProcessSwitching
+            | NSApplicationPresentationOptions::DisableForceQuit
+            | NSApplicationPresentationOptions::DisableSessionTermination
+            | NSApplicationPresentationOptions::DisableHideApplication
+            | NSApplicationPresentationOptions::DisableCursorLocationAssistance;
+        app.setPresentationOptions(transient_options | focus_options);
+        app.activate();
+
+        // minifb owns this NSWindow for the lifetime of `window`; this temporary
+        // borrow is used only to make that same presentation surface key/front.
+        let native_window = window.get_window_handle().cast::<NSWindow>();
+        let native_window = unsafe { native_window.as_ref() }.ok_or_else(|| {
+            app.setPresentationOptions(original_options);
+            MediaError::Operation("minifb returned a null macOS window handle".to_owned())
+        })?;
+        native_window.makeKeyAndOrderFront(None);
+
+        Ok(Self {
+            main_thread,
+            original_options,
+        })
+    }
+}
+
+impl Drop for PresentationLock {
+    fn drop(&mut self) {
+        NSApplication::sharedApplication(self.main_thread)
+            .setPresentationOptions(self.original_options);
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -41,6 +97,7 @@ pub struct NativeRenderer {
     width: usize,
     height: usize,
     forced_presentation: bool,
+    presentation_lock: Option<PresentationLock>,
     last_topmost_maintenance: Cell<Instant>,
     /// O1: pointer drawn over the latest frame, sprite-style: the pixels under
     /// it are saved so pointer-only motion restores and redraws a small area.
@@ -98,6 +155,11 @@ impl NativeRenderer {
             window.topmost(true);
             window.set_cursor_visibility(false);
         }
+        let presentation_lock = if forced_presentation {
+            Some(PresentationLock::engage(&window)?)
+        } else {
+            None
+        };
         window.set_background_color(0, 0, 0);
         window.set_target_fps(0);
         Ok(Self {
@@ -106,6 +168,7 @@ impl NativeRenderer {
             width,
             height,
             forced_presentation,
+            presentation_lock,
             last_topmost_maintenance: Cell::new(Instant::now()),
             pointer: None,
             under: None,
@@ -215,6 +278,9 @@ impl Drop for NativeRenderer {
             // renderer failure and Exit; transmitted Teacher pointer is separate.
             self.window.set_cursor_visibility(true);
         }
+        // Restore the user's normal Dock/menu bar and keyboard shortcuts before
+        // the native presentation window is released.
+        drop(self.presentation_lock.take());
     }
 }
 

@@ -36,6 +36,7 @@ class ObserveWindow extends StatefulWidget {
 
 class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
   static const native = MethodChannel('classroom/observe');
+  static const permissions = MethodChannel('classroom/permissions');
   static const files = MethodChannel('classroom/files');
   static const recoveryTimeout = Duration(seconds: 15);
   Timer? tick, inputHeartbeat;
@@ -123,6 +124,22 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
   bool? capturingSystemKeys;
   bool systemKeyCaptureFailed = false;
   int lastFocusRequest = 0;
+
+  Future<void> requestMacAccessibility() async {
+    try {
+      final granted =
+          await permissions.invokeMethod<bool>('requestAccessibility') ?? false;
+      if (!mounted || !granted) return;
+      setState(() {
+        systemKeyCaptureFailed = false;
+        capturingSystemKeys = null;
+        modeError = null;
+      });
+      syncSystemKeys();
+    } catch (error) {
+      unawaited(widget.agent.log('Accessibility request failed: $error'));
+    }
+  }
 
   void syncSystemKeys() {
     if (!Platform.isWindows && !Platform.isMacOS) return;
@@ -1675,8 +1692,48 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                     Container(
                       width: double.infinity,
                       color: Colors.orange.shade50,
-                      padding: const EdgeInsets.all(8),
-                      child: Text(error),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.max,
+                        children: [
+                          Flexible(
+                            fit: FlexFit.loose,
+                            child: Text(
+                              error,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          if (Platform.isMacOS &&
+                              modeError?.startsWith(
+                                    'Allow Teacher Accessibility',
+                                  ) ==
+                                  true)
+                            TextButton.icon(
+                              key: const ValueKey(
+                                'request-accessibility-permission',
+                              ),
+                              onPressed: requestMacAccessibility,
+                              icon: const Icon(
+                                Icons.accessibility_new,
+                                size: 15,
+                              ),
+                              label: const Text('Request permission'),
+                              style: TextButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 6,
+                                ),
+                                minimumSize: const Size(0, 28),
+                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                visualDensity: VisualDensity.compact,
+                                textStyle: const TextStyle(fontSize: 12),
+                              ),
+                            ),
+                        ],
+                      ),
                     ),
                 ],
               ),

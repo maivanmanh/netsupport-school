@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:classroom_console/agent.dart';
 import 'package:classroom_console/observe.dart';
 import 'package:flutter/material.dart';
@@ -110,6 +112,109 @@ void main() {
     agent.dispose();
     messenger.setMockMethodCallHandler(
       const MethodChannel('classroom/observe'),
+      null,
+    );
+    messenger.setMockMethodCallHandler(
+      const MethodChannel('window_manager'),
+      null,
+    );
+  });
+
+  testWidgets('Accessibility warning has an in-place request button', (
+    tester,
+  ) async {
+    if (!Platform.isMacOS) return;
+    await tester.binding.setSurfaceSize(const Size(1600, 1000));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    var captureAttempts = 0;
+    var permissionRequests = 0;
+    messenger.setMockMethodCallHandler(
+      const MethodChannel('window_manager'),
+      (_) async => null,
+    );
+    messenger.setMockMethodCallHandler(
+      const MethodChannel('classroom/observe'),
+      (call) async {
+        if (call.method == 'attach') return 4;
+        if (call.method == 'stats') {
+          return {
+            'width': 1920,
+            'height': 1080,
+            'sequence': 2,
+            'native_frames': 2,
+            'connected': true,
+          };
+        }
+        if (call.method == 'captureSystemKeys' && call.arguments == true) {
+          captureAttempts++;
+          if (captureAttempts == 1) {
+            throw PlatformException(code: 'keyboard_permission');
+          }
+        }
+        return null;
+      },
+    );
+    messenger.setMockMethodCallHandler(
+      const MethodChannel('classroom/permissions'),
+      (call) async {
+        if (call.method == 'requestAccessibility') {
+          permissionRequests++;
+          return true;
+        }
+        return null;
+      },
+    );
+    final agent = ClassControlAgent()
+      ..state = {
+        'observe': {
+          'id': 'source',
+          'phase': 'live',
+          'mode': 'control',
+          'surface': '/fixture/frame',
+        },
+        'students': [
+          {'id': 'source', 'online': true},
+        ],
+      };
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ObserveWindow(agent: agent, studentId: 'source', name: 'Mac'),
+      ),
+    );
+    agent.notifyListeners();
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(
+      find.text('Allow Teacher Accessibility to forward macOS shortcuts'),
+      findsOneWidget,
+    );
+    final request = find.byKey(
+      const ValueKey('request-accessibility-permission'),
+    );
+    expect(request, findsOneWidget);
+    expect(find.text('Request permission'), findsOneWidget);
+    await tester.tap(request);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(permissionRequests, 1);
+    expect(captureAttempts, 2);
+    expect(
+      find.text('Allow Teacher Accessibility to forward macOS shortcuts'),
+      findsNothing,
+    );
+
+    await tester.pumpWidget(const SizedBox());
+    agent.dispose();
+    messenger.setMockMethodCallHandler(
+      const MethodChannel('classroom/observe'),
+      null,
+    );
+    messenger.setMockMethodCallHandler(
+      const MethodChannel('classroom/permissions'),
       null,
     );
     messenger.setMockMethodCallHandler(

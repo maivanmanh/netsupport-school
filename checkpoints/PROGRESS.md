@@ -1,3 +1,95 @@
+# 2026-10-10 — Lock Mac Student to Teacher presentation
+
+Incoming Teacher screen presentation on macOS now temporarily engages AppKit
+presentation options: hide Dock and menu bar, suppress Cmd+Tab/app hiding, and
+disable force-quit/session-termination shortcuts while the presentation window is
+active. The borderless minifb window is activated/keyed so input stays on the
+presentation surface. A scoped guard stores and restores the exact original
+presentation options on normal stop, control disconnect, renderer failure, or
+window teardown; the separate Student-source broadcast path is unchanged.
+
+`cargo test -p renderer-macos` passed (the crate currently has zero tests).
+The paired release build `paired-macos-share-focus-20261010` completed for Mac
+Teacher, Mac Student, Windows x64 Student and the two fresh bundled Student ZIPs.
+Artifacts are isolated under `target/mac-focus-share-build`; the active Teacher
+and Student deployments were not overwritten. `cargo fmt --all -- --check`
+still reports formatting differences in existing unrelated workspace files, so
+only the changed Rust file was formatted. Runtime lock/unlock verification on a
+real Mac Student is pending; deployment must first use the owner's stable Student
+path and any macOS privacy prompt must be granted manually.
+
+Owner then requested deployment to Mac `.2`. The Teacher updater replaced only
+`/Users/mvmanh/Classroom/Classroom Student.app` and launched build
+`1791625411-paired-macos-share-focus-20261010`; `.94` and `.106` were untouched.
+The first attempt failed to reconnect (`No route to host` to Teacher `.206:48900`)
+and the updater automatically restored the previous Student. After the owner
+granted Local Network to the exact bundle path above and the old app was restarted,
+the updater retry completed; Teacher confirms `.2` online on the new build.
+Presentation hide/restore behavior still needs a live Teacher-share test on the
+Mac Student; deployment confirmation alone is not runtime verification of focus
+locking.
+
+# 2026-10-10 — Windows browser discovery and saved website suggestions
+
+Headless browser discovery reads Windows environment variable names without
+assuming their casing, then checks the standard Program Files and Local AppData
+locations for Chrome/Edge. Chrome and Edge headless mode are supported on
+Windows; a configured executable path remains available for nonstandard installs.
+The website textbox now autocompletes saved groups by URL/host, shows the owning
+list and dependency count, switches to the saved list when selected, and reuses
+the existing scan without creating a duplicate or rescanning. A matching saved
+group changes the action to “Use saved group”; explicit Rescan remains available.
+
+Dart analyzer reported no issues and `git diff --check` passed. The Dart CLI then
+reported that it could not update its analytics timestamp under the sandboxed
+home-directory permissions. This UI follow-up has not been rebuilt or deployed.
+
+# 2026-10-10 — Website groups and bounded dependency scan
+
+The Internet Allow list UI now supports saved website groups. Allowing a new
+HTTP(S) site starts an isolated headless Chrome/Edge scan with a 15 s deadline,
+three scrolls, an inactivity cutoff, a 64-domain cap and 30 MB/2000 request caps.
+A fresh temporary browser profile is closed and removed after each scan. The
+Teacher persists scanned time, status, resource kinds and per-domain selection
+in `console-settings.json`; adding an already saved site reuses it without a
+scan. Rescan is explicit. Partial results survive timeout/cancellation.
+
+Successful CSS, JS, images, fonts and manifests from the main frame are selected
+by default. Same-site top-level redirects only are followed; external navigation,
+iframes, ad/tracker hosts and non-GET/HEAD requests are excluded. Main-frame API,
+Fetch and WebSocket domains are reported as unchecked review entries. A domain
+serving both static files and APIs is still granted as a whole if selected,
+reflecting the WFP/DNS domain-level rule granularity. Domain unions are deduped;
+removing a group preserves a domain used by another group. Existing manual rules
+and saved groups without browser scan remain available.
+
+Focused Flutter tests pass (URL validation, static/API classification, tracking,
+cap, persistence, legacy list loading and shared-domain removal). Dart analyzer
+is clean. A real local Chromium fixture verifies static resources, API reporting,
+iframe and external navigation rejection, POST rejection, timeout preserving
+partial dependencies, and Stop/cancel. A bounded real `https://flutter.dev`
+scan completed in about 3 seconds and found `cdn.jsdelivr.net`,
+`fonts.googleapis.com`, `fonts.gstatic.com`, `www.google.com`, and
+`www.gstatic.com`. Results are in ignored `target/website-live-scan.json`.
+
+Windows `.94` was initially offline; its pre-existing
+`Classroom-Manual-Dev-Student` task referenced a deleted executable. The paired
+build completed, and only that exact missing executable was restored at the
+existing task path. The task started the new Student and Teacher confirmed it
+online with Windows x64 and Guard capabilities. Other historical tasks and
+binaries were left untouched. A temporary allow-only website policy was sent
+to `.94`, its Student completion was confirmed in Teacher job state, and it was
+then restored to `open`; Teacher reports no active internet restriction. The
+follow-up HTTPS check over SSH was blocked by SSH authentication rejection, so
+network-level allow/deny behavior on Windows is not claimed as runtime-verified.
+No saved website preferences were changed by this policy check. The Internet
+access window is open for `.94` for owner validation. The feature is Teacher-only;
+the existing protocol and Student policy handler required no source changes.
+
+Next: owner can enter a site in the open Internet access window and confirm the
+saved dependency group and student browsing behavior. If Windows network
+verification is needed, restore SSH access and retry the HTTPS allow/deny probe.
+
 # 2026-10-10 — Repair Observe startup texture readiness deadlock
 
 Owner reported Observe stuck at Connecting after the blurred-preview change.
@@ -4522,3 +4614,36 @@ Do not automate privacy changes. Owner additionally requested a Windows CMD
 Unix-like command compatibility layer with tests; this is not implemented or
 shipped yet. Resume with permission/restart, Ctrl+C repair, Mac zsh validation,
 then compatibility implementation and one consolidated paired build.
+
+## 2026-10-10 — In-place Accessibility request from Observe
+
+Observe Control now keeps the macOS Accessibility warning compact and shows an
+icon-only request button beside it. The button invokes the existing native
+`requestAccessibility` prompt; after approval it immediately retries system
+shortcut capture. Focused Flutter test passed. The full `class_control_test.dart`
+file still has an unrelated failure in `class presentation keeps acknowledged
+shared Control selected` (expected a channel call that was not recorded).
+Paired release build `paired-observe-accessibility-request-20261010` completed
+for Mac Teacher, Mac Student and Windows x64 Student, with fresh Student ZIPs
+bundled and codesign verification successful. Artifacts are isolated under
+`target/mac-accessibility-request-build`; active Teacher remains at
+`target/present-recovery-build/Classroom Console.app` and was not replaced or
+restarted. Runtime prompt/shortcut retry still needs verification on macOS.
+
+Owner reported the request button was not visible because the running Teacher
+had not yet been updated. The paired bundle was then copied to the stable
+Teacher path after verifying and stopping the old Console/helper. It was
+re-registered with Spotlight/LaunchServices and started successfully; processes
+now point to `target/present-recovery-build`. Observe should be opened again for
+runtime verification. Accessibility prompt and shortcut retry remain to be
+confirmed.
+
+## 2026-10-10 — Compact labeled Accessibility request
+
+Replaced the far-right icon with an inline, compact `Request permission` text
+button immediately after the Accessibility warning. Focused Flutter widget test
+passed and `git diff --check` passed. Paired build
+`paired-observe-accessibility-link-20261010` completed for Mac Teacher, Mac
+Student and Windows x64 Student. Only the Teacher bundle was updated at
+`target/present-recovery-build/Classroom Console.app`; Student endpoints were
+not deployed. The new Teacher and helper are running from the stable path.

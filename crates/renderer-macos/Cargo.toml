@@ -10,6 +10,8 @@ media-core = { path = "../media-core" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 minifb = { version = "0.28.0", default-features = false }
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSWindow"] }
 
 [lints]
 workspace = true
