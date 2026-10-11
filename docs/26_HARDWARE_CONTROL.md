@@ -1,5 +1,9 @@
 # Hardware Control — 2026-10-11
 
+**CHƯA TEST WINDOWS THỰC TẾ.** Chỉ kiểm tra source, unit/widget tests,
+PowerShell mock và cross-target compilation. Chưa xác minh thực thi/chặn/khôi
+phục thiết bị trên Windows thật; không coi đây là bản đã nghiệm thu Windows.
+
 Owner-authorized addition to the existing Flutter Teacher / Rust Student. Owner
 explicitly states no Windows test machine is available: implement and validate
 source locally; do not deploy or claim Windows runtime acceptance.
