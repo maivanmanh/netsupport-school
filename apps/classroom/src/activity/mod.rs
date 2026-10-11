@@ -6,12 +6,17 @@
 //! plumbing and `docs/22_ACTIVITY_MONITORING.md` for the full design and its
 //! limits.
 //!
-//! Windows only. Nothing here reads keystrokes or clipboard content; see
-//! `clipboard_guard.rs` for the (blocking-only) clipboard control instead.
+//! Windows only. Nothing here reads keystrokes. Plain-text clipboard copies
+//! are recorded only while the Teacher has monitoring switched on — see
+//! [`clipboard`] — which is distinct from `clipboard_guard.rs`'s
+//! blocking-only mode (that one discards every copy and never reads it).
+pub mod clipboard;
 pub mod collector;
 pub mod history;
 #[cfg(windows)]
 mod windows;
+#[cfg(windows)]
+pub(crate) use windows::{process_name_for_pid, program_icon};
 
 use serde::Serialize;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -19,6 +24,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const MAX_WINDOWS: usize = 80;
 pub const MAX_TABS: usize = 80;
 pub const MAX_DOWNLOADS: usize = 50;
+pub const MAX_CLIPBOARD: usize = clipboard::MAX_ENTRIES;
 
 pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
@@ -56,6 +62,18 @@ pub struct BrowserWindow {
     pub unavailable: bool,
 }
 #[derive(Clone, Debug, Default, Serialize)]
+pub struct ClipboardEntry {
+    pub text: String,
+    /// `text` was cut off at [`clipboard::MAX_CHARS`] characters.
+    pub truncated: bool,
+    /// Foreground process at the moment of the copy, best effort (may be empty).
+    pub app: String,
+    pub unix_ms: i64,
+    /// How many later copies were near-duplicates of this one (merged rather
+    /// than listed again) — see `history::similar`.
+    pub duplicates: u32,
+}
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct DownloadEntry {
     pub name: String,
     pub url: String,
@@ -88,6 +106,8 @@ pub struct Report {
     pub windows_truncated: bool,
     pub browsers: Vec<BrowserWindow>,
     pub downloads: Vec<DownloadEntry>,
+    /// Every plain-text copy seen while monitoring was on, newest first.
+    pub clipboard: Vec<ClipboardEntry>,
     /// Every app seen this tracked session, open or closed, newest first.
     pub apps: Vec<AppEntry>,
     /// Every tab seen this tracked session, open or closed, newest first.
@@ -98,7 +118,9 @@ pub struct Report {
 
 #[cfg(windows)]
 pub fn build(history: &history::History, include_downloads: bool) -> Report {
-    windows::build(history, include_downloads)
+    let mut report = windows::build(history, include_downloads);
+    report.clipboard = history.clipboard();
+    report
 }
 #[cfg(not(windows))]
 pub fn build(_history: &history::History, _include_downloads: bool) -> Report {

@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use std::{
     path::PathBuf,
     sync::Mutex,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 use tracing::{info, warn};
 
@@ -59,7 +59,9 @@ pub struct InternetPolicy {
 pub struct Policy {
     pub internet: InternetPolicy,
     pub copilot_block: bool,
-    /// Minutes the policy survives without hearing from the Teacher.
+    /// Kept for old documents. A policy no longer lapses when the Teacher is
+    /// unreachable: it holds until the Teacher changes it or the local day
+    /// ends (see [`Guard::tick`]).
     pub lease_minutes: u32,
 }
 impl Default for Policy {
@@ -101,10 +103,26 @@ pub trait Enforcer: Send {
     fn clear(&mut self);
 }
 
+/// Short stable hash of an internet policy; empty for "open".
+pub fn fingerprint(internet: &InternetPolicy) -> String {
+    use sha2::{Digest, Sha256};
+    if internet.mode == Mode::Open {
+        return String::new();
+    }
+    let mut rules = internet.rules.clone();
+    rules.sort();
+    let digest = Sha256::digest(format!("{}|{}", internet.mode.name(), rules.join("\n")).as_bytes());
+    digest[..8].iter().map(|b| format!("{b:02x}")).collect()
+}
+
 #[derive(Serialize, Deserialize)]
 struct Saved {
     policy: Policy,
     last_seen_unix: u64,
+    /// Local day (`yyyymmdd`) the policy was applied; void on any other day.
+    /// `0` in files written before this existed.
+    #[serde(default)]
+    day: u32,
 }
 fn unix_secs() -> u64 {
     SystemTime::now()
@@ -115,6 +133,7 @@ fn unix_secs() -> u64 {
 struct State {
     enforcers: Vec<Box<dyn Enforcer>>,
     applied: Option<Policy>,
+    applied_day: u32,
     last_seen: std::time::Instant,
     last_saved: u64,
 }
@@ -133,6 +152,7 @@ impl Guard {
             state: Mutex::new(State {
                 enforcers,
                 applied: None,
+                applied_day: 0,
                 last_seen: std::time::Instant::now(),
                 last_saved: 0,
             }),
@@ -161,6 +181,7 @@ impl Guard {
         let saved = Saved {
             policy: policy.clone(),
             last_seen_unix: unix_secs(),
+            day: state.applied_day,
         };
         if let Ok(bytes) = serde_json::to_vec(&saved) {
             let temporary = self.file.with_extension("tmp");
@@ -250,6 +271,7 @@ impl Guard {
                 return Err(error);
             }
             state.applied = Some(policy);
+            state.applied_day = crate::local_day::today();
         }
         state.last_seen = std::time::Instant::now();
         self.save(&mut state);
@@ -271,8 +293,15 @@ impl Guard {
         let saved: Option<Saved> = std::fs::read(&self.file)
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok());
+        // Valid for the rest of the local day it was applied — whether or not
+        // the Teacher has been reachable since. Files from before day stamps
+        // fall back to the old lease once, and are stamped when resumed.
         let live = saved.filter(|s| {
-            unix_secs().saturating_sub(s.last_seen_unix) < u64::from(s.policy.lease_minutes) * 60
+            if s.day == 0 {
+                unix_secs().saturating_sub(s.last_seen_unix) < u64::from(s.policy.lease_minutes) * 60
+            } else {
+                s.day == crate::local_day::today()
+            }
         });
         match live {
             Some(saved) => {
@@ -305,21 +334,33 @@ impl Guard {
             self.save(&mut state);
         }
     }
-    /// Called while the Teacher is unreachable: lifts a policy whose lease ran out.
+    /// Lifts a policy left over from an earlier day. Cheap; called often.
+    /// Nothing else ends a policy: not a lost connection, not a Teacher
+    /// restart, not a Student restart.
     pub fn tick(&self) {
         let Ok(mut state) = self.state.try_lock() else {
             return;
         };
-        let Some(policy) = &state.applied else { return };
-        let lease = Duration::from_secs(u64::from(policy.lease_minutes) * 60);
-        if state.last_seen.elapsed() > lease {
-            warn!("Teacher unreachable for the whole lease; lifting Guard policy");
-            for e in &mut state.enforcers {
-                e.clear();
-            }
-            state.applied = None;
-            self.save(&mut state);
+        if state.applied.is_none() || state.applied_day == crate::local_day::today() {
+            return;
         }
+        warn!("Guard policy is from an earlier day; lifting it");
+        for e in &mut state.enforcers {
+            e.clear();
+        }
+        state.applied = None;
+        self.save(&mut state);
+    }
+    /// Fingerprint of the enforced internet policy (empty when open), which the
+    /// Student reports so a Teacher can tell whether it is in step.
+    pub fn internet_fingerprint(&self) -> String {
+        self.state
+            .lock()
+            .unwrap()
+            .applied
+            .as_ref()
+            .map(|p| fingerprint(&p.internet))
+            .unwrap_or_default()
     }
     pub fn status(&self) -> Value {
         json!({"supported":self.supported,"mode":self.mode()})
@@ -444,11 +485,51 @@ mod tests {
     }
 
     #[test]
+    fn a_policy_outlives_the_teacher_but_not_the_day() {
+        let dir = temp();
+        let log = std::sync::Arc::new(Mutex::new(Vec::new()));
+        // Applied today, last heard from the Teacher long ago: still in force.
+        let today = crate::local_day::today();
+        let saved = Saved {
+            policy: policy(Mode::BlockAll, &[], 1),
+            last_seen_unix: unix_secs() - 7 * 24 * 3600,
+            day: today,
+        };
+        std::fs::write(dir.join("guard-policy.json"), serde_json::to_vec(&saved).unwrap()).unwrap();
+        let guard = Guard::new(&dir, vec![Box::new(Recorder(log.clone()))], true);
+        guard.restore();
+        assert_eq!(guard.mode(), "block_all");
+        guard.tick();
+        assert_eq!(guard.mode(), "block_all");
+        // The same file stamped with another day is void.
+        let stale = Saved { day: today - 1, ..saved };
+        std::fs::write(dir.join("guard-policy.json"), serde_json::to_vec(&stale).unwrap()).unwrap();
+        let next = Guard::new(&dir, vec![Box::new(Recorder(log.clone()))], true);
+        next.restore();
+        assert_eq!(next.mode(), "open");
+        // A policy that was live when the day rolled over is lifted by tick.
+        guard.state.lock().unwrap().applied_day = today - 1;
+        guard.tick();
+        assert_eq!(guard.mode(), "open");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn fingerprints_ignore_rule_order_and_open_is_empty() {
+        let a = InternetPolicy { mode: Mode::AllowOnly, rules: vec!["a.com".into(), "b.com".into()] };
+        let b = InternetPolicy { mode: Mode::AllowOnly, rules: vec!["b.com".into(), "a.com".into()] };
+        assert_eq!(fingerprint(&a), fingerprint(&b));
+        assert_eq!(fingerprint(&InternetPolicy::default()), "");
+        assert_ne!(fingerprint(&a), fingerprint(&InternetPolicy { mode: Mode::BlockOnly, ..a.clone() }));
+    }
+
+    #[test]
     fn expired_saved_policy_is_cleared_and_unsupported_students_refuse() {
         let dir = temp();
         let saved = Saved {
             policy: policy(Mode::BlockAll, &[], 1),
             last_seen_unix: unix_secs() - 3600,
+            day: 0,
         };
         std::fs::write(
             dir.join("guard-policy.json"),

@@ -39,7 +39,12 @@ class VsCodeWindow extends StatefulWidget {
     required this.agent,
     required this.studentIds,
     required this.audience,
+    this.classWide = true,
   });
+
+  /// Whether this covers the whole class (so computers that join later get
+  /// the rule too) rather than a hand-picked group.
+  final bool classWide;
   final Agent agent;
   final List<String> studentIds;
   final String audience;
@@ -308,7 +313,7 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
       final response = await agent.request(
         'tool_copilot_policy',
         selected: ids,
-        input: {'enabled': value},
+        input: {'enabled': value, 'class_wide': widget.classWide},
       );
       failure = response['ok'] == true
           ? await waitForJob(response['job_id'])
@@ -367,6 +372,7 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
       'tool_vscode_policy',
       selected: widget.studentIds,
       input: {
+        'class_wide': widget.classWide,
         'policy': {'enabled': enabled, 'allowed': selected.toList()},
       },
       timeout: const Duration(seconds: 15),
@@ -634,8 +640,11 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
                                     final e = shown[i];
                                     final checked = selected.contains(e.id);
                                     return CheckboxListTile(
+                                      // Not on the allowlist while it is on = blocked.
                                       tileColor: newIds.contains(e.id)
                                           ? const Color(0xffe0f3ed)
+                                          : enabled && !checked
+                                          ? const Color(0xffffeaea)
                                           : null,
                                       dense: true,
                                       value: checked,

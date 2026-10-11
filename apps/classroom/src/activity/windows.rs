@@ -82,6 +82,11 @@ fn window_text(hwnd: HWND) -> String {
     }
 }
 /// `(file name, full path)` of the executable behind `pid`.
+/// `(file name, full path)` of the executable behind `pid`, uncached.
+pub(crate) fn process_name_for_pid(pid: u32) -> String {
+    let mut cache = HashMap::new();
+    process_name(pid, &mut cache).0
+}
 fn process_name(pid: u32, cache: &mut HashMap<u32, (String, String)>) -> (String, String) {
     if let Some(known) = cache.get(&pid) {
         return known.clone();
@@ -625,7 +630,7 @@ fn enrich_tabs(history: &History, app: &str, tabs: &mut [TabEntry]) {
 // ------------------------------------------------------------- Program icons
 
 /// The program's own icon as base64 PNG (32×32 shell "large" icon).
-fn program_icon(path: &str) -> Option<String> {
+pub(crate) fn program_icon(path: &str) -> Option<String> {
     let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
     let mut info = SHFILEINFOW::default();
     // SAFETY: `wide` is NUL-terminated and outlives the call; `info` is a
@@ -822,6 +827,7 @@ pub fn build(history: &History, include_downloads: bool) -> Report {
         windows_truncated,
         browsers,
         downloads,
+        clipboard: Vec::new(), // filled by activity::build after this returns
         apps,
         tabs,
         notes,

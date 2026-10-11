@@ -23,6 +23,7 @@ import 'internet_access.dart';
 import 'activity_window.dart';
 import 'files_window.dart';
 import 'vscode_access.dart';
+import 'app_access.dart';
 import 'remote_terminal.dart';
 
 Future<void> main(List<String> args) async {
@@ -58,6 +59,7 @@ Future<void> main(List<String> args) async {
   final activityId = agent.option('--activity-id');
   final internetIds = agent.option('--internet-ids');
   final vscodeIds = agent.option('--vscode-ids');
+  final appsIds = agent.option('--apps-ids');
   final terminalId = agent.option('--terminal-id');
   const lifecycle = MethodChannel('classroom/lifecycle');
   lifecycle.setMethodCallHandler((call) async {
@@ -67,6 +69,7 @@ Future<void> main(List<String> args) async {
             activityId != null ||
             internetIds != null ||
             vscodeIds != null ||
+            appsIds != null ||
             terminalId != null)) {
       await agent.command('show_console');
     }
@@ -143,16 +146,29 @@ Future<void> main(List<String> args) async {
       agent: agent,
       studentIds: internetIds.split(',').where((s) => s.isNotEmpty).toList(),
       audience: audience,
+      classWide: agent.option('--internet-scope') != 'selected',
     );
     windowSize = const Size(980, 660);
     minimumSize = const Size(860, 560);
     title = 'Internet access · $audience';
+  } else if (appsIds != null) {
+    final audience = agent.option('--apps-audience') ?? 'the class';
+    home = AppsWindow(
+      agent: agent,
+      studentIds: appsIds.split(',').where((s) => s.isNotEmpty).toList(),
+      audience: audience,
+      classWide: agent.option('--apps-scope') != 'selected',
+    );
+    windowSize = const Size(900, 700);
+    minimumSize = const Size(700, 520);
+    title = 'Application control · $audience';
   } else if (vscodeIds != null) {
     final audience = agent.option('--vscode-audience') ?? 'the class';
     home = VsCodeWindow(
       agent: agent,
       studentIds: vscodeIds.split(',').where((s) => s.isNotEmpty).toList(),
       audience: audience,
+      classWide: agent.option('--vscode-scope') != 'selected',
     );
     windowSize = const Size(1020, 720);
     minimumSize = const Size(860, 560);
@@ -184,6 +200,7 @@ Future<void> main(List<String> args) async {
       activityId != null ||
       internetIds != null ||
       vscodeIds != null ||
+      appsIds != null ||
       observeId != null ||
       terminalId != null;
   runApp(
@@ -303,33 +320,62 @@ class _ConsoleState extends State<Console> with WindowListener {
     input: {'enabled': !activityMonitoringOn},
   );
 
-  Future<void> internetAccess() {
+  Future<void> internetAccess() async {
     final ids = toolRecipients;
-    if (ids.isEmpty) return Future.value();
+    if (ids.isEmpty) return;
+    // Yesterday's remembered rule selections are cleared before a window opens.
+    await agent.expireDailyRules();
     final audience = selectionMode && selected.isNotEmpty
         ? '${ids.length} selected computers'
         : 'the class (${ids.length} online)';
     // Lets an already-open window come forward instead of silently doing
     // nothing when clicked again (mirrors Observe/Files/Activity).
     agent.pendingObserveFocus = 'internet';
-    return agent.request(
+    await agent.request(
       'internet_window',
       selected: ids,
-      input: {'audience': audience},
+      input: {
+        'audience': audience,
+        'scope': selectionMode && selected.isNotEmpty ? 'selected' : 'all',
+      },
     );
   }
 
-  Future<void> vscodeAccess() {
+  Future<void> vscodeAccess() async {
     final ids = toolRecipients;
-    if (ids.isEmpty) return Future.value();
+    if (ids.isEmpty) return;
+    // Yesterday's remembered rule selections are cleared before a window opens.
+    await agent.expireDailyRules();
     final audience = selectionMode && selected.isNotEmpty
         ? '${ids.length} selected computers'
         : 'the class (${ids.length} online)';
     agent.pendingObserveFocus = 'vscode';
-    return agent.request(
+    await agent.request(
       'vscode_window',
       selected: ids,
-      input: {'audience': audience},
+      input: {
+        'audience': audience,
+        'scope': selectionMode && selected.isNotEmpty ? 'selected' : 'all',
+      },
+    );
+  }
+
+  Future<void> appControl() async {
+    final ids = toolRecipients;
+    if (ids.isEmpty) return;
+    // Yesterday's remembered rule selections are cleared before a window opens.
+    await agent.expireDailyRules();
+    final audience = selectionMode && selected.isNotEmpty
+        ? '${ids.length} selected computers'
+        : 'the class (${ids.length} online)';
+    agent.pendingObserveFocus = 'apps';
+    await agent.request(
+      'app_window',
+      selected: ids,
+      input: {
+        'audience': audience,
+        'scope': selectionMode && selected.isNotEmpty ? 'selected' : 'all',
+      },
     );
   }
 
@@ -343,6 +389,7 @@ class _ConsoleState extends State<Console> with WindowListener {
       audience: selectionMode && selected.isNotEmpty
           ? '${ids.length} selected computers'
           : 'the class (${ids.length} online)',
+      classWide: !(selectionMode && selected.isNotEmpty),
     );
   }
 
@@ -1193,6 +1240,28 @@ class _ConsoleState extends State<Console> with WindowListener {
                                 ),
                                 child: const Icon(
                                   Icons.extension_outlined,
+                                  size: 18,
+                                ),
+                              ),
+                            ),
+                          ),
+                          AnimatedBuilder(
+                            animation: agent,
+                            builder: (context, _) => IconButton(
+                              tooltip: 'Application control',
+                              visualDensity: VisualDensity.compact,
+                              onPressed: !agent.commandBusy && canUseTools
+                                  ? appControl
+                                  : null,
+                              icon: Badge(
+                                isLabelVisible: appsBlockedStudents(
+                                  agent,
+                                ).isNotEmpty,
+                                label: Text(
+                                  '${appsBlockedStudents(agent).length}',
+                                ),
+                                child: const Icon(
+                                  Icons.block_outlined,
                                   size: 18,
                                 ),
                               ),

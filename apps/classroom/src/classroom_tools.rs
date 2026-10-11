@@ -27,6 +27,7 @@ const CHUNK: usize = 64 * 1024;
 pub const MAX_FILE: u64 = 4 * 1024 * 1024 * 1024;
 const PACE: Duration = Duration::from_millis(64); // ~1 MiB/s per transfer, at most two
 mod activity_jobs;
+mod app_jobs;
 mod file_tree;
 mod fs_jobs;
 mod launch;
@@ -232,6 +233,7 @@ struct State {
     internet: HashMap<String, String>,
     /// Students whose VS Code extension allowlist is currently enforced.
     vscode_blocked: std::collections::HashSet<String>,
+    apps_blocked: std::collections::HashSet<String>,
     copilot_blocked: std::collections::HashSet<String>,
     /// Bounded log of "a monitored Student disconnected" events, newest last;
     /// the Teacher UI tracks which it has already shown.
@@ -444,8 +446,10 @@ impl Hub {
         clipboard_blocked.sort();
         let mut vscode_blocked: Vec<&String> = s.vscode_blocked.iter().collect();
         vscode_blocked.sort();
+        let mut apps_blocked: Vec<&String> = s.apps_blocked.iter().collect();
+        apps_blocked.sort();
         let copilot_blocked: Vec<&String> = s.copilot_blocked.iter().collect();
-        json!({"monitoring_badges":badges,"connection_popup":self.connection_popup(),"fs_jobs":fs_jobs,"locked":locked,"clipboard_blocked":clipboard_blocked,"vscode_blocked":vscode_blocked,"copilot_blocked":copilot_blocked,"internet":s.internet,"capabilities":s.capabilities,"ready":s.peers.keys().collect::<Vec<_>>(),"jobs":s.jobs.iter().map(|j|json!({"id":j.packet.id,"kind":j.packet.action,"name":j.packet.name,"size":j.packet.size,"text":j.packet.text.chars().take(240).collect::<String>(),"targets":j.targets.iter().map(|(id,t)|json!({"id":id,"status":t.status,"done":t.done,"reply":t.reply,"error":t.error})).collect::<Vec<_>>()})).collect::<Vec<_>>()})
+        json!({"monitoring_badges":badges,"connection_popup":self.connection_popup(),"fs_jobs":fs_jobs,"locked":locked,"clipboard_blocked":clipboard_blocked,"vscode_blocked":vscode_blocked,"apps_blocked":apps_blocked,"copilot_blocked":copilot_blocked,"internet":s.internet,"capabilities":s.capabilities,"ready":s.peers.keys().collect::<Vec<_>>(),"jobs":s.jobs.iter().map(|j|json!({"id":j.packet.id,"kind":j.packet.action,"name":j.packet.name,"size":j.packet.size,"text":j.packet.text.chars().take(240).collect::<String>(),"targets":j.targets.iter().map(|(id,t)|json!({"id":id,"status":t.status,"done":t.done,"reply":t.reply,"error":t.error})).collect::<Vec<_>>()})).collect::<Vec<_>>()})
     }
     /// Hashes a staged file off the caller's thread, then offers it to every
     /// recipient that has not been cancelled meanwhile. The hash lets Students
@@ -571,6 +575,18 @@ impl Hub {
                 "vscode_open"
             }
             .into();
+            None
+        } else if action == "app_policy" {
+            let policy: crate::app_control::AppPolicy =
+                serde_json::from_value(input["policy"].clone())
+                    .context("Invalid application policy")?;
+            policy.validate()?;
+            p.text = serde_json::to_string(&policy)?;
+            anyhow::ensure!(
+                p.text.len() <= 8000,
+                "The application list is too long to send (keep it under about 400 entries)"
+            );
+            p.name = if policy.enabled { "app_block" } else { "app_open" }.into();
             None
         } else if action == "power" {
             let op = input["op"].as_str().unwrap_or("");
@@ -834,7 +850,9 @@ impl Hub {
             clipboard_blocked,
             internet,
             vscode_blocked,
+            apps_blocked,
             copilot_blocked,
+            capabilities,
             ..
         } = &mut *s;
         let Some(j) = jobs.iter_mut().find(|j| j.packet.id == p.id) else {
@@ -898,6 +916,57 @@ impl Hub {
                 vscode_blocked.remove(student);
             } else {
                 vscode_blocked.insert(student.to_owned());
+            }
+        }
+        if j.packet.action == "app_policy" && p.status == "complete" {
+            if j.packet.name == "app_open" {
+                apps_blocked.remove(student);
+            } else {
+                apps_blocked.insert(student.to_owned());
+            }
+            // Remember what the Student now enforces, so the Teacher's
+            // reconcile loop does not resend a rule that is already in force.
+            let applied = serde_json::from_str::<crate::app_control::AppPolicy>(&j.packet.text)
+                .map(|policy| crate::app_control::policy_hash(&policy))
+                .unwrap_or_default();
+            if let Some(entry) = capabilities.get_mut(student) {
+                entry["apps_policy"] = json!(applied);
+                entry["apps_blocked"] = json!(u8::from(j.packet.name != "app_open"));
+            }
+        }
+        if p.status == "complete" {
+            // Mirror the new state into the capability record, so the
+            // Teacher's reconcile loop sees it as in step without waiting
+            // for the Student to reconnect and say so.
+            if let Some(entry) = capabilities.get_mut(student) {
+                match j.packet.action.as_str() {
+                    "policy" => {
+                        if let Ok(policy) = serde_json::from_str::<crate::guard::Policy>(&j.packet.text) {
+                            entry["internet"] = json!(policy.internet.mode.name());
+                            entry["internet_fp"] = json!(crate::guard::fingerprint(&policy.internet));
+                        }
+                    }
+                    "copilot_policy" => {
+                        let on = serde_json::from_str::<Value>(&j.packet.text)
+                            .is_ok_and(|v| v["enabled"] == true);
+                        entry["copilot_blocked"] = json!(u8::from(on));
+                    }
+                    "vscode_policy" => {
+                        if let Ok(policy) =
+                            serde_json::from_str::<crate::vscode_control::VsCodePolicy>(&j.packet.text)
+                        {
+                            entry["vscode_fp"] = json!(policy.fingerprint());
+                        }
+                    }
+                    "power" => {
+                        match serde_json::from_str::<Value>(&j.packet.text).ok().and_then(|v| v["op"].as_str().map(str::to_owned)).as_deref() {
+                            Some("clipboard_block") => entry["clipboard_blocked"] = json!(1),
+                            Some("clipboard_allow") => entry["clipboard_blocked"] = json!(0),
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
         if j.packet.action == "copilot_policy" && p.status == "complete" {
@@ -1035,6 +1104,7 @@ impl Hub {
         state.clipboard_blocked.remove(student);
         state.internet.remove(student);
         state.vscode_blocked.remove(student);
+        state.apps_blocked.remove(student);
         state.copilot_blocked.remove(student);
         for job in &mut state.jobs {
             if let Some(target) = job.targets.get_mut(student) {
@@ -1207,6 +1277,11 @@ fn serve(
         } else {
             st.vscode_blocked.remove(&hello.student);
         }
+        if capability.as_ref().is_some_and(|c| c["apps_blocked"] == 1) {
+            st.apps_blocked.insert(hello.student.clone());
+        } else {
+            st.apps_blocked.remove(&hello.student);
+        }
         if capability
             .as_ref()
             .is_some_and(|c| c["copilot_blocked"] == 1)
@@ -1232,7 +1307,7 @@ fn serve(
             }
         }
         if let Some(c) = &capability {
-            st.capabilities.insert(hello.student.clone(), json!({"monitoring_badge":c["monitoring_badge"],"terminal":c["terminal"],"dev_update":c["dev_update"],"connection_popup":c["connection_popup"],"fs":c["fs"],"screenshot":c["screenshot"],"website":c["website"],"launch":c["launch"],"power":c["power"],"guard":c["guard"],"copilot_network":c["copilot_network"],"activity":c["activity"],"vscode":c["vscode"],"vscode_list":c["vscode_list"],"os":c["os"],"arch":c["arch"],"build":c["build"],"pid":c["pid"]}));
+            st.capabilities.insert(hello.student.clone(), json!({"monitoring_badge":c["monitoring_badge"],"terminal":c["terminal"],"dev_update":c["dev_update"],"connection_popup":c["connection_popup"],"fs":c["fs"],"screenshot":c["screenshot"],"website":c["website"],"launch":c["launch"],"power":c["power"],"guard":c["guard"],"copilot_network":c["copilot_network"],"activity":c["activity"],"vscode":c["vscode"],"vscode_list":c["vscode_list"],"apps":c["apps"],"apps_blocked":c["apps_blocked"],"apps_policy":c["apps_policy"],"internet":c["internet"],"internet_fp":c["internet_fp"],"vscode_fp":c["vscode_fp"],"copilot_blocked":c["copilot_blocked"],"os":c["os"],"arch":c["arch"],"build":c["build"],"pid":c["pid"]}));
         }
         g
     };
@@ -1517,16 +1592,31 @@ impl Inbox {
         }
     }
     /// Starts (or stops) clearing the clipboard on every copy. Idempotent.
+    /// Persists across a Student restart and a Teacher disconnect/restart —
+    /// lifted only by the Teacher's own choice or the local day ending (see
+    /// `clipboard_guard::state`).
     pub(crate) fn set_clipboard_block(&self, blocked: bool) -> Result<()> {
         let mut guard = self.clipboard_guard.lock().unwrap();
         if blocked {
             if guard.is_none() {
                 *guard = Some(super::clipboard_guard::ClipboardGuard::start()?);
             }
+            super::clipboard_guard::state::mark_applied()?;
         } else {
             *guard = None;
+            super::clipboard_guard::state::clear();
         }
         Ok(())
+    }
+    /// Startup/periodic: holds a block recorded for today, lifts one left
+    /// over from an earlier day. Never turns a block on by itself from
+    /// nothing — only resumes what was already recorded.
+    pub(crate) fn sync_clipboard_block(&self) {
+        let should = super::clipboard_guard::state::should_be_applied();
+        let has = self.clipboard_guard.lock().unwrap().is_some();
+        if should != has {
+            let _ = self.set_clipboard_block(should);
+        }
     }
     pub(crate) fn clipboard_blocked(&self) -> bool {
         self.clipboard_guard.lock().unwrap().is_some()
@@ -1544,9 +1634,11 @@ impl Inbox {
                 .retain(|p| !matches!(p.status.as_str(), "delivered" | "dismissed" | "replied"));
             session.clone_into(&mut current);
             self.message_epoch.fetch_add(1, Ordering::AcqRel);
-            // A different Teacher session cannot unlock this Student later.
+            // A different Teacher session cannot unlock this Student later —
+            // but clipboard block is a day-scoped class rule like the others
+            // (Guard, VS Code, applications) and must survive a Teacher
+            // restart/reconnect exactly like them, so it is left alone here.
             self.set_lock(None);
-            let _ = self.set_clipboard_block(false);
             info!("Student message session changed; obsolete popups cleared");
         }
     }
@@ -1690,13 +1782,11 @@ pub fn student(
         let mut terminals = Vec::<crate::remote_terminal::Worker>::new();
         let mut upload: Option<thread::JoinHandle<()>> = None;
         let mut diagnostic_request: Option<ToolPacket> = None;
-        let guard = Arc::new(crate::guard::for_student(
-            &super::startup::profile_path(None)
-                .ok()
-                .and_then(|p| p.parent().map(Path::to_path_buf))
-                .unwrap_or_else(std::env::temp_dir),
-            *address.ip(),
-        ));
+        let state_dir = super::startup::profile_path(None)
+            .ok()
+            .and_then(|p| p.parent().map(Path::to_path_buf))
+            .unwrap_or_else(std::env::temp_dir);
+        let guard = Arc::new(crate::guard::for_student(&state_dir, *address.ip()));
         guard.restore();
         if guard.supported() {
             // `address` is the tools port (control_port + 2, see the
@@ -1710,11 +1800,58 @@ pub fn student(
         let list_active = Arc::new(AtomicUsize::new(0));
         let activity_active = Arc::new(AtomicUsize::new(0));
         let vscode_active = Arc::new(AtomicUsize::new(0));
+        let app_active = Arc::new(AtomicUsize::new(0));
+        let app_enforcer = super::app_control::Enforcer::start();
+        inbox.sync_clipboard_block();
         let mut activity_lifecycle = activity_jobs::Lifecycle::new();
+        // Collection resumes by itself after a Student restart and keeps
+        // going while the Teacher is away; it ends with the local day.
+        let activity_file = state_dir.join("activity-monitoring.json");
         let mut activity_monitoring = false;
+        if let Some(day) = std::fs::read(&activity_file)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+            .filter(|v| v["on"] == true)
+            .and_then(|v| v["day"].as_u64())
+        {
+            if day == u64::from(crate::local_day::today()) {
+                activity_monitoring = true;
+                activity_lifecycle.set_enabled(true);
+            }
+        }
+        let mut last_expiry = Instant::now();
+        // Every rule lasts until the Teacher changes it or the local day
+        // ends; nothing lapses because the connection did.
+        macro_rules! expire_rules {
+            () => {
+                if last_expiry.elapsed() >= Duration::from_secs(30) {
+                    last_expiry = Instant::now();
+                    guard.tick();
+                    if let Err(error) = crate::vscode_control::expire_if_stale() {
+                        warn!(%error, "Could not lift an earlier day's VS Code policy");
+                    }
+                    if let Err(error) = app_enforcer.expire_if_stale() {
+                        warn!(%error, "Could not lift an earlier day's application block");
+                    }
+                    inbox.sync_clipboard_block();
+                    if activity_monitoring
+                        && std::fs::read(&activity_file)
+                            .ok()
+                            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+                            .and_then(|v| v["day"].as_u64())
+                            != Some(u64::from(crate::local_day::today()))
+                    {
+                        activity_monitoring = false;
+                        activity_lifecycle.set_enabled(false);
+                        let _ = std::fs::remove_file(&activity_file);
+                    }
+                }
+            };
+        }
+        expire_rules!();
         fs_jobs::request_folder_access();
         while !cancel.load(Ordering::Acquire) {
-            guard.tick();
+            expire_rules!();
             if let Ok(mut s) = TcpStream::connect_timeout(&address.into(), Duration::from_secs(2)) {
                 *active.lock().unwrap() = s.try_clone().ok();
                 let result = (|| -> Result<()> {
@@ -1728,12 +1865,17 @@ pub fn student(
                     capabilities["copilot_network"] = json!(u8::from(guard.supported()));
                     capabilities["copilot_blocked"] = json!(u8::from(guard.copilot_blocked()));
                     capabilities["internet"] = json!(guard.mode());
+                    capabilities["internet_fp"] = json!(guard.internet_fingerprint());
+                    capabilities["vscode_fp"] = json!(super::vscode_control::applied_fingerprint());
                     capabilities["activity"] = json!(u8::from(cfg!(windows)));
                     capabilities["vscode"] = json!(u8::from(super::vscode_control::supported()));
                     capabilities["vscode_list"] =
                         json!(u8::from(cfg!(any(windows, target_os = "macos"))));
                     capabilities["vscode_blocked"] =
                         json!(u8::from(super::vscode_control::is_applied()));
+                    capabilities["apps"] = json!(u8::from(super::app_control::supported()));
+                    capabilities["apps_blocked"] = json!(u8::from(super::app_control::is_applied()));
+                    capabilities["apps_policy"] = json!(super::app_control::applied_hash());
                     capabilities["monitoring_badge"] =
                         json!(u8::from(crate::monitoring_badge::supported()));
                     capabilities["badge_enabled"] = json!(inbox.badge.lock().unwrap().enabled);
@@ -1764,6 +1906,7 @@ pub fn student(
                         let p = read(&mut s)?;
                         inbox.touch();
                         guard.keepalive();
+                        expire_rules!();
                         if upload.as_ref().is_some_and(thread::JoinHandle::is_finished) {
                             let _ = upload.take().unwrap().join();
                         }
@@ -1866,6 +2009,14 @@ pub fn student(
                                 );
                                 activity_monitoring = p.status == "on";
                                 activity_lifecycle.set_enabled(activity_monitoring);
+                                if activity_monitoring {
+                                    let _ = std::fs::write(
+                                        &activity_file,
+                                        json!({"on": true, "day": crate::local_day::today()}).to_string(),
+                                    );
+                                } else {
+                                    let _ = std::fs::remove_file(&activity_file);
+                                }
                             }
                             "launch" | "website" => launch::run(p, Arc::clone(&inbox)),
                             "power" => power::run(p, Arc::clone(&inbox)),
@@ -1903,6 +2054,29 @@ pub fn student(
                             }
                             "vscode_list" => {
                                 vscode_jobs::run(address, identity.clone(), p, &vscode_active);
+                            }
+                            "app_list" => {
+                                app_jobs::run(address, identity.clone(), p, &app_active);
+                            }
+                            "app_policy" => {
+                                let inbox = Arc::clone(&inbox);
+                                let enforcer = app_enforcer.clone();
+                                thread::spawn(move || {
+                                    let outcome = serde_json::from_str::<crate::app_control::AppPolicy>(
+                                        &p.text,
+                                    )
+                                    .context("Invalid application policy")
+                                    .and_then(|policy| {
+                                        policy.validate()?;
+                                        enforcer.apply(&policy)
+                                    });
+                                    match outcome {
+                                        Ok(()) => inbox.event(&p.id, "complete", "", 0),
+                                        Err(error) => {
+                                            inbox.event(&p.id, "error", &format!("{error:#}"), 0)
+                                        }
+                                    }
+                                });
                             }
                             "vscode_policy" => {
                                 let inbox = Arc::clone(&inbox);

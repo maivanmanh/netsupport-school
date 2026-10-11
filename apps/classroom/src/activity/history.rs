@@ -4,7 +4,7 @@
 //! gaps in coverage whenever nobody was watching; this is documented to the
 //! Teacher, not hidden. Lives for the Student process's lifetime, in memory
 //! only (never written to disk).
-use super::{now_ms, AppEntry, DownloadEntry, TabEntry};
+use super::{now_ms, AppEntry, ClipboardEntry, DownloadEntry, TabEntry, MAX_CLIPBOARD};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -51,6 +51,8 @@ pub struct History {
     /// browser's history database, site icons), so a 6-second scan does not
     /// re-copy databases for something it already resolved.
     lookups: Mutex<HashMap<String, (Option<String>, i64)>>,
+    /// Newest first; capped at [`MAX_CLIPBOARD`].
+    clipboard: Mutex<std::collections::VecDeque<ClipboardEntry>>,
 }
 
 /// A failed lookup is retried after this long (a page may simply not be in
@@ -116,6 +118,45 @@ fn update(map: &mut HashMap<String, Track>, seen: &[Seen], now: i64) {
 
 /// Newest activity first: open items before closed ones, each group by most
 /// recent activity.
+/// Collapsed-whitespace, lowercased form used only to compare two copies —
+/// never stored or shown.
+fn normalize_for_compare(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+}
+/// Character bigrams of `text`, capped so a very long copy cannot make
+/// every later comparison expensive; single-character strings have none.
+fn bigrams(text: &str) -> std::collections::HashSet<(char, char)> {
+    const MAX_COMPARE_CHARS: usize = 4_000;
+    let chars: Vec<char> = text.chars().take(MAX_COMPARE_CHARS).collect();
+    chars.windows(2).map(|w| (w[0], w[1])).collect()
+}
+/// Whether `a` and `b` are "the same copy" for the Teacher's purposes: equal
+/// once whitespace-normalized, or at least 90% similar by Dice coefficient
+/// over character bigrams (robust to a trailing space, a re-copy that picked
+/// up one extra character, etc., without needing exact equality).
+pub(crate) fn similar(a: &str, b: &str) -> bool {
+    let (a, b) = (normalize_for_compare(a), normalize_for_compare(b));
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    if a == b {
+        return true;
+    }
+    // Dice's coefficient is at most 2*min(|A|,|B|)/(|A|+|B|); below this
+    // length ratio it cannot reach 0.9, so skip the set work entirely.
+    let (shorter, longer) = if a.len() <= b.len() { (a.len(), b.len()) } else { (b.len(), a.len()) };
+    if (shorter as f64) < (longer as f64) * 0.8 {
+        return false;
+    }
+    let (sa, sb) = (bigrams(&a), bigrams(&b));
+    if sa.is_empty() || sb.is_empty() {
+        return false;
+    }
+    let common = sa.intersection(&sb).count();
+    let dice = 2.0 * common as f64 / (sa.len() + sb.len()) as f64;
+    dice >= 0.9
+}
+
 fn order(a_open: bool, a_ms: i64, b_open: bool, b_ms: i64) -> std::cmp::Ordering {
     b_open.cmp(&a_open).then(b_ms.cmp(&a_ms))
 }
@@ -198,6 +239,34 @@ impl History {
     pub fn downloads(&self) -> Vec<DownloadEntry> {
         self.downloads.lock().unwrap().clone()
     }
+    /// Called from the clipboard watcher's own thread, every time something
+    /// is copied while monitoring is on. A copy that is at least 90%
+    /// similar (see [`similar`]) to one already logged today is treated as
+    /// the same copy repeated: it is not listed again, and the existing
+    /// entry moves to the front with an updated time and a bumped
+    /// duplicate count, so a URL (or anything else) copied many times
+    /// shows once.
+    pub fn push_clipboard(&self, entry: ClipboardEntry) {
+        let mut log = self.clipboard.lock().unwrap();
+        if let Some(index) = log.iter().position(|e| similar(&e.text, &entry.text)) {
+            let mut existing = log.remove(index).unwrap();
+            existing.unix_ms = entry.unix_ms;
+            existing.app = entry.app;
+            existing.duplicates += 1;
+            log.push_front(existing);
+            return;
+        }
+        log.push_front(entry);
+        log.truncate(MAX_CLIPBOARD);
+    }
+    pub fn clipboard(&self) -> Vec<ClipboardEntry> {
+        self.clipboard.lock().unwrap().iter().cloned().collect()
+    }
+    /// Switching monitoring off ends collection and discards what was
+    /// logged, matching the rest of this history.
+    pub fn clear_clipboard(&self) {
+        self.clipboard.lock().unwrap().clear();
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -250,5 +319,56 @@ mod tests {
         let (apps, _) = history.record(&seen(&keep), &[]);
         assert!(apps.len() <= MAX_TRACKED);
         assert!(apps.iter().any(|a| a.app == "still-open.exe" && a.open));
+    }
+}
+#[cfg(test)]
+mod clipboard_tests {
+    use super::*;
+    use crate::activity::ClipboardEntry;
+
+    fn entry(text: &str, unix_ms: i64) -> ClipboardEntry {
+        ClipboardEntry { text: text.into(), truncated: false, app: "notepad.exe".into(), unix_ms, duplicates: 0 }
+    }
+
+    #[test]
+    fn clipboard_log_is_newest_first_and_bounded() {
+        let history = History::default();
+        // Knuth multiplicative hashing scrambles consecutive indices into
+        // unrelated-looking hex strings, so no two pushed copies are
+        // near-duplicates of each other.
+        let scrambled = |i: usize| format!("{:08x}", (i as u32).wrapping_mul(2_654_435_761));
+        for i in 0..MAX_CLIPBOARD + 5 {
+            history.push_clipboard(entry(&scrambled(i), i as i64));
+        }
+        let log = history.clipboard();
+        assert_eq!(log.len(), MAX_CLIPBOARD);
+        assert_eq!(log[0].text, scrambled(MAX_CLIPBOARD + 4));
+        history.clear_clipboard();
+        assert!(history.clipboard().is_empty());
+    }
+
+    #[test]
+    fn a_url_copied_many_times_is_shown_once_with_a_duplicate_count() {
+        let history = History::default();
+        history.push_clipboard(entry("https://example.com/some/path?x=1", 1));
+        history.push_clipboard(entry("https://example.com/some/path?x=1", 2));
+        history.push_clipboard(entry("https://example.com/some/path?x=1 ", 3)); // trailing space
+        let log = history.clipboard();
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].duplicates, 2);
+        assert_eq!(log[0].unix_ms, 3); // moved to front with the latest time
+    }
+
+    #[test]
+    fn similar_strings_merge_but_different_ones_do_not() {
+        assert!(similar("Hello, world!", "hello,   world! "));
+        assert!(similar(
+            "function add(a, b) { return a + b; }",
+            "function add(a, b) { return a + b }",
+        ));
+        assert!(!similar("https://example.com/a", "https://example.com/b/totally/different/path"));
+        assert!(!similar("short", "a completely unrelated and much longer piece of text"));
+        assert!(!similar("", ""));
+        assert!(!similar("a", ""));
     }
 }

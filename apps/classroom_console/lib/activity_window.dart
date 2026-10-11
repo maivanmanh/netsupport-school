@@ -138,7 +138,7 @@ class _ActivityWindowState extends State<ActivityWindow> {
       builder: (context) => AlertDialog(
         title: const Text('Clear activity history?'),
         content: Text(
-          'Closed windows, closed tabs and downloads recorded so far for ${widget.studentName} '
+          'Closed windows, closed tabs, downloads and clipboard copies recorded so far for ${widget.studentName} '
           'are removed from this view, and durations start counting again from now. '
           'Things that are open right now stay listed.',
         ),
@@ -339,7 +339,7 @@ class _ActivityWindowState extends State<ActivityWindow> {
       backgroundColor: _bg,
       body: SafeArea(
         child: DefaultTabController(
-          length: 3,
+          length: 4,
           child: Column(
             children: [
               if (!agent.connected || !online)
@@ -382,6 +382,11 @@ class _ActivityWindowState extends State<ActivityWindow> {
                       text:
                           'Downloads today${r == null ? '' : ' (${_downloads(r).length})'}',
                     ),
+                    Tab(
+                      icon: const Icon(Icons.content_paste_outlined, size: 19),
+                      text:
+                          'Clipboard today${r == null ? '' : ' (${_clipboard(r).length})'}',
+                    ),
                   ],
                 ),
               ),
@@ -413,6 +418,11 @@ class _ActivityWindowState extends State<ActivityWindow> {
                           _DownloadsTab(
                             downloads: _downloads(r),
                             isFresh: isFresh,
+                          ),
+                          _ClipboardTab(
+                            entries: _clipboard(r),
+                            isFresh: isFresh,
+                            studentName: widget.studentName,
                           ),
                         ],
                       ),
@@ -473,6 +483,9 @@ Map<String, dynamic> _clip(Map<String, dynamic> r, int cutoff) {
     'downloads': (r['downloads'] as List? ?? const []).cast<Map>().where((d) {
       return ((d['unix_ms'] as num?) ?? 0).toInt() > cutoff;
     }).toList(),
+    'clipboard': (r['clipboard'] as List? ?? const []).cast<Map>().where((c) {
+      return ((c['unix_ms'] as num?) ?? 0).toInt() > cutoff;
+    }).toList(),
   };
 }
 
@@ -483,6 +496,7 @@ Map<String, dynamic> clipActivityReport(Map<String, dynamic> r, int cutoff) =>
 String _appKey(Map a) => 'app|${a['app']}|${a['open'] == true}';
 String _tabKey(Map t, {required bool open}) => 'tab|$open|${t['title']}';
 String _downloadKey(Map d) => 'dl|${d['name']}|${d['unix_ms']}';
+String _clipboardKey(Map c) => 'cb|${c['unix_ms']}|${c['app']}';
 
 /// Identity of every item in [r], used to spot what a newer report adds.
 Set<String> _keysOf(Map<String, dynamic> r) => {
@@ -492,6 +506,7 @@ Set<String> _keysOf(Map<String, dynamic> r) => {
   for (final t in (r['tabs'] as List? ?? const []).cast<Map>())
     if (t['open'] != true) _tabKey(t, open: false),
   for (final d in _downloads(r)) _downloadKey(d),
+  for (final c in _clipboard(r)) _clipboardKey(c),
 };
 
 List<Map> _apps(Map<String, dynamic> r) =>
@@ -503,6 +518,20 @@ Map<String, String> _iconsByApp(Map<String, dynamic> r) => {
     if ('${a['icon_png_base64'] ?? ''}'.isNotEmpty)
       '${a['app']}'.toLowerCase(): '${a['icon_png_base64']}',
 };
+
+/// Clipboard copies seen while monitoring was on today.
+List<Map> _clipboard(Map<String, dynamic> r) {
+  final now = DateTime.now();
+  final midnight = DateTime(
+    now.year,
+    now.month,
+    now.day,
+  ).millisecondsSinceEpoch;
+  return (r['clipboard'] as List? ?? const []).cast<Map>().where((c) {
+    final ms = ((c['unix_ms'] as num?) ?? 0).toInt();
+    return ms >= midnight;
+  }).toList();
+}
 
 /// Downloads started today (Teacher's local day); older Students that still
 /// send earlier history are filtered here as well.
@@ -834,6 +863,7 @@ class _Row extends StatefulWidget {
     this.trailing,
     this.boldTitle = false,
     this.fresh = false,
+    this.onTap,
   });
   final Widget leading;
   final String title;
@@ -841,6 +871,7 @@ class _Row extends StatefulWidget {
   final Widget? trailing;
   final String copyText, copyLabel;
   final bool boldTitle, fresh;
+  final VoidCallback? onTap;
   @override
   State<_Row> createState() => _RowState();
 }
@@ -858,7 +889,9 @@ class _RowState extends State<_Row> {
         message: 'Click to copy',
         waitDuration: const Duration(milliseconds: 700),
         child: InkWell(
-          onTap: () => _copy(context, widget.copyText, widget.copyLabel),
+          onTap:
+              widget.onTap ??
+              () => _copy(context, widget.copyText, widget.copyLabel),
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 600),
             color: widget.fresh
@@ -1253,6 +1286,372 @@ class _DownloadsTabState extends State<_DownloadsTab> {
           ],
         ),
       ],
+    );
+  }
+}
+
+// ------------------------------------------------------------- Clipboard
+
+/// Common code punctuation/keywords, scored against length and line count:
+/// cheap enough to run on every row, and only wrong in ambiguous cases where
+/// monospace is a harmless default anyway.
+bool looksLikeCode(String text) {
+  final trimmed = text.trim();
+  if (trimmed.isEmpty) return false;
+  const keywords = [
+    'function',
+    'def ',
+    'class ',
+    'return',
+    'import ',
+    'public ',
+    'private ',
+    'static ',
+    'const ',
+    'let ',
+    'var ',
+    'void ',
+    'int ',
+    'String',
+    'println',
+    'console.',
+    '#include',
+    'namespace',
+    'if(',
+    'if (',
+    'for(',
+    'for (',
+    'while(',
+    '=>',
+    '</',
+    '<div',
+    'SELECT ',
+    'FROM ',
+  ];
+  final lower = trimmed.toLowerCase();
+  final keywordHits = keywords
+      .where((k) => lower.contains(k.toLowerCase()))
+      .length;
+  final symbols = RegExp(r'[{}();=<>\[\]]').allMatches(trimmed).length;
+  final lines = trimmed.split('\n');
+  final indented = lines
+      .where((l) => l.startsWith('  ') || l.startsWith('\t'))
+      .length;
+  final symbolDensity = symbols / trimmed.length;
+  return keywordHits >= 2 ||
+      symbolDensity > 0.04 ||
+      (lines.length > 2 && indented > lines.length / 3);
+}
+
+const _codeKeyword = Color(0xff9553e9);
+const _codeString = Color(0xff1f7a4d);
+const _codeComment = Color(0xff8a97a3);
+const _codeNumber = Color(0xffb56b1c);
+
+final _codeKeywords = {
+  'if',
+  'else',
+  'for',
+  'while',
+  'do',
+  'switch',
+  'case',
+  'break',
+  'continue',
+  'return',
+  'function',
+  'def',
+  'class',
+  'struct',
+  'enum',
+  'interface',
+  'public',
+  'private',
+  'protected',
+  'static',
+  'final',
+  'const',
+  'let',
+  'var',
+  'void',
+  'int',
+  'float',
+  'double',
+  'bool',
+  'boolean',
+  'string',
+  'char',
+  'new',
+  'this',
+  'self',
+  'super',
+  'import',
+  'from',
+  'export',
+  'package',
+  'namespace',
+  'using',
+  'include',
+  'true',
+  'false',
+  'null',
+  'none',
+  'nil',
+  'try',
+  'catch',
+  'finally',
+  'throw',
+  'throws',
+  'async',
+  'await',
+  'fn',
+  'impl',
+  'pub',
+  'mut',
+  'select',
+  'insert',
+  'update',
+  'delete',
+  'where',
+};
+
+/// A naive, language-agnostic tokenizer good enough to tell a reviewer
+/// "this is code" at a glance: strings, comments, numbers and common
+/// keywords get a colour, everything else stays plain.
+List<TextSpan> highlightCode(String text) {
+  final spans = <TextSpan>[];
+  final pattern = RegExp(
+    r'(//[^\n]*)' // line comment
+    r"|(#[^\n]*)" // shell/python comment
+    r'|(/\*[\s\S]*?\*/)' // block comment
+    r'''|("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)''' // strings
+    r'|(\b\d+\.?\d*\b)' // numbers
+    r'|([A-Za-z_][A-Za-z0-9_]*)', // identifiers/keywords
+  );
+  var last = 0;
+  for (final m in pattern.allMatches(text)) {
+    if (m.start > last) {
+      spans.add(TextSpan(text: text.substring(last, m.start)));
+    }
+    final chunk = m.group(0)!;
+    Color? color;
+    if (m.group(1) != null || m.group(2) != null || m.group(3) != null) {
+      color = _codeComment;
+    } else if (m.group(4) != null) {
+      color = _codeString;
+    } else if (m.group(5) != null) {
+      color = _codeNumber;
+    } else if (m.group(6) != null &&
+        _codeKeywords.contains(chunk.toLowerCase())) {
+      color = _codeKeyword;
+    }
+    spans.add(
+      TextSpan(
+        text: chunk,
+        style: color == null
+            ? null
+            : TextStyle(color: color, fontWeight: FontWeight.w600),
+      ),
+    );
+    last = m.end;
+  }
+  if (last < text.length) spans.add(TextSpan(text: text.substring(last)));
+  return spans;
+}
+
+class _ClipboardTab extends StatefulWidget {
+  const _ClipboardTab({
+    required this.entries,
+    required this.isFresh,
+    required this.studentName,
+  });
+  final List<Map> entries;
+  final bool Function(String key) isFresh;
+  final String studentName;
+  @override
+  State<_ClipboardTab> createState() => _ClipboardTabState();
+}
+
+class _ClipboardTabState extends State<_ClipboardTab> {
+  String query = '';
+  @override
+  Widget build(BuildContext context) {
+    if (widget.entries.isEmpty) {
+      return const Center(
+        child: Text(
+          'Nothing copied today while monitoring was on.',
+          style: TextStyle(color: Colors.blueGrey),
+        ),
+      );
+    }
+    final shown = widget.entries
+        .where((c) => _matches(query, [c['text'], c['app']]))
+        .toList();
+    return ListView(
+      children: [
+        _Search(
+          hint: 'Filter clipboard copies',
+          onChanged: (v) => setState(() => query = v),
+        ),
+        _Section(
+          title: 'Copied today',
+          count: shown.length,
+          empty: 'No copies match the filter.',
+          children: [for (final c in shown) _row(c)],
+        ),
+        const _Note(
+          'Recorded only while activity monitoring was switched on, and only plain text that was explicitly copied — '
+          'never keystrokes. Click a row to read the full copy.',
+        ),
+      ],
+    );
+  }
+
+  Widget _row(Map c) {
+    final text = '${c['text']}';
+    final firstLine = text
+        .split('\n')
+        .map((l) => l.trim())
+        .firstWhere((l) => l.isNotEmpty, orElse: () => text);
+    final code = looksLikeCode(text);
+    final lineCount = text.split('\n').length;
+    final duplicates = ((c['duplicates'] as num?) ?? 0).toInt();
+    return _Row(
+      leading: Icon(
+        code ? Icons.code : Icons.content_paste,
+        size: 18,
+        color: code ? _codeKeyword : Colors.blueGrey,
+      ),
+      title: firstLine,
+      fresh: widget.isFresh(_clipboardKey(c)),
+      trailing: duplicates > 0
+          ? _Badge('×${duplicates + 1}', color: _teal)
+          : null,
+      subtitle: [
+        if ('${c['app']}'.isNotEmpty) lookAppUp('${c['app']}').name,
+        if (lineCount > 1) '$lineCount lines',
+        if (c['truncated'] == true) 'truncated',
+        formatClock(((c['unix_ms'] as num?) ?? 0).toInt()),
+      ].join(' · '),
+      copyText: text,
+      copyLabel: 'copied text',
+      onTap: () => _showDetail(c),
+    );
+  }
+
+  void _showDetail(Map c) {
+    final text = '${c['text']}';
+    showDialog<void>(
+      context: context,
+      builder: (context) => _ClipboardDetail(
+        text: text,
+        app: '${c['app']}',
+        unixMs: ((c['unix_ms'] as num?) ?? 0).toInt(),
+        truncated: c['truncated'] == true,
+        duplicates: ((c['duplicates'] as num?) ?? 0).toInt(),
+        studentName: widget.studentName,
+      ),
+    );
+  }
+}
+
+class _ClipboardDetail extends StatelessWidget {
+  const _ClipboardDetail({
+    required this.text,
+    required this.app,
+    required this.unixMs,
+    required this.truncated,
+    required this.duplicates,
+    required this.studentName,
+  });
+  final String text, app, studentName;
+  final int duplicates;
+  final int unixMs;
+  final bool truncated;
+  @override
+  Widget build(BuildContext context) {
+    final code = looksLikeCode(text);
+    return Dialog(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 680, maxHeight: 560),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    code ? Icons.code : Icons.content_paste,
+                    size: 18,
+                    color: code ? _codeKeyword : _teal,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Copied by $studentName',
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Close',
+                    icon: const Icon(Icons.close, size: 18),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
+              ),
+              Text(
+                [
+                  if (app.isNotEmpty) 'from ${lookAppUp(app).name}',
+                  formatClock(unixMs),
+                  if (truncated) 'truncated at the recorded limit',
+                  if (duplicates > 0) 'copied ${duplicates + 1} times',
+                ].join(' · '),
+                style: const TextStyle(fontSize: 11.5, color: Colors.blueGrey),
+              ),
+              const SizedBox(height: 10),
+              Expanded(
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xfff6f7f9),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: _line),
+                  ),
+                  child: SingleChildScrollView(
+                    child: SelectableText.rich(
+                      TextSpan(
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          height: 1.45,
+                          fontFamily: code ? 'monospace' : null,
+                          color: Colors.black87,
+                        ),
+                        children: code
+                            ? highlightCode(text)
+                            : [TextSpan(text: text)],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              Align(
+                alignment: Alignment.centerRight,
+                child: FilledButton.icon(
+                  onPressed: () => _copy(context, text, 'copied text'),
+                  icon: const Icon(Icons.copy_rounded, size: 16),
+                  label: const Text('Copy'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

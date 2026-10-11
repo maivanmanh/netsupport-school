@@ -118,6 +118,7 @@ pub(super) struct Lifecycle {
     history: Arc<super::super::activity::history::History>,
     live: super::super::activity::collector::Live,
     collector: Option<super::super::activity::collector::Collector>,
+    clipboard: Option<super::super::activity::clipboard::Watcher>,
 }
 impl Lifecycle {
     pub fn new() -> Self {
@@ -125,6 +126,7 @@ impl Lifecycle {
             history: Arc::default(),
             live: Arc::new(Mutex::new(None)),
             collector: None,
+            clipboard: None,
         }
     }
     pub fn live(&self) -> &super::super::activity::collector::Live {
@@ -137,10 +139,19 @@ impl Lifecycle {
                     Arc::clone(&self.history),
                     Arc::clone(&self.live),
                 ));
+                let history = Arc::clone(&self.history);
+                match super::super::activity::clipboard::Watcher::start(move |entry| {
+                    history.push_clipboard(entry);
+                }) {
+                    Ok(watcher) => self.clipboard = Some(watcher),
+                    Err(error) => tracing::warn!(%error, "Clipboard monitoring could not start"),
+                }
             }
             (false, true) => {
                 self.collector = None;
+                self.clipboard = None;
                 *self.live.lock().unwrap() = None;
+                self.history.clear_clipboard();
             }
             _ => {}
         }

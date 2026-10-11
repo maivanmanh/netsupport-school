@@ -83,6 +83,9 @@ mod teacher_repair;
 mod udp_ingress;
 mod udp_sender;
 mod vscode_control;
+mod app_control;
+mod class_rules;
+mod local_day;
 use process_metrics::ProcessMetrics;
 use quality::{QualityController, ReceiverMediaReport};
 use student_presentation::StudentPresentation;
@@ -275,6 +278,10 @@ enum RestartRequest {
 }
 
 fn main() -> Result<()> {
+    // Started by Windows in place of a blocked program (see `app_control`).
+    if let Some(code) = app_control::early_operation() {
+        std::process::exit(code);
+    }
     if let Some(code) = remote_terminal::compat::early_operation() {
         std::process::exit(code);
     }

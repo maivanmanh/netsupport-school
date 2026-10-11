@@ -111,7 +111,12 @@ class InternetWindow extends StatefulWidget {
     required this.agent,
     required this.studentIds,
     required this.audience,
+    this.classWide = true,
   });
+
+  /// Whether this covers the whole class (so computers that join later get
+  /// the rule too) rather than a hand-picked group.
+  final bool classWide;
   final Agent agent;
   final List<String> studentIds;
   final String audience;
@@ -481,9 +486,10 @@ class _InternetWindowState extends State<InternetWindow> {
       'tool_policy',
       selected: widget.studentIds,
       input: {
+        'class_wide': widget.classWide,
         'policy': {
           'internet': {'mode': mode, 'rules': listMode ? rules : <String>[]},
-          'lease_minutes': lease,
+          'lease_minutes': 1440,
         },
       },
       timeout: const Duration(seconds: 15),
@@ -600,30 +606,15 @@ class _InternetWindowState extends State<InternetWindow> {
                 children: [
                   Row(
                     children: [
-                      const Text(
-                        'Keep rules if the Teacher disconnects for',
-                        style: TextStyle(fontSize: 12.5),
-                      ),
-                      const SizedBox(width: 8),
-                      DropdownButton<int>(
-                        value: lease,
-                        isDense: true,
-                        underline: const SizedBox.shrink(),
-                        items: const [
-                          DropdownMenuItem(value: 30, child: Text('30 min')),
-                          DropdownMenuItem(value: 120, child: Text('2 hours')),
-                          DropdownMenuItem(value: 240, child: Text('4 hours')),
-                          DropdownMenuItem(value: 480, child: Text('8 hours')),
-                          DropdownMenuItem(
-                            value: 1440,
-                            child: Text('24 hours'),
+                      const Expanded(
+                        child: Text(
+                          'Rules stay in force if the Teacher disconnects or restarts, and for computers that join or restart later — until you change them or the day ends (midnight).',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.blueGrey,
                           ),
-                        ],
-                        onChanged: busy
-                            ? null
-                            : (v) => setState(() => lease = v!),
+                        ),
                       ),
-                      const Spacer(),
                       if (applied)
                         const Row(
                           mainAxisSize: MainAxisSize.min,

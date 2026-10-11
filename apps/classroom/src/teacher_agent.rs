@@ -35,6 +35,7 @@ const MAX_FILE_WINDOWS: usize = 2;
 const MAX_ACTIVITY_WINDOWS: usize = 2;
 const MAX_INTERNET_WINDOWS: usize = 2;
 const MAX_VSCODE_WINDOWS: usize = 2;
+const MAX_APP_WINDOWS: usize = 2;
 
 #[derive(Clone)]
 struct Snapshot {
@@ -481,6 +482,17 @@ pub(super) fn run(
     let mut activity_windows: HashMap<String, std::process::Child> = HashMap::new();
     let mut internet_windows: Vec<std::process::Child> = Vec::new();
     let mut vscode_windows: Vec<std::process::Child> = Vec::new();
+    let mut app_windows: Vec<std::process::Child> = Vec::new();
+    // The class rules set today, kept on disk: they survive a Teacher restart
+    // and are pushed to any covered Student that is out of step (late
+    // joiners, restarted computers). All of them end with the local day.
+    let rules_path = parent.join("class-rules.json");
+    let mut class_rules = super::class_rules::ClassRules::load(&rules_path);
+    if class_rules.activity {
+        tools_hub.set_activity_monitoring(true);
+    }
+    let mut rule_attempts: HashMap<(String, &'static str), Instant> = HashMap::new();
+    let mut rules_tick = Instant::now();
     let mut publish_due = Instant::now();
     let mut metrics = Instant::now();
     let mut restart_requested = false;
@@ -488,8 +500,40 @@ pub(super) fn run(
     let result = (|| -> Result<()> {
         'agent: loop {
             diagnostics.poll();
-            if let Some(share) = &student_download {
-                snapshot.student_download = share.state.lock().unwrap().clone();
+            if rules_tick.elapsed() >= Duration::from_secs(2) {
+                rules_tick = Instant::now();
+                if class_rules.roll_over() {
+                    info!("New day: yesterday's class rules are void");
+                    tools_hub.set_activity_monitoring(false);
+                    rule_attempts.clear();
+                    let _ = fs::remove_file(&rules_path);
+                    publish_due = Instant::now();
+                }
+                let caps = tools_hub.snapshot()["capabilities"].clone();
+                let rows = roster.lock().unwrap().snapshot();
+                for row in rows.iter().filter(|r| r.online) {
+                    let id = &row.instance_id;
+                    for (action, input) in class_rules.fixes_for(id, &caps[id]) {
+                        let key = (id.clone(), action);
+                        if rule_attempts.get(&key).is_some_and(|t| t.elapsed() < Duration::from_secs(30)) {
+                            continue;
+                        }
+                        rule_attempts.insert(key, Instant::now());
+                        match tools_hub.submit_with_limit(
+                            action,
+                            std::slice::from_ref(id),
+                            &input,
+                            &outbox,
+                            u64::from(config.tools.max_file_mb) * 1024 * 1024,
+                        ) {
+                            Ok(_) => {
+                                info!(student = %row.hostname, rule = action, "Class rule sent to a computer that was out of step");
+                                publish_due = Instant::now();
+                            }
+                            Err(error) => warn!(%error, rule = action, "Could not send a class rule"),
+                        }
+                    }
+                }
             }
             #[cfg(not(windows))]
             host.update();
@@ -920,6 +964,7 @@ pub(super) fn run(
                     | "tool_power"
                     | "tool_policy"
                     | "tool_vscode_policy"
+                    | "tool_app_policy"
                     | "tool_copilot_policy" => {
                         if command.action == "tool_update"
                             && (session.is_some() || observe.is_some())
@@ -943,12 +988,16 @@ pub(super) fn run(
                         // exactly which were skipped and why.
                         if command.action == "tool_policy"
                             || command.action == "tool_vscode_policy"
+                            || command.action == "tool_app_policy"
                             || command.action == "tool_copilot_policy"
                         {
                             let caps = tools_hub.snapshot()["capabilities"].clone();
                             let mut skipped = Vec::new();
                             recipients.retain(|id| {
-                                if caps[id]["guard"] == 1 && (command.action != "tool_copilot_policy" || caps[id]["copilot_network"] == 1) {
+                                if caps[id]["guard"] == 1
+                                    && (command.action != "tool_copilot_policy" || caps[id]["copilot_network"] == 1)
+                                    && (command.action != "tool_app_policy" || caps[id]["apps"] == 1)
+                                {
                                     true
                                 } else {
                                     if let Some(row) = rows.iter().find(|r| &r.instance_id == id) {
@@ -997,6 +1046,8 @@ pub(super) fn run(
                                 "policy"
                             } else if command.action == "tool_vscode_policy" {
                                 "vscode_policy"
+                            } else if command.action == "tool_app_policy" {
+                                "app_policy"
                             } else if command.action == "tool_copilot_policy" {
                                 "copilot_policy"
                             } else {
@@ -1009,6 +1060,57 @@ pub(super) fn run(
                         ) {
                             Ok(job) => {
                                 job_id = Some(job);
+                                {
+                                    use super::class_rules::Scoped;
+                                    let scope = (command.input["class_wide"].as_bool() != Some(true))
+                                        .then(|| recipients.clone());
+                                    let input = &command.input;
+                                    match command.action.as_str() {
+                                        "tool_policy" => {
+                                            if let Ok(p) = serde_json::from_value::<super::guard::Policy>(input["policy"].clone()) {
+                                                class_rules.internet = Some(Scoped::new(p.internet, scope));
+                                            }
+                                        }
+                                        "tool_copilot_policy" => {
+                                            class_rules.copilot =
+                                                Some(Scoped::new(input["enabled"].as_bool() == Some(true), scope));
+                                        }
+                                        "tool_vscode_policy" => {
+                                            if let Ok(p) = serde_json::from_value(input["policy"].clone()) {
+                                                class_rules.vscode = Some(Scoped::new(p, scope));
+                                            }
+                                        }
+                                        "tool_app_policy" => {
+                                            if let Ok(p) = serde_json::from_value(input["policy"].clone()) {
+                                                class_rules.apps = Some(Scoped::new(p, scope));
+                                            }
+                                        }
+                                        "tool_power" => {
+                                            if let Some(on) = match input["op"].as_str() {
+                                                Some("clipboard_block") => Some(true),
+                                                Some("clipboard_allow") => Some(false),
+                                                _ => None,
+                                            } {
+                                                class_rules.clipboard = Some(Scoped::new(on, scope));
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                    if matches!(
+                                        command.action.as_str(),
+                                        "tool_policy"
+                                            | "tool_copilot_policy"
+                                            | "tool_vscode_policy"
+                                            | "tool_app_policy"
+                                            | "tool_power"
+                                    ) {
+                                        class_rules.day = super::local_day::today();
+                                        if let Err(error) = class_rules.save(&rules_path) {
+                                            warn!(%error, "Could not remember the class rules");
+                                        }
+                                        rule_attempts.clear();
+                                    }
+                                }
                                 publish_due = Instant::now();
                                 Ok(())
                             }
@@ -1049,7 +1151,8 @@ pub(super) fn run(
                     | "fs_open"
                     | "activity_request"
                     | "activity_monitoring_set"
-                    | "vscode_list" => {
+                    | "vscode_list"
+                    | "app_list" => {
                         let rows = roster.lock().unwrap().snapshot();
                         let input = &command.input;
                         let outcome: Result<Option<Value>> = (|| match command.action.as_str() {
@@ -1136,10 +1239,30 @@ pub(super) fn run(
                                 Ok(None)
                             }
                             "activity_monitoring_set" => {
-                                tools_hub.set_activity_monitoring(
-                                    input["enabled"].as_bool().unwrap_or(false),
-                                );
+                                let enabled = input["enabled"].as_bool().unwrap_or(false);
+                                tools_hub.set_activity_monitoring(enabled);
+                                class_rules.activity = enabled;
+                                class_rules.day = super::local_day::today();
+                                if let Err(error) = class_rules.save(&rules_path) {
+                                    warn!(%error, "Could not remember the class rules");
+                                }
                                 publish_due = Instant::now();
+                                Ok(None)
+                            }
+                            "app_list" => {
+                                let student = input["student"].as_str().unwrap_or("");
+                                anyhow::ensure!(
+                                    rows.iter().any(|r| r.online && r.instance_id == student),
+                                    "Student is offline"
+                                );
+                                let icons: Vec<String> = input["icons_for"]
+                                    .as_array()
+                                    .into_iter()
+                                    .flatten()
+                                    .filter_map(|v| v.as_str().map(str::to_owned))
+                                    .take(200)
+                                    .collect();
+                                job_id = Some(tools_hub.app_list(student, &icons)?);
                                 Ok(None)
                             }
                             "vscode_list" => {
@@ -1219,6 +1342,8 @@ pub(super) fn run(
                                 .arg(ids.join(","))
                                 .arg("--internet-audience")
                                 .arg(audience)
+                                .arg("--internet-scope")
+                                .arg(command.input["scope"].as_str().unwrap_or("all"))
                                 .arg("--ipc-file")
                                 .arg(path)
                                 .spawn()
@@ -1270,6 +1395,8 @@ pub(super) fn run(
                                 .arg(ids.join(","))
                                 .arg("--vscode-audience")
                                 .arg(audience)
+                                .arg("--vscode-scope")
+                                .arg(command.input["scope"].as_str().unwrap_or("all"))
                                 .arg("--ipc-file")
                                 .arg(path)
                                 .spawn()
@@ -1287,6 +1414,59 @@ pub(super) fn run(
                                 Err(error) => {
                                     snapshot.error = Some(error.to_string());
                                     Err("Could not open VS Code control window")
+                                }
+                            }
+                        } else {
+                            Err("Teacher console executable unavailable")
+                        }
+                    }
+                    "app_window" => {
+                        app_windows.retain_mut(|child| matches!(child.try_wait(), Ok(None)));
+                        let rows = roster.lock().unwrap().snapshot();
+                        let ids: Vec<&str> = rows
+                            .iter()
+                            .filter(|r| r.online && command.selected.contains(&r.instance_id))
+                            .map(|r| r.instance_id.as_str())
+                            .collect();
+                        if ids.is_empty() {
+                            Err("Select at least one online Student")
+                        } else if let Some(child) = app_windows.first() {
+                            // Already open: bring it forward (same simplification
+                            // as internet_window — does not retarget audience).
+                            snapshot.observe_focus.0 = "apps".into();
+                            snapshot.observe_focus.1 += 1;
+                            snapshot.observe_focus.2 = child.id();
+                            publish_due = Instant::now();
+                            Ok(())
+                        } else if app_windows.len() >= MAX_APP_WINDOWS {
+                            Err("Close the application control window before opening another")
+                        } else if let Some(console) = console {
+                            let audience =
+                                command.input["audience"].as_str().unwrap_or("the class");
+                            match std::process::Command::new(console)
+                                .arg("--apps-ids")
+                                .arg(ids.join(","))
+                                .arg("--apps-audience")
+                                .arg(audience)
+                                .arg("--apps-scope")
+                                .arg(command.input["scope"].as_str().unwrap_or("all"))
+                                .arg("--ipc-file")
+                                .arg(path)
+                                .spawn()
+                            {
+                                Ok(child) => {
+                                    info!(
+                                        students = ids.len(),
+                                        pid = child.id(),
+                                        "Application control window launched"
+                                    );
+                                    app_windows.push(child);
+                                    publish_due = Instant::now();
+                                    Ok(())
+                                }
+                                Err(error) => {
+                                    snapshot.error = Some(error.to_string());
+                                    Err("Could not open application control window")
                                 }
                             }
                         } else {

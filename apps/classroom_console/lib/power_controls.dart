@@ -75,26 +75,20 @@ List<PopupMenuEntry<String>> powerMenuItems({
     ),
   ),
   PopupMenuItem(
-    value: 'clipboard_block',
+    value: anyClipboardBlocked ? 'clipboard_allow' : 'clipboard_block',
     child: ListTile(
       dense: true,
-      leading: const Icon(Icons.content_paste_off),
-      title: const Text('Block clipboard (exam mode)'),
-      subtitle: const Text(
-        'Clears anything copied, on every app — stops answer sharing',
+      leading: Icon(
+        anyClipboardBlocked ? Icons.content_paste : Icons.content_paste_off,
       ),
-    ),
-  ),
-  PopupMenuItem(
-    value: 'clipboard_allow',
-    enabled: anyClipboardBlocked,
-    child: ListTile(
-      dense: true,
-      leading: const Icon(Icons.content_paste),
-      title: const Text('Allow clipboard'),
-      subtitle: anyClipboardBlocked
-          ? null
-          : const Text('Not blocked right now'),
+      title: Text(
+        anyClipboardBlocked ? 'Allow clipboard' : 'Block clipboard (exam mode)',
+      ),
+      subtitle: Text(
+        anyClipboardBlocked
+            ? 'Clipboard is blocked right now'
+            : 'Clears anything copied, on every app — stops answer sharing',
+      ),
     ),
   ),
   const PopupMenuDivider(),
@@ -142,6 +136,7 @@ Future<void> runPower(
   required String op,
   required List<String> ids,
   required String audience,
+  bool classWide = true,
 }) async {
   if (ids.isEmpty) return;
   final action = actionFor(op);
@@ -224,7 +219,7 @@ Future<void> runPower(
   final result = await agent.request(
     'tool_power',
     selected: ids,
-    input: {'op': op, 'message': message},
+    input: {'op': op, 'message': message, 'class_wide': classWide},
   );
   if (result['ok'] != true) {
     messenger?.showSnackBar(

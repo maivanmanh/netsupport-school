@@ -48,6 +48,20 @@ pub struct VsCodePolicy {
     pub allowed: Vec<String>,
 }
 impl VsCodePolicy {
+    /// Short stable hash of what this policy enforces; empty when off. The
+    /// Student reports it so the Teacher can tell whether a computer that
+    /// joined late or restarted holds the class rule.
+    pub fn fingerprint(&self) -> String {
+        use sha2::{Digest, Sha256};
+        if !self.enabled {
+            return String::new();
+        }
+        let mut ids: Vec<String> = self.allowed.iter().map(|id| id.to_ascii_lowercase()).collect();
+        ids.sort();
+        ids.dedup();
+        let digest = Sha256::digest(ids.join(",").as_bytes());
+        digest[..8].iter().map(|b| format!("{b:02x}")).collect()
+    }
     pub fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(self.allowed.len() <= 300, "At most 300 extensions");
         anyhow::ensure!(
@@ -90,6 +104,9 @@ mod windows_impl {
     const NO_WINDOW: u32 = 0x0800_0000;
     const REG_PATH: &str = r"SOFTWARE\Policies\Microsoft\VSCode";
     const REG_VALUE: &str = "AllowedExtensions";
+    /// Our own record of what was applied and when (the policy value itself
+    /// cannot carry it).
+    const RULE_KEY: &str = r"SOFTWARE\Classroom\Rules\VsCode";
 
     fn extensions_dir() -> Option<PathBuf> {
         Some(
@@ -301,6 +318,7 @@ mod windows_impl {
             "VS Code machine policy readback did not match the requested allowlist"
         );
         set_disable_ai(true)?;
+        write_rule_state(policy)?;
         // VS Code only resolves `AllowedExtensions` at process start (seen
         // directly in its own log: PolicyConfiguration#initialize runs once
         // during startup). A copy the Student already had open before this
@@ -321,8 +339,48 @@ mod windows_impl {
             REG_VALUE,
             "/f",
         ]);
+        let _ = reg(&["delete", &format!("HKLM\\{RULE_KEY}"), "/f"]);
         set_disable_ai(false)?;
         Ok(())
+    }
+    fn write_rule_state(policy: &VsCodePolicy) -> Result<()> {
+        let state = serde_json::json!({"hash": policy.fingerprint(), "day": crate::local_day::today()}).to_string();
+        reg(&["add", &format!("HKLM\\{RULE_KEY}"), "/v", "State", "/t", "REG_SZ", "/d", &state, "/f"])
+            .context("Could not record the VS Code policy")
+    }
+    fn rule_state() -> Option<Value> {
+        let output = Command::new("reg.exe")
+            .args(["query", &format!("HKLM\\{RULE_KEY}"), "/v", "State"])
+            .creation_flags(NO_WINDOW)
+            .output()
+            .ok()?;
+        String::from_utf8_lossy(&output.stdout)
+            .split_once("REG_SZ")
+            .and_then(|(_, v)| serde_json::from_str::<Value>(v.trim()).ok())
+    }
+    /// Fingerprint of the enforced policy (empty when none), reported to the
+    /// Teacher so it can tell whether this computer holds the class rule.
+    pub fn applied_fingerprint() -> String {
+        if !is_applied() {
+            return String::new();
+        }
+        rule_state().and_then(|v| v["hash"].as_str().map(str::to_owned)).unwrap_or_default()
+    }
+    /// A policy lasts until the Teacher changes it or the local day ends —
+    /// not until the connection drops. Lifts one left over from an earlier
+    /// day; a policy from before day stamps existed is stamped with today.
+    pub fn expire_if_stale() -> Result<()> {
+        if !is_applied() {
+            return Ok(());
+        }
+        match rule_state() {
+            Some(state) if state["day"].as_u64() == Some(u64::from(crate::local_day::today())) => Ok(()),
+            Some(_) => {
+                tracing::info!("VS Code policy is from an earlier day; lifting it");
+                clear()
+            }
+            None => write_rule_state(&VsCodePolicy::default()),
+        }
     }
     /// A failed restart must reach the Teacher as an error: registry state
     /// alone does not confirm that an already running editor loaded it.
@@ -386,7 +444,7 @@ mod windows_impl {
 #[allow(dead_code, unused_imports)]
 pub use windows_impl::clear;
 #[cfg(windows)]
-pub use windows_impl::{apply, is_applied, list_extensions, supported};
+pub use windows_impl::{applied_fingerprint, apply, expire_if_stale, is_applied, list_extensions, supported};
 
 #[cfg(not(windows))]
 pub fn apply(_policy: &VsCodePolicy) -> anyhow::Result<()> {
@@ -400,6 +458,14 @@ pub fn clear() -> anyhow::Result<()> {
 #[cfg(not(windows))]
 pub fn supported() -> bool {
     false
+}
+#[cfg(not(windows))]
+pub fn applied_fingerprint() -> String {
+    String::new()
+}
+#[cfg(not(windows))]
+pub fn expire_if_stale() -> anyhow::Result<()> {
+    Ok(())
 }
 #[cfg(not(windows))]
 pub fn is_applied() -> bool {

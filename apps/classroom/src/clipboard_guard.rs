@@ -6,7 +6,79 @@
 //! Windows only, no administrator rights required: a message-only window
 //! registers as a clipboard format listener and empties the clipboard on
 //! every `WM_CLIPBOARDUPDATE` while [`ClipboardGuard`] is alive.
+//!
+//! Like Internet Guard, VS Code policy and application control, this lasts
+//! until the Teacher changes it or the local day ends — not until the
+//! connection drops, and not because the Student restarted or the Teacher
+//! did. [`state`] is the small bit of registry bookkeeping that makes that
+//! true for a facility that otherwise has no state of its own.
 #![cfg_attr(windows, allow(unsafe_code))]
+
+#[cfg(windows)]
+pub mod state {
+    use anyhow::{Context, Result};
+    use std::{os::windows::process::CommandExt, process::Command};
+
+    const NO_WINDOW: u32 = 0x0800_0000;
+    const KEY: &str = r"SOFTWARE\Classroom\Rules\Clipboard";
+    // HKCU, not HKLM: clipboard block needs no administrator rights, by
+    // design (unlike Guard/VS Code/application control), and must keep
+    // that property.
+
+    fn reg(args: &[&str]) -> Result<()> {
+        let output = Command::new("reg.exe")
+            .args(args)
+            .creation_flags(NO_WINDOW)
+            .output()
+            .context("Could not run reg.exe")?;
+        anyhow::ensure!(output.status.success(), "reg.exe failed: {}", String::from_utf8_lossy(&output.stderr).trim());
+        Ok(())
+    }
+    pub fn mark_applied() -> Result<()> {
+        let today = crate::local_day::today().to_string();
+        reg(&["add", &format!("HKCU\\{KEY}"), "/v", "Day", "/t", "REG_SZ", "/d", &today, "/f"])
+            .context("Could not record the clipboard block")
+    }
+    pub fn clear() {
+        let _ = reg(&["delete", &format!("HKCU\\{KEY}"), "/f"]);
+    }
+    /// The day a block was last applied, if any is recorded.
+    fn recorded_day() -> Option<u32> {
+        let output = Command::new("reg.exe")
+            .args(["query", &format!("HKCU\\{KEY}"), "/v", "Day"])
+            .creation_flags(NO_WINDOW)
+            .output()
+            .ok()?;
+        output.status.success().then(|| {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .find_map(|l| l.trim().rsplit_once(char::is_whitespace).and_then(|(_, v)| v.parse().ok()))
+        })?
+    }
+    /// `true` if a block was recorded for today — the Student should hold
+    /// (or resume) one; `false` otherwise, clearing a stale record from an
+    /// earlier day.
+    pub fn should_be_applied() -> bool {
+        match recorded_day() {
+            Some(day) if day == crate::local_day::today() => true,
+            Some(_) => {
+                clear();
+                false
+            }
+            None => false,
+        }
+    }
+}
+#[cfg(not(windows))]
+pub mod state {
+    pub fn mark_applied() -> anyhow::Result<()> {
+        Ok(())
+    }
+    pub fn clear() {}
+    pub fn should_be_applied() -> bool {
+        false
+    }
+}
 
 #[cfg(windows)]
 mod imp {

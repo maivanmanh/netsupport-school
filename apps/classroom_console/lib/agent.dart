@@ -72,6 +72,7 @@ class Agent extends ChangeNotifier {
       option('--activity-id') != null ||
       option('--internet-ids') != null ||
       option('--vscode-ids') != null ||
+      option('--apps-ids') != null ||
       option('--terminal-id') != null;
   // Terminal windows share the authenticated coordinator, but stream raw bytes
   // over their own bounded attachment rather than roster snapshots.
@@ -326,6 +327,7 @@ class Agent extends ChangeNotifier {
         preferences =
             jsonDecode(await saved.readAsString()) as Map<String, dynamic>;
       }
+      await expireDailyRules();
       endpoint = File(
         option('--ipc-file') ?? '${dir.path}/teacher-endpoint.json',
       );
@@ -770,6 +772,33 @@ class Agent extends ChangeNotifier {
       'selected': [id],
       'input': input,
     });
+  }
+
+  /// Settings that describe today's classroom rules; the Students void their
+  /// side at midnight, so the Teacher's remembered selections do too.
+  static const _dailyRuleKeys = [
+    'internet_last',
+    'vscode_enabled',
+    'vscode_allowed',
+    'copilot_network_block',
+    'apps_policy',
+  ];
+
+  Future<void> expireDailyRules() async {
+    final now = DateTime.now();
+    final today = now.year * 10000 + now.month * 100 + now.day;
+    if (preferences['rules_day'] == today) return;
+    final hadRules = _dailyRuleKeys.any(preferences.containsKey);
+    // Dependent windows read the file at start; only the main console owns
+    // the rewrite, so two processes never race on it.
+    if (dependent) return;
+    final changes = <String, dynamic>{'rules_day': today};
+    for (final key in _dailyRuleKeys) {
+      changes[key] = null;
+    }
+    if (hadRules || preferences['rules_day'] == null) {
+      await savePreferences(changes);
+    }
   }
 
   Future<void> savePreferences(Map<String, dynamic> changes) async {

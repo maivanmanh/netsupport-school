@@ -423,6 +423,37 @@ mod tests {
             .is_empty());
     }
 
+    #[test]
+    fn app_policy_jobs_validate_ids_and_track_the_blocked_marker() {
+        use super::super::Hub;
+        use serde_json::json;
+        let hub = Arc::new(Hub::default());
+        let folder = std::env::temp_dir();
+        {
+            let mut st = hub.0.lock().unwrap();
+            st.peers.insert("guarded".into(), 1);
+            st.capabilities.insert("guarded".into(), json!({"guard":1,"apps":1}));
+        }
+        let bad = json!({"policy":{"enabled":true,"mode":"block","ids":["not-hex"]}});
+        assert!(hub.submit("app_policy", &["guarded".into()], &bad, &folder).is_err());
+        let policy = json!({"policy":{"enabled":true,"mode":"allow_only","ids":["0123456789ab"]}});
+        let id = hub.submit("app_policy", &["guarded".into()], &policy, &folder).unwrap();
+        let queued = hub.0.lock().unwrap().queues["guarded"][0].clone();
+        assert_eq!((queued.action.as_str(), queued.name.as_str()), ("app_policy", "app_block"));
+        let mut done = ToolPacket::default();
+        done.id = id;
+        done.status = "complete".into();
+        hub.event("guarded", &done).unwrap();
+        assert!(hub.snapshot()["apps_blocked"].as_array().unwrap().contains(&json!("guarded")));
+        let clear = json!({"policy":{"enabled":false,"mode":"","ids":[]}});
+        let id2 = hub.submit("app_policy", &["guarded".into()], &clear, &folder).unwrap();
+        let mut done2 = ToolPacket::default();
+        done2.id = id2;
+        done2.status = "complete".into();
+        hub.event("guarded", &done2).unwrap();
+        assert!(hub.snapshot()["apps_blocked"].as_array().unwrap().is_empty());
+    }
+
     #[cfg(unix)]
     #[test]
     fn missing_programs_report_an_error_and_real_ones_start() {
