@@ -13,11 +13,19 @@ hardware MFT and multi-machine/classroom-scale validation remain pending.
 Teacher toolbar → Screen recording. With a nonempty selection, Start targets the
 selected online computers; otherwise it targets all online computers. Every target
 must advertise recording capability (updated Windows Student). Unsupported peers
-cause Start to fail explicitly. The dialog lists all retained sessions, per-machine
-capture state, elapsed time, actual output FPS, resolution, completed/queued chunks,
-upload progress and failures. Offline/stale reports are labeled as last-known data.
-Stop applies to that recording session, including all of its selected computers.
-Closing the dialog does not stop capture. Open folder reveals the session destination.
+cause Start to fail explicitly. The dialog separates retained sessions into **Đang ghi / chờ tải** and **Lịch sử**
+tabs, with live counts. A Stop request stays in the first tab until every Student
+reports a terminal phase and all completed chunks are received; offline/stale
+capture is not inferred to be finished. History includes completed sessions and
+terminal recording errors, with explicit error labels. Each session card shows
+machine name/count, local start date/time, phase, per-machine elapsed time/output
+FPS/resolution, received/pending chunks, upload activity, errors and its selectable
+folder path. Stop applies to that session, including all selected computers.
+Closing the dialog does not stop capture. Open folder reveals its destination.
+
+Right-click an online Student → **Ghi màn hình** starts recording immediately for
+that computer and opens the dialog. Checkbox selection does not change this target.
+The toolbar retains the selected/all-online workflow.
 
 No recording popup, badge or recording window is introduced on Student. Existing
 monitoring badges and OS permission behavior are independent and are not changed.

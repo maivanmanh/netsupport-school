@@ -485,6 +485,16 @@ class _ConsoleState extends State<Console> with WindowListener {
           ),
         ),
         PopupMenuItem(
+          value: 'recording',
+          enabled: agent.connected && !agent.commandBusy,
+          child: const ListTile(
+            dense: true,
+            leading: Icon(Icons.video_camera_back_outlined),
+            title: Text('Ghi màn hình'),
+            subtitle: Text('Ghi máy này • Tự lưu MP4 về Desktop'),
+          ),
+        ),
+        PopupMenuItem(
           value: 'screenshot',
           enabled: agent.connected && !agent.commandBusy,
           child: const ListTile(
@@ -531,6 +541,8 @@ class _ConsoleState extends State<Console> with WindowListener {
       await agent.openFiles(row);
     } else if (choice == 'observe') {
       await inspect(row);
+    } else if (choice == 'recording') {
+      await showRecordings(context, agent, [studentId], startImmediately: true);
     } else if (choice == 'screenshot') {
       try {
         await screenshotStudent(row);

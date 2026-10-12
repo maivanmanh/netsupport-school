@@ -1,3 +1,28 @@
+## 2026-10-12 — Screen recording dialog and context action
+
+Owner requested clearer separation of active recording and finished content,
+more readable items, and a recording command on a Student's right-click menu.
+
+- Added counted **Đang ghi / chờ tải** and **Lịch sử** tabs. Stop-requested,
+  offline/unknown capture and terminal sessions with pending/completed-but-unreceived
+  chunks remain in progress until terminal capture and transfer completion.
+- Session cards now lead with machine name/count, local start time and phase;
+  per-machine rows separate capture metrics, file collection, upload activity and
+  warnings. Completed history hides irrelevant FPS/freshness warnings; recording
+  failures remain explicit. Folder path is selectable, with labeled Open/Stop.
+- Right-click **Ghi màn hình** immediately starts only the context Student and
+  opens the dialog; checkbox selection has no effect on that target. Request
+  failures remain in the dialog; closing it does not send Stop.
+- Validation: Dart format and diff whitespace checks; focused Flutter analysis
+  of `lib/recording.dart` clean. Nine tests passed across `recording_test.dart`,
+  `source_switch_test.dart`, `widget_test.dart`, including real context-menu
+  interaction with another machine selected, pending→history transition, offline/
+  interrupted/uploading classification, folder/Stop commands and 740×520 layout.
+- Source/UI validation only: no paired app rebuild, signing or LAN redeployment
+  in this change; existing running packages and recording backend are unchanged.
+  Next step: paired build and visually verify the new dialog in the native Teacher
+  before deploying it to the room. Previous MP4 runtime evidence remains separate.
+
 # 2026-10-12 — Paired LAN recording validation on Windows ARM and Mac Student
 
 Owner supplied Windows Student `.166` and Mac Student `.2`. Built Teacher, Mac
