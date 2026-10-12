@@ -1,8 +1,12 @@
 # Student screen recording — 2026-10-12
 
-Owner-authorized implementation. **No real Windows recording test has been run.**
-Windows capture/encoder behavior, ten-minute rollover under load, simultaneous
-Observe/presentation and classroom scale remain pending Windows validation.
+Owner-authorized implementation. A paired LAN validation on 2026-10-12 exercised
+one Windows 11 ARM Parallels Student running the x64 build: two ten-minute rollovers,
+automatic collection, short Stop, Teacher restart and concurrent Observe/presentation.
+Three MP4s (600/600/19 seconds) passed independent decode/timestamp/hash checks.
+See [runtime evidence and limits](../checkpoints/diagnostics/2026-10-12-student-recording-lan.md),
+including a separate black one-shot screenshot observation. Physical Windows x64,
+hardware MFT and multi-machine/classroom-scale validation remain pending.
 
 ## Operator workflow
 
@@ -129,11 +133,11 @@ H.264 fixture provenance is in `recording/fixtures/README.md`; it contains no sc
 capture or personal content. ffprobe and ffmpeg independently inspect/decode the
 muxed output. These checks do not exercise DXGI or MFT on this macOS host.
 
-When Windows is available, test an updated Teacher/Student pair from the same
-revision: >20-minute moving/text workload with at least two rollover boundaries;
-Stop mid-chunk; actual FPS/timeline and cursor; 4:3/portrait/small displays; hardware
+The one-VM runtime test above supplements the local tests; it does not replace
+the remaining tests on an updated Teacher/Student pair from the same revision:
+fully moving >20-minute workload; runtime 16:9/portrait/small displays; hardware
 and software MFT; Observe and fullscreen presentation while recording; LAN drop,
 Teacher restart, Agent crash/restart; full disks/backlog; resolution/lock changes;
 and 1/5/10/20/40 physical-PC resource/network measurements. Preserve the existing
-broadcast acceptance criteria. No runtime pass, release package or deployment is
-claimed by this implementation-only change.
+broadcast acceptance criteria. Fresh paired packages were built and the two test
+Students updated through Classroom; no public release or classroom-scale pass is claimed.

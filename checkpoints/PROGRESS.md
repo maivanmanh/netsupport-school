@@ -1,3 +1,39 @@
+# 2026-10-12 — Paired LAN recording validation on Windows ARM and Mac Student
+
+Owner supplied Windows Student `.166` and Mac Student `.2`. Built Teacher, Mac
+Student and Windows x64 Student/Guard together from `f3c1062`, label
+`recording-validation-20261012`; verified fresh embedded ZIPs/manifests. Replaced
+only the stopped existing Teacher bundle and used Classroom updater for both
+existing Students; paths, device IDs and separate profiles/settings were preserved.
+Owner granted macOS permissions manually; Mac screenshot/monitoring works after
+restart. Both Students remain connected to current Teacher `.28` on the new build.
+
+Windows 11 ARM Parallels (4 CPUs/8 GB, x64 Student emulation, software MFT) recorded
+one >20-minute session with two actual rollovers and a mid-chunk Stop. Desktop
+contains three independent H.264 960×720 MP4s, retaining the 1440×1080 source ratio:
+599.979878 / 600.012067 / 19.056733 seconds, averages 24.18 / 25.44 / 26.60 FPS,
+202,957,971 bytes total. Each chunk transferred while the next recorded; all ACKed
+sources were removed. All files begin on keyframes, have strictly increasing input
+PTS/DTS, match durable SHA-256 receipts and fully decode with VFR/demux time base.
+Teacher restart near rollover did not change the recording helper PID; the pending
+chunk uploaded after reconnect. Basic status UI, concurrent screenshot/Observe and
+selected fullscreen Teacher presentation were exercised. Workload/task cleaned up;
+Teacher idle, recording stopped, no pending uploads. Scope: functional validation,
+not hardware-MFT/physical-x64, bulk or 40-PC performance acceptance.
+
+A separate one-shot Windows screenshot was black although the VM was visibly normal;
+recording MP4 samples remained correct and chunk 2's full black scan found no defined
+>=0.2-second near-black interval. Root cause/reproduction remains open. Mac recording
+is unsupported and rejected; its screenshot support is verified independently.
+See [full evidence, exact paths, commands and limits](diagnostics/2026-10-12-student-recording-lan.md).
+No recording implementation changes were needed. Verification: paired release
+builds, updater reconnect confirmation, real runtime tests, independent MP4 tools
+and `git diff --check`; previous implementation unit/lint results remain below.
+
+Exact next step: reproduce/isolate the one-shot black screenshot with the same
+foreground workload; then validate physical Windows x64, hardware MFT, additional
+aspect ratios and two or more Windows recording targets before any scale claim.
+
 # 2026-10-12 — Selected Student screen recording and automatic MP4 collection
 
 Owner authorized implementation without available Windows test hardware. Added
