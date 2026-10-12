@@ -344,6 +344,7 @@ pub(super) fn run(
     ));
     let tools_hub = Arc::new(super::classroom_tools::Hub::default());
     tools_hub.load_badges(parent.join("monitoring-badges.json"))?;
+    tools_hub.load_recordings(parent.join("recording-sessions.json"))?;
     tools_hub.load_hardware(parent.join("hardware-policy.json"))?;
     tools_hub.set_connection_popup(config.tools.connection_popup);
     let mut diagnostics = super::diagnostics::Collector::new(config, parent)?;
@@ -1165,7 +1166,10 @@ pub(super) fn run(
                             }
                         }
                     }
-                    "student_screenshot"
+                    "recording_start"
+                    | "recording_stop"
+                    | "recording_open"
+                    | "student_screenshot"
                     | "fs_collect"
                     | "fs_list"
                     | "fs_result"
@@ -1179,6 +1183,35 @@ pub(super) fn run(
                         let rows = roster.lock().unwrap().snapshot();
                         let input = &command.input;
                         let outcome: Result<Option<Value>> = (|| match command.action.as_str() {
+                            "recording_start" => {
+                                let recipients: Vec<_> = rows
+                                    .iter()
+                                    .filter(|r| {
+                                        r.online
+                                            && (command.selected.is_empty()
+                                                || command.selected.contains(&r.instance_id))
+                                    })
+                                    .map(|r| (r.instance_id.clone(), r.hostname.clone()))
+                                    .collect();
+                                job_id = Some(tools_hub.recording_start(&recipients)?);
+                                Ok(None)
+                            }
+                            "recording_stop" => {
+                                tools_hub.recording_stop(input["id"].as_str().unwrap_or(""))?;
+                                Ok(None)
+                            }
+                            "recording_open" => {
+                                let folder = tools_hub
+                                    .recording_folder(input["id"].as_str().unwrap_or(""))?;
+                                std::process::Command::new(if cfg!(windows) {
+                                    "explorer"
+                                } else {
+                                    "open"
+                                })
+                                .arg(folder)
+                                .spawn()?;
+                                Ok(None)
+                            }
                             "student_screenshot" => {
                                 let row = rows
                                     .iter()

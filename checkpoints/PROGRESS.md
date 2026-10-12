@@ -1,3 +1,76 @@
+# 2026-10-12 — Selected Student screen recording and automatic MP4 collection
+
+Owner authorized implementation without available Windows test hardware. Added
+Teacher toolbar/dialog Start for selected online computers (all online when no
+selection), per-session Stop/Open folder and per-computer recording/transfer
+status. Windows Student records display 0 locally, includes cursor, keeps source
+aspect/no upscale inside 1280×720, caps at 30 FPS/achievable speed and uses the
+existing hardware-MFT/software fallback H.264 encoder, no audio. No new recording
+UI/notice is displayed on Student. Existing badge/permissions remain independent.
+
+A private helper isolates DXGI from existing capture owners. Ten-minute parts
+are independent IDR/SPS/PPS MP4s; completed parts upload while the next records.
+Stop finalizes the short last part. Teacher writes Desktop/<machine>/<session>
+for one target or a common session folder with machine subfolders for bulk Start.
+Video/file work stays off Flutter/control/media threads; latest-frame and status
+slots, command queue, chunk sample table, transfer slots and disk spool are bounded.
+Two global upload slots are paced separately (~175 Mbps combined maximum before
+framing). There is no new classroom server and no collection of full live streams
+into Teacher encoders/decoders.
+
+Added durable session/Stop state, per-Student random tokens and SHA-256 receipt
+journal, checksum validation, ACK-before-Student-cleanup, retry after reconnect,
+ACK-loss dedup with destination hash verification, interrupted capture reporting,
+helper heartbeat/shutdown/reap, eight-hour deadline and disk/backlog limits. A
+failed receipt persistence cannot authorize cleanup on a later retry. Interrupted
+uploads restart that chunk from zero; partial-offset resume is not implemented.
+Student restart resumes completed uploads, not capture. See
+[recording design/limits](../docs/27_SCREEN_RECORDING.md).
+
+Verified locally (source working tree, no deployment/package release):
+
+- `cargo test -p classroom-app --bin Classroom`: **259 passed, 2 existing ignored**;
+  includes nine recording tests for selection/auth/Stop, timing/AVC mux, interrupted
+  TCP upload, retry/dedup, global slots, checksums, durable receipts and Student
+  restart/idempotency. Log: `target/recording-full-rust-tests.log`.
+- `cargo test -p capture-windows-dxgi`: **11 passed**, including 720p 16:9,
+  4:3, portrait, ultrawide and smaller-source limits. This tests pure helpers,
+  not real Windows capture. Log: `target/recording-capture-tests.log`.
+- `flutter test test/recording_test.dart`: **2 passed**; selected Start,
+  session Stop, closing without stopping and honest offline/stale/error status.
+  Log: `target/recording-flutter-tests.log`.
+- `flutter analyze lib/recording.dart test/recording_test.dart`: no issues.
+  Including `lib/main.dart` reports its two pre-existing info-level lints
+  (unnecessary typed_data import, null-aware element suggestion); no new errors.
+- `cargo clippy -p classroom-app --bin Classroom --tests` completed with existing
+  repository warnings. Windows role checks used the rustup stable compiler and
+  matching cargo-clippy driver explicitly (Homebrew tools do not own the installed
+  Windows std target):
+  `RUSTC="$(rustup which --toolchain stable rustc)" CARGO_TARGET_DIR="$PWD/target/recording-cross-stable" /Users/mvmanh/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo-clippy clippy -p classroom-app --bin Classroom --bin ClassroomStudent --bin ClassroomGuardService --target x86_64-pc-windows-gnu`.
+  Completed for all three roles; existing warnings remain, no warnings in the new
+  recording modules. Log: `target/recording-windows-clippy.log`.
+- Scoped Rust formatting and `git diff --check` pass. Full repository formatting
+  already differs in unrelated source; those files were preserved.
+- The real synthetic H.264 mux test produced `target/recording-mux-test.mp4`.
+  `ffprobe` reports H.264 1280×720, two frames, one-second duration and no audio;
+  `ffmpeg -v error -i target/recording-mux-test.mp4 -f null -` decodes successfully.
+  Fixture is generated solid blue, with provenance beside it. This is file-format
+  evidence, not Windows MFT runtime evidence.
+
+Remaining risks: **no real Windows test**; ten-minute rollover reinitializes MFT
+and may introduce a gap, buffered final MFT outputs are not drained, and forced
+kill/power loss may lose the current unfinished part (up to ten minutes). Capture
+geometry failure stops with an error. Actual 24–30 FPS, concurrent Observe and
+presentation, disk limits, sleep/lock and 40-machine recording/network overhead
+remain unverified. No existing broadcast acceptance result is upgraded by this work.
+
+Exact next step: when Windows hardware is available, build Teacher and fresh
+Student/Guard packages from this revision together per PROJECT_NOTES.md, then
+record >20 minutes of moving/text content with two rollover boundaries, Stop
+mid-chunk and verify playable Desktop files/timestamps/FPS/cursor. Follow with LAN
+loss/Teacher restart/Student restart and parallel Observe/presentation, then the
+physical-PC ladder. No build package was shipped or running deployment replaced.
+
 # 2026-10-10 — Lock Mac Student to Teacher presentation
 
 Incoming Teacher screen presentation on macOS now temporarily engages AppKit

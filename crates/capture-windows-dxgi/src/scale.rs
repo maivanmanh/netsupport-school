@@ -137,6 +137,15 @@ mod tests {
     }
 
     #[test]
+    fn recording_720p_preserves_portrait_ultrawide_and_small_displays() {
+        assert_eq!(fit_even((1920, 1080), (1280, 720)).unwrap(), (1280, 720));
+        assert_eq!(fit_even((1600, 1200), (1280, 720)).unwrap(), (960, 720));
+        assert_eq!(fit_even((1080, 1920), (1280, 720)).unwrap(), (406, 720));
+        assert_eq!(fit_even((2560, 1080), (1280, 720)).unwrap(), (1280, 540));
+        assert_eq!(fit_even((800, 600), (1280, 720)).unwrap(), (800, 600));
+    }
+
+    #[test]
     fn resize_preserves_constant_bgra_and_size() {
         let input = [12, 34, 56, 255].repeat(16);
         assert_eq!(

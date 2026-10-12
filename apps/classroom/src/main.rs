@@ -280,6 +280,10 @@ enum RestartRequest {
 
 fn main() -> Result<()> {
     #[cfg(windows)]
+    if let Some(result) = classroom_tools::recording::early_operation() {
+        return result;
+    }
+    #[cfg(windows)]
     if let Some(result) = classroom_tools::screenshot::early_operation() {
         return result;
     }

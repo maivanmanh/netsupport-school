@@ -33,6 +33,7 @@ mod fs_jobs;
 mod hardware;
 mod launch;
 mod power;
+pub(crate) mod recording;
 pub(crate) mod screenshot;
 mod vscode_jobs;
 fn packet(action: &str) -> ToolPacket {
@@ -277,6 +278,7 @@ pub struct Hub(
     AtomicBool,
     Mutex<HashMap<String, Value>>,
     pub(crate) crate::remote_terminal::teacher::Manager,
+    Mutex<recording::TeacherState>,
 );
 impl Hub {
     pub fn load_badges(&self, path: PathBuf) -> Result<()> {
@@ -452,7 +454,7 @@ impl Hub {
         let mut apps_blocked: Vec<&String> = s.apps_blocked.iter().collect();
         apps_blocked.sort();
         let copilot_blocked: Vec<&String> = s.copilot_blocked.iter().collect();
-        json!({"hardware":s.hardware.snapshot(&s.peers, &s.capabilities),"monitoring_badges":badges,"connection_popup":self.connection_popup(),"fs_jobs":fs_jobs,"locked":locked,"clipboard_blocked":clipboard_blocked,"vscode_blocked":vscode_blocked,"apps_blocked":apps_blocked,"copilot_blocked":copilot_blocked,"internet":s.internet,"capabilities":s.capabilities,"ready":s.peers.keys().collect::<Vec<_>>(),"jobs":s.jobs.iter().map(|j|json!({"id":j.packet.id,"kind":j.packet.action,"name":j.packet.name,"size":j.packet.size,"text":j.packet.text.chars().take(240).collect::<String>(),"targets":j.targets.iter().map(|(id,t)|json!({"id":id,"status":t.status,"done":t.done,"reply":t.reply,"error":t.error})).collect::<Vec<_>>()})).collect::<Vec<_>>()})
+        json!({"recordings":self.recording_snapshot(&s.peers),"hardware":s.hardware.snapshot(&s.peers, &s.capabilities),"monitoring_badges":badges,"connection_popup":self.connection_popup(),"fs_jobs":fs_jobs,"locked":locked,"clipboard_blocked":clipboard_blocked,"vscode_blocked":vscode_blocked,"apps_blocked":apps_blocked,"copilot_blocked":copilot_blocked,"internet":s.internet,"capabilities":s.capabilities,"ready":s.peers.keys().collect::<Vec<_>>(),"jobs":s.jobs.iter().map(|j|json!({"id":j.packet.id,"kind":j.packet.action,"name":j.packet.name,"size":j.packet.size,"text":j.packet.text.chars().take(240).collect::<String>(),"targets":j.targets.iter().map(|(id,t)|json!({"id":id,"status":t.status,"done":t.done,"reply":t.reply,"error":t.error})).collect::<Vec<_>>()})).collect::<Vec<_>>()})
     }
     /// Hashes a staged file off the caller's thread, then offers it to every
     /// recipient that has not been cancelled meanwhile. The hash lets Students
@@ -1237,6 +1239,9 @@ fn serve(
     if hello.action == "terminal_connect" {
         return hub.6.serve(s.try_clone()?, &hello.id, &hello.student);
     }
+    if let Some(result) = recording::serve(s, &hello, hub) {
+        return result;
+    }
     if let Some(result) = fs_jobs::serve(s, &hello, hub) {
         return result;
     }
@@ -1310,7 +1315,7 @@ fn serve(
             }
         }
         if let Some(c) = &capability {
-            st.capabilities.insert(hello.student.clone(), json!({"hardware":c["hardware"],"monitoring_badge":c["monitoring_badge"],"terminal":c["terminal"],"dev_update":c["dev_update"],"connection_popup":c["connection_popup"],"fs":c["fs"],"screenshot":c["screenshot"],"website":c["website"],"launch":c["launch"],"power":c["power"],"guard":c["guard"],"copilot_network":c["copilot_network"],"activity":c["activity"],"vscode":c["vscode"],"vscode_list":c["vscode_list"],"apps":c["apps"],"apps_blocked":c["apps_blocked"],"apps_policy":c["apps_policy"],"internet":c["internet"],"internet_fp":c["internet_fp"],"vscode_fp":c["vscode_fp"],"copilot_blocked":c["copilot_blocked"],"os":c["os"],"arch":c["arch"],"build":c["build"],"pid":c["pid"]}));
+            st.capabilities.insert(hello.student.clone(), json!({"hardware":c["hardware"],"monitoring_badge":c["monitoring_badge"],"terminal":c["terminal"],"dev_update":c["dev_update"],"connection_popup":c["connection_popup"],"fs":c["fs"],"screenshot":c["screenshot"],"recording":c["recording"],"website":c["website"],"launch":c["launch"],"power":c["power"],"guard":c["guard"],"copilot_network":c["copilot_network"],"activity":c["activity"],"vscode":c["vscode"],"vscode_list":c["vscode_list"],"apps":c["apps"],"apps_blocked":c["apps_blocked"],"apps_policy":c["apps_policy"],"internet":c["internet"],"internet_fp":c["internet_fp"],"vscode_fp":c["vscode_fp"],"copilot_blocked":c["copilot_blocked"],"os":c["os"],"arch":c["arch"],"build":c["build"],"pid":c["pid"]}));
         }
         g
     };
@@ -1342,7 +1347,14 @@ fn serve(
                 registered(roster, &hello.student, peer),
                 "Student left classroom"
             );
-            if p.action == "hardware_ack" {
+            if p.action == "recording_status" {
+                let stopping = hub.recording_status(&hello.student, &p)?;
+                let mut ack = packet("ok");
+                if stopping {
+                    ack.status = "stop".into();
+                }
+                send(s, &ack)?;
+            } else if p.action == "hardware_ack" {
                 hub.hardware_ack(&hello.student, &p)?;
                 send(s, &packet("ok"))?;
             } else if p.action == "monitoring_badge_ack" {
@@ -1357,6 +1369,10 @@ fn serve(
                     hub.hardware_poll(&hello.student, hardware_supported, &mut last_hardware)?
                 {
                     send(s, &policy)?;
+                    continue;
+                }
+                if let Some(request) = hub.recording_poll(&hello.student) {
+                    send(s, &request)?;
                     continue;
                 }
                 let badge = {
@@ -1872,6 +1888,8 @@ pub fn student(
             };
         }
         expire_rules!();
+        let recorder =
+            recording::Student::new(state_dir.join("recordings"), address, identity.clone());
         fs_jobs::request_folder_access();
         while !cancel.load(Ordering::Acquire) {
             expire_rules!();
@@ -1905,6 +1923,7 @@ pub fn student(
                         json!(u8::from(crate::monitoring_badge::supported()));
                     capabilities["badge_enabled"] = json!(inbox.badge.lock().unwrap().enabled);
                     capabilities["screenshot"] = json!(1);
+                    capabilities["recording"] = json!(u8::from(cfg!(windows)));
                     capabilities["website"] = json!(1);
                     capabilities["terminal"] = json!(u8::from(crate::remote_terminal::available()));
                     hello.text = capabilities.to_string();
@@ -1921,6 +1940,16 @@ pub fn student(
                         inbox
                             .terminal_active
                             .store(terminals.len(), Ordering::Release);
+                        for p in recorder.statuses() {
+                            send(&mut s, &p)?;
+                            let ack = read(&mut s)?;
+                            anyhow::ensure!(ack.action == "ok", "Recording status rejected");
+                            if ack.status == "stop" {
+                                let mut stop = p;
+                                stop.action = "recording_stop".into();
+                                let _ = recorder.command(stop);
+                            }
+                        }
                         for _ in 0..16 {
                             let p = inbox.events.lock().unwrap().pop_front();
                             let Some(p) = p else { break };
@@ -2132,6 +2161,9 @@ pub fn student(
                                         }
                                     }
                                 });
+                            }
+                            "recording_start" | "recording_stop" => {
+                                recorder.command(p)?;
                             }
                             "fs_send" | "fs_receive" | "screenshot" => {
                                 if fs_run.is_none() {

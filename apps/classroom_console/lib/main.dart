@@ -19,6 +19,7 @@ import 'launch_apps.dart';
 import 'open_website.dart';
 import 'monitoring_badge.dart';
 import 'hardware_control.dart';
+import 'recording.dart';
 import 'power_controls.dart';
 import 'internet_access.dart';
 import 'activity_window.dart';
@@ -1155,6 +1156,26 @@ class _ConsoleState extends State<Console> with WindowListener {
                                 : null,
                             icon: const Icon(
                               Icons.rocket_launch_outlined,
+                              size: 18,
+                            ),
+                          ),
+                          IconButton(
+                            tooltip:
+                                'Screen recording • các máy đã chọn hoặc toàn bộ máy online',
+                            onPressed: agent.connected
+                                ? () => showRecordings(
+                                    context,
+                                    agent,
+                                    selectionMode && selected.isNotEmpty
+                                        ? onlineSelected.toList()
+                                        : agent.students
+                                              .where((r) => r['online'] == true)
+                                              .map((r) => '${r['id']}')
+                                              .toList(),
+                                  )
+                                : null,
+                            icon: const Icon(
+                              Icons.video_camera_back_outlined,
                               size: 18,
                             ),
                           ),
