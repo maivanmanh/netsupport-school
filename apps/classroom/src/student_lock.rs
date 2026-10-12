@@ -131,16 +131,25 @@ fn raise(window: &Window) {
     use windows::Win32::{
         Foundation::HWND,
         UI::WindowsAndMessaging::{
-            SetForegroundWindow, SetWindowPos, HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE,
-            SWP_SHOWWINDOW,
+            FindWindowW, GetWindowThreadProcessId, IsWindowVisible, SetForegroundWindow,
+            SetWindowPos, HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
         },
     };
     let handle = HWND(window.get_window_handle());
     // SAFETY: `handle` is this process's live window; both calls only restack it.
     unsafe {
+        // The passive monitoring notice stays above the lock window. Raising
+        // both to HWND_TOPMOST on different timers made their z-order alternate.
+        let notice = FindWindowW(None, windows::core::w!("Classroom monitoring notice"))
+            .ok()
+            .filter(|notice| {
+                let mut pid = 0;
+                GetWindowThreadProcessId(*notice, Some(&mut pid));
+                pid == std::process::id() && IsWindowVisible(*notice).as_bool()
+            });
         let _ = SetWindowPos(
             handle,
-            Some(HWND_TOPMOST),
+            Some(notice.unwrap_or(HWND_TOPMOST)),
             0,
             0,
             0,
@@ -240,20 +249,24 @@ impl LockScreen {
         self.canvas.fill_rect([cx + 14, top - 38, 8, 40], ACCENT);
         self.canvas.fill_rect([cx - 22, top - 46, 44, 8], ACCENT);
         self.canvas.fill_rect([cx - 38, top, 76, 58], ACCENT);
-        self.canvas.fill_rect([cx - 5, top + 16, 10, 22], BACKGROUND);
+        self.canvas
+            .fill_rect([cx - 5, top + 16, 10, 22], BACKGROUND);
         let title = "This computer is locked";
         let tw = self.canvas.text_width(title, 2);
-        self.canvas.text(cx.saturating_sub(tw / 2), top + 92, title, TEXT, 2);
+        self.canvas
+            .text(cx.saturating_sub(tw / 2), top + 92, title, TEXT, 2);
         let mut y = top + 140;
         let lines = super::student_tools_ui::wrap(&self.canvas, &self.message, w.min(900) - 80);
         for line in lines.iter().take(8).filter(|l| !l.is_empty()) {
             let lw = self.canvas.text_width(line, 1);
-            self.canvas.text(cx.saturating_sub(lw / 2), y, line, TEXT, 1);
+            self.canvas
+                .text(cx.saturating_sub(lw / 2), y, line, TEXT, 1);
             y += 26;
         }
         let note = "Your teacher will unlock it shortly";
         let nw = self.canvas.text_width(note, 1);
-        self.canvas.text(cx.saturating_sub(nw / 2), y + 14, note, MUTED, 1);
+        self.canvas
+            .text(cx.saturating_sub(nw / 2), y + 14, note, MUTED, 1);
     }
 }
 

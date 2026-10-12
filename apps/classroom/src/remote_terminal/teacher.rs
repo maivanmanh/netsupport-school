@@ -53,12 +53,10 @@ impl Drop for Connection<'_> {
 }
 impl Manager {
     pub fn open(&self, root: &Path, student: &str) -> Result<String> {
-        let identity = trust::Identity::load(root)?;
-        let secret = identity
-            .peers
-            .get(student)
-            .context("Pair this managed Student before opening Remote Terminal")?
-            .clone();
+        use base64::Engine as _;
+        let mut bytes = [0u8; 32];
+        getrandom::fill(&mut bytes).map_err(|e| anyhow::anyhow!("OS random unavailable: {e}"))?;
+        let secret = base64::engine::general_purpose::STANDARD.encode(bytes);
         let mut sessions = self.sessions.lock().unwrap();
         sessions.retain(|_, s| {
             if !s.ui.load(Ordering::Acquire) && s.touched.lock().unwrap().elapsed() > wire::GRACE {
@@ -105,6 +103,21 @@ impl Manager {
         );
         Ok(id)
     }
+    pub fn authorization(&self, id: &str, teacher_ip: std::net::Ipv4Addr) -> Result<String> {
+        let session = self.session(id)?;
+        ensure!(
+            !session.closed.load(Ordering::Acquire),
+            "Terminal session ended"
+        );
+        let identity = trust::Identity::load(&session.root)?;
+        Ok(serde_json::to_string(&trust::Policy {
+            enabled: true,
+            allow_desktop_open: false,
+            teacher_ip,
+            teacher_certificate: identity.certificate,
+            secret: session.secret.clone(),
+        })?)
+    }
     fn session(&self, id: &str) -> Result<Arc<Session>> {
         self.sessions
             .lock()
@@ -125,24 +138,6 @@ impl Manager {
                 json!({"student":s.student,"input_bytes":s.input_bytes.load(Ordering::Acquire),"output_bytes":s.output_bytes.load(Ordering::Acquire)}),
             );
         }
-    }
-    pub fn revoke(&self, root: &Path, student: &str) -> Result<()> {
-        let mut identity = trust::Identity::load(root)?;
-        identity.peers.remove(student);
-        identity.save(root)?;
-        let ids: Vec<_> = self
-            .sessions
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|(_, s)| s.student == student)
-            .map(|(id, _)| id.clone())
-            .collect();
-        for id in ids {
-            self.close(&id);
-        }
-        trust::audit(root, "", "revoke", json!({"student":student}))?;
-        Ok(())
     }
     pub fn failed(&self, id: &str, student: &str, error: &str) -> bool {
         let Ok(s) = self.session(id) else {
@@ -315,7 +310,7 @@ impl Manager {
                     if s.closed.load(Ordering::Acquire){break;}
                     let mut status=s.status.lock().unwrap().clone();
                     if status["state"]=="connecting" && s.created.elapsed()>wire::GRACE {
-                        wire::write(&mut writer,&Frame::new(wire::EXIT,0,b"Student terminal did not start. Check managed policy and worker permissions.".to_vec())).await?;
+                        wire::write(&mut writer,&Frame::new(wire::EXIT,0,b"Student terminal did not start. Check Student connection, version and worker permissions.".to_vec())).await?;
                         self.close(id);break;
                     }
                     status["connected"]=json!(s.network.load(Ordering::Acquire));
@@ -331,5 +326,40 @@ impl Drop for Manager {
         for s in self.sessions.lock().unwrap().values() {
             s.closed.store(true, Ordering::Release);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sessions_need_no_pairing_and_have_independent_authorization() {
+        let root = std::env::temp_dir().join(format!(
+            "classroom-terminal-test-{}",
+            crate::classroom_tools::nonce().unwrap()
+        ));
+        let manager = Manager::default();
+        let teacher = std::net::Ipv4Addr::LOCALHOST;
+        let first = manager.open(&root, "unpaired-student").unwrap();
+        let second = manager.open(&root, "unpaired-student").unwrap();
+        let grant: trust::Policy =
+            serde_json::from_str(&manager.authorization(&first, teacher).unwrap()).unwrap();
+        let other: trust::Policy =
+            serde_json::from_str(&manager.authorization(&second, teacher).unwrap()).unwrap();
+        assert!(grant.validate(&teacher).is_ok());
+        assert!(grant
+            .validate(&std::net::Ipv4Addr::new(10, 0, 0, 2))
+            .is_err());
+        assert_ne!(grant.secret, other.secret);
+        assert_eq!(grant.teacher_certificate, other.teacher_certificate);
+        assert!(!root.join("remote-terminal.json").exists());
+        let mut malformed = grant.clone();
+        malformed.secret = "not-a-session-secret".into();
+        assert!(malformed.validate(&teacher).is_err());
+        manager.close(&first);
+        assert!(manager.authorization(&first, teacher).is_err());
+        drop(manager);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

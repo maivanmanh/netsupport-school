@@ -132,11 +132,31 @@ class _AppsWindowState extends State<AppsWindow> {
     if (agent.connected && !started) {
       started = true;
       applyPreferences();
-      loadCache().then((_) {
+      loadAppliedPolicy().then((_) => loadCache()).then((_) {
         if (mounted) scan();
       });
     }
     setState(() {});
+  }
+
+  Future<void> loadAppliedPolicy() async {
+    final response = await agent.request('app_policy_state');
+    if (!mounted || response['ok'] != true || changed) return;
+    final rule = (response['result'] as Map?)?['rule'];
+    if (rule is! Map) return;
+    final scope = rule['scope'];
+    if (scope is List && !widget.studentIds.every(scope.contains)) return;
+    final policy = rule['value'];
+    if (policy is! Map) return;
+    setState(() {
+      enabled = policy['enabled'] == true;
+      mode = policy['mode'] == _modeAllowOnly ? _modeAllowOnly : _modeBlock;
+      selected = {for (final id in (policy['ids'] as List? ?? const [])) '$id'};
+      baselineEnabled = enabled;
+      baselineMode = mode;
+      baselineSelected = Set.of(selected);
+      pinned = Set.of(selected);
+    });
   }
 
   void applyPreferences() {
@@ -449,6 +469,22 @@ class _AppsWindowState extends State<AppsWindow> {
       });
       return;
     }
+    // Save the accepted selection before waiting for remote completion. Closing
+    // this separate window during that wait must not discard its checkboxes.
+    try {
+      await agent.savePreferences({
+        'apps_policy': {
+          'enabled': enable,
+          'mode': mode,
+          'ids': selected.toList(),
+        },
+      });
+    } catch (e) {
+      if (mounted) {
+        setState(() => error = 'Could not save application selection: $e');
+      }
+    }
+    if (!mounted) return;
     final skippedList = (result['result'] as Map?)?['skipped'];
     final failure = await waitForJob(result['job_id']);
     if (!mounted) return;
@@ -461,13 +497,6 @@ class _AppsWindowState extends State<AppsWindow> {
         baselineMode = mode;
         baselineSelected = Set.of(selected);
         pinned = Set.of(selected);
-        agent.savePreferences({
-          'apps_policy': {
-            'enabled': enable,
-            'mode': mode,
-            'ids': selected.toList(),
-          },
-        });
       }
       skipped = [
         if (skippedList is List)
@@ -792,7 +821,10 @@ class _AppsWindowState extends State<AppsWindow> {
                 style: const TextStyle(fontSize: 12, color: Colors.orange),
               ),
             ),
-          Row(
+          Wrap(
+            spacing: 12,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
               SegmentedButton<String>(
                 showSelectedIcon: false,
@@ -815,7 +847,8 @@ class _AppsWindowState extends State<AppsWindow> {
                 }),
               ),
               const SizedBox(width: 12),
-              Expanded(
+              SizedBox(
+                width: 180,
                 child: Text(
                   mode == _modeBlock
                       ? 'Ticked applications cannot be opened.'

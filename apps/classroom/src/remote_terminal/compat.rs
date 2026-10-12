@@ -779,12 +779,32 @@ pub fn early_operation() -> Option<i32> {
     }
     #[cfg(windows)]
     {
-        use windows::Win32::System::Console::{AttachConsole, GetConsoleCP, ATTACH_PARENT_PROCESS};
+        use windows::Win32::{
+            Storage::FileSystem::{GetFileType, FILE_TYPE_DISK, FILE_TYPE_PIPE},
+            System::Console::{
+                AttachConsole, GetConsoleCP, GetStdHandle, SetStdHandle, ATTACH_PARENT_PROCESS,
+                STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+            },
+        };
         // SAFETY: this short-lived literal-command helper attaches only its
         // parent CMD's existing console. It never allocates a visible window.
         unsafe {
             if GetConsoleCP() == 0 {
+                // AttachConsole can replace inherited pipe/file handles. Keep
+                // CMD redirection intact or stdin helpers can hang on CONIN$.
+                let redirected: Vec<_> = [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE]
+                    .into_iter()
+                    .filter_map(|kind| {
+                        let handle = GetStdHandle(kind).ok()?;
+                        let file_type = GetFileType(handle);
+                        (file_type == FILE_TYPE_DISK || file_type == FILE_TYPE_PIPE)
+                            .then_some((kind, handle))
+                    })
+                    .collect();
                 let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+                for (kind, handle) in redirected {
+                    let _ = SetStdHandle(kind, handle);
+                }
             }
             let _ = windows::Win32::System::Console::SetConsoleCtrlHandler(None, false);
         }

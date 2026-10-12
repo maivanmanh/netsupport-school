@@ -33,7 +33,7 @@ mod fs_jobs;
 mod hardware;
 mod launch;
 mod power;
-mod screenshot;
+pub(crate) mod screenshot;
 mod vscode_jobs;
 fn packet(action: &str) -> ToolPacket {
     ToolPacket {
@@ -357,7 +357,7 @@ impl Hub {
         }
         Ok(())
     }
-    pub fn terminal_start(&self, student: &str, id: &str, compatibility: bool) -> Result<()> {
+    pub fn terminal_start(&self, student: &str, id: &str, compatibility: bool, authorization: String) -> Result<()> {
         let mut state = self.0.lock().unwrap();
         anyhow::ensure!(
             state.peers.contains_key(student),
@@ -367,7 +367,8 @@ impl Hub {
         anyhow::ensure!(queue.len() < 16, "Student tools queue full");
         let mut p = packet("terminal_start");
         p.id = id.into();
-        p.text = if compatibility { "compat" } else { "native" }.into();
+        p.status = if compatibility { "compat" } else { "native" }.into();
+        p.text = authorization;
         queue.push_back(p);
         Ok(())
     }
@@ -2013,7 +2014,8 @@ pub fn student(
                                         address,
                                         identity.clone(),
                                         p.id.clone(),
-                                        p.text != "native",
+                                        p.status != "native",
+                                        &p.text,
                                     )
                                 };
                                 match outcome {

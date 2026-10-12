@@ -1,10 +1,33 @@
 # Native Remote Terminal
 
+## Owner change — 2026-10-12: direct classroom Terminal
+
+The owner explicitly replaces manual administrator pairing with direct access
+from the Teacher to a connected Student. No `remote-terminal.json` installation,
+copy-policy dialog or per-machine pairing step is required. Windows/macOS
+Students advertise Terminal support when the platform supports the worker.
+
+The authenticated local Teacher UI selects an online roster member. Teacher
+generates a fresh random secret per session and sends its certificate and that
+secret through the Student's existing configured Teacher tools connection.
+Student validates the offered Teacher address against its configured endpoint,
+passes only this session grant to the ordinary-user worker, and removes the
+temporary worker context after reading it. TLS validates the offered certificate
+and authenticates the session secret before any shell starts. No persistent
+Student trust file is written; old pairing files are unused and left untouched.
+
+This intentionally trusts the configured classroom connection for bootstrap:
+it is not out-of-band certificate verification, and does not authenticate a
+hostile LAN independently of the existing classroom control/tools channel.
+Non-elevated token checks, bounded queues/session limits, reconnect grace,
+process-tree cleanup, metadata-only auditing and TLS remain in force.
+The pairing/revocation paragraphs below record the superseded original design.
+
 Owner-authorized scope 2026-10-10: Windows/macOS Teacher and Student. Shell runs
 on Student only: cmd.exe/ConPTY, /bin/zsh login-interactive/POSIX PTY through
 portable-pty; Flutter uses a native xterm emulator, no browser/WebView.
 
-## Locked design
+## Original design (pairing rules superseded above)
 
 - Reuse roster, tools listener and authenticated local IPC. Terminal connects
   back to the existing Teacher tools port; no inbound Student listener/server.

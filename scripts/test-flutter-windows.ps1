@@ -8,6 +8,16 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $bundlePath = Join-Path $root $Bundle
+# Flutter stores logs/settings in a shared application-data directory even when
+# IPC and control ports differ. A second console would rotate the live Teacher's
+# log, invalidating its diagnostics. Require an isolated desktop/user session.
+$existing = @(Get-CimInstance Win32_Process | Where-Object {
+    $_.Name -eq 'classroom_console.exe' -or
+    ($_.Name -eq 'ClassroomAgent.exe' -and $_.CommandLine -match '--teacher-agent')
+})
+if ($existing.Count) {
+    throw 'A Classroom Teacher is already running. Run this smoke in an isolated Windows user session or after stopping Teacher; shared application logs/settings must not be overwritten.'
+}
 $run = Join-Path $root ('target/windows-flutter-smoke/' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
 New-Item -ItemType Directory -Force $run | Out-Null
 $endpoint = Join-Path $run 'endpoint.json'

@@ -32,6 +32,7 @@ pub struct Context {
     pub session: String,
     #[serde(default = "default_compatibility")]
     pub compatibility: bool,
+    pub policy: trust::Policy,
 }
 fn default_compatibility() -> bool {
     true
@@ -79,11 +80,8 @@ pub async fn run(path: &Path) -> Result<()> {
         // SAFETY: geteuid is a side-effect-free OS identity query.
         ensure!(unsafe { libc::geteuid() } != 0, "Remote shell refuses root");
     }
-    let policy = trust::Policy::load()?;
-    ensure!(
-        policy.teacher_ip == *context.address.ip(),
-        "Terminal Teacher not authorized"
-    );
+    let policy = &context.policy;
+    policy.validate(context.address.ip())?;
     let root = crate::launcher::settings_path()
         .and_then(|p| p.parent().map(Path::to_path_buf))
         .context("Student audit directory unavailable")?;

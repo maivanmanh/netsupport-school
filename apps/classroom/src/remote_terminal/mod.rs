@@ -1,4 +1,4 @@
-//! Managed, non-elevated native PTY sessions. Terminal bytes never enter media.
+//! Teacher-authorized, non-elevated native PTY sessions. No manual pairing.
 pub mod compat;
 pub mod teacher;
 mod trust;
@@ -7,10 +7,8 @@ mod windows_worker;
 mod wire;
 pub mod worker;
 
-pub use trust::provision;
-
 pub fn available() -> bool {
-    cfg!(any(windows, target_os = "macos")) && trust::Policy::load().is_ok()
+    cfg!(any(windows, target_os = "macos"))
 }
 
 pub struct Worker {
@@ -45,21 +43,20 @@ pub fn start(
     student: String,
     session: String,
     compatibility: bool,
+    authorization: &str,
 ) -> anyhow::Result<Worker> {
-    let policy = trust::Policy::load()?;
+    let policy: trust::Policy = serde_json::from_str(authorization)?;
+    policy.validate(address.ip())?;
     anyhow::ensure!(
         session.len() == 32 && session.bytes().all(|c| c.is_ascii_hexdigit()),
         "Invalid terminal session ID"
-    );
-    anyhow::ensure!(
-        policy.teacher_ip == *address.ip(),
-        "Terminal Teacher does not match managed policy"
     );
     let context = worker::Context {
         address,
         student,
         session,
         compatibility,
+        policy,
     };
     let root = crate::launcher::settings_path()
         .and_then(|p| p.parent().map(std::path::Path::to_path_buf))

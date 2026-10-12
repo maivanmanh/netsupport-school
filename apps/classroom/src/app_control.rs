@@ -116,7 +116,9 @@ pub fn normalize_name(name: &str) -> String {
         let w = w.to_ascii_lowercase();
         let w = w.trim_start_matches('v');
         matches!(w, "x64" | "x86" | "64-bit" | "32-bit" | "64bit" | "32bit")
-            || (!w.is_empty() && w.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-'))
+            || (!w.is_empty()
+                && w.chars()
+                    .all(|c| c.is_ascii_digit() || c == '.' || c == '-'))
     };
     while words.len() > 1 && words.last().is_some_and(|w| noise(w)) {
         words.pop();
@@ -126,7 +128,10 @@ pub fn normalize_name(name: &str) -> String {
 /// Stable 12-hex-digit id of a program name.
 pub fn app_id(name: &str) -> String {
     let digest = Sha256::digest(normalize_name(name).as_bytes());
-    digest[..ID_LEN / 2].iter().map(|b| format!("{b:02x}")).collect()
+    digest[..ID_LEN / 2]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// Executable names that must never be blocked, whatever the Teacher picks:
@@ -168,8 +173,8 @@ pub fn is_protected(file_name: &str) -> bool {
 #[cfg(windows)]
 mod windows_impl {
     use super::{
-        app_id, is_protected, normalize_name, policy_hash, AppInfo, AppPolicy, AppReport, ListRequest,
-        MODE_ALLOW_ONLY,
+        app_id, is_protected, normalize_name, policy_hash, AppInfo, AppPolicy, AppReport,
+        ListRequest, MODE_ALLOW_ONLY,
     };
     use anyhow::{Context, Result};
     use serde_json::{json, Value};
@@ -186,12 +191,14 @@ mod windows_impl {
         Win32::{
             Foundation::ERROR_SUCCESS,
             System::Registry::{
-                RegCloseKey, RegEnumKeyExW, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER,
-                HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY, REG_DWORD, REG_EXPAND_SZ,
-                REG_SAM_FLAGS, REG_SZ, REG_VALUE_TYPE,
+                RegCloseKey, RegEnumKeyExW, RegOpenKeyExW, RegQueryValueExW, HKEY,
+                HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY,
+                REG_DWORD, REG_EXPAND_SZ, REG_SAM_FLAGS, REG_SZ, REG_VALUE_TYPE,
             },
             UI::Shell::SHLoadIndirectString,
-            UI::WindowsAndMessaging::{MessageBoxW, MB_ICONSTOP, MB_OK, MB_SETFOREGROUND, MB_TOPMOST},
+            UI::WindowsAndMessaging::{
+                MessageBoxW, MB_ICONSTOP, MB_OK, MB_SETFOREGROUND, MB_TOPMOST,
+            },
         },
     };
 
@@ -218,14 +225,24 @@ mod windows_impl {
             let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
             let mut handle = HKEY::default();
             // SAFETY: `wide` is NUL-terminated and outlives the call.
-            let status = unsafe { RegOpenKeyExW(root, PCWSTR(wide.as_ptr()), None, KEY_READ | view, &mut handle) };
+            let status = unsafe {
+                RegOpenKeyExW(
+                    root,
+                    PCWSTR(wide.as_ptr()),
+                    None,
+                    KEY_READ | view,
+                    &mut handle,
+                )
+            };
             (status == ERROR_SUCCESS).then_some(Self(handle))
         }
         fn child(&self, name: &str) -> Option<Self> {
             let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
             let mut handle = HKEY::default();
             // SAFETY: as in `open`.
-            let status = unsafe { RegOpenKeyExW(self.0, PCWSTR(wide.as_ptr()), None, KEY_READ, &mut handle) };
+            let status = unsafe {
+                RegOpenKeyExW(self.0, PCWSTR(wide.as_ptr()), None, KEY_READ, &mut handle)
+            };
             (status == ERROR_SUCCESS).then_some(Self(handle))
         }
         fn subkeys(&self) -> Vec<String> {
@@ -235,7 +252,16 @@ mod windows_impl {
                 let mut len = 256u32;
                 // SAFETY: `buffer`/`len` describe a valid 256-unit buffer.
                 let status = unsafe {
-                    RegEnumKeyExW(self.0, index, Some(PWSTR(buffer.as_mut_ptr())), &mut len, None, None, None, None)
+                    RegEnumKeyExW(
+                        self.0,
+                        index,
+                        Some(PWSTR(buffer.as_mut_ptr())),
+                        &mut len,
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
                 };
                 if status != ERROR_SUCCESS {
                     break;
@@ -250,7 +276,14 @@ mod windows_impl {
             let mut size = 0u32;
             // SAFETY: first call only asks for the size.
             let status = unsafe {
-                RegQueryValueExW(self.0, PCWSTR(wide.as_ptr()), None, Some(&mut kind), None, Some(&mut size))
+                RegQueryValueExW(
+                    self.0,
+                    PCWSTR(wide.as_ptr()),
+                    None,
+                    Some(&mut kind),
+                    None,
+                    Some(&mut size),
+                )
             };
             if status != ERROR_SUCCESS || size == 0 || size > 64 * 1024 {
                 return None;
@@ -277,7 +310,10 @@ mod windows_impl {
             if kind != REG_SZ && kind != REG_EXPAND_SZ {
                 return None;
             }
-            let units: Vec<u16> = data.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+            let units: Vec<u16> = data
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect();
             let text = String::from_utf16_lossy(&units);
             let text = text.trim_end_matches('\0').trim().to_owned();
             if text.is_empty() {
@@ -290,7 +326,8 @@ mod windows_impl {
         }
         fn dword(&self, name: &str) -> Option<u32> {
             let (kind, data) = self.value(name)?;
-            (kind == REG_DWORD && data.len() >= 4).then(|| u32::from_le_bytes([data[0], data[1], data[2], data[3]]))
+            (kind == REG_DWORD && data.len() >= 4)
+                .then(|| u32::from_le_bytes([data[0], data[1], data[2], data[3]]))
         }
     }
     /// `%VAR%` expansion for the few variables installers use.
@@ -334,12 +371,25 @@ mod windows_impl {
     }
 
     fn lower_name(path: &Path) -> String {
-        path.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default()
+        path.file_name()
+            .map(|n| n.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default()
     }
     fn is_installer_name(name: &str) -> bool {
-        ["unins", "uninst", "setup", "install", "update", "crashpad", "crashreport", "helper", "elevat", "repair"]
-            .iter()
-            .any(|marker| name.contains(marker))
+        [
+            "unins",
+            "uninst",
+            "setup",
+            "install",
+            "update",
+            "crashpad",
+            "crashreport",
+            "helper",
+            "elevat",
+            "repair",
+        ]
+        .iter()
+        .any(|marker| name.contains(marker))
     }
     /// The executable named by a `DisplayIcon` value (`"C:\x\y.exe",0`).
     fn exe_from_display_icon(value: &str) -> Option<PathBuf> {
@@ -348,11 +398,16 @@ mod windows_impl {
         (path.is_file()).then_some(path)
     }
     fn alnum(text: &str) -> String {
-        text.chars().filter(char::is_ascii_alphanumeric).collect::<String>().to_ascii_lowercase()
+        text.chars()
+            .filter(char::is_ascii_alphanumeric)
+            .collect::<String>()
+            .to_ascii_lowercase()
     }
     fn is_system_path(path: &Path) -> bool {
         let lowered = path.to_string_lossy().to_ascii_lowercase();
-        let windir = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into()).to_ascii_lowercase();
+        let windir = std::env::var("SystemRoot")
+            .unwrap_or_else(|_| r"C:\Windows".into())
+            .to_ascii_lowercase();
         lowered.starts_with(&windir)
             || lowered.contains(r"\microsoft\edgewebview\")
             || lowered.contains(r"\microsoft\edgeupdate\")
@@ -362,7 +417,11 @@ mod windows_impl {
     /// at, plus top-level executables of its install folder whose name
     /// matches the program (so unrelated tools sharing a folder, or generic
     /// names like `launcher.exe`, are not swept in).
-    fn discover(name: &str, display_icon: Option<&str>, location: Option<&str>) -> (Vec<PathBuf>, Option<PathBuf>) {
+    fn discover(
+        name: &str,
+        display_icon: Option<&str>,
+        location: Option<&str>,
+    ) -> (Vec<PathBuf>, Option<PathBuf>) {
         let mut exes: Vec<PathBuf> = Vec::new();
         let mut icon_source = None;
         let mut folder = location.map(PathBuf::from).filter(|p| p.is_dir());
@@ -394,8 +453,14 @@ mod windows_impl {
             candidates.sort();
             let only_one = candidates.len() == 1;
             for path in candidates {
-                let stem = alnum(path.file_stem().map(|s| s.to_string_lossy()).unwrap_or_default().as_ref());
-                let related = stem.len() >= 3 && (wanted.contains(&stem) || stem.contains(&wanted) || only_one);
+                let stem = alnum(
+                    path.file_stem()
+                        .map(|s| s.to_string_lossy())
+                        .unwrap_or_default()
+                        .as_ref(),
+                );
+                let related = stem.len() >= 3
+                    && (wanted.contains(&stem) || stem.contains(&wanted) || only_one);
                 if related && !exes.iter().any(|e| lower_name(e) == lower_name(&path)) {
                     exes.push(path);
                 }
@@ -412,7 +477,10 @@ mod windows_impl {
         if key.dword("SystemComponent") == Some(1) || key.string("ParentKeyName").is_some() {
             return true;
         }
-        if key.string("ReleaseType").is_some_and(|r| matches!(r.as_str(), "Update" | "Hotfix" | "Security Update")) {
+        if key
+            .string("ReleaseType")
+            .is_some_and(|r| matches!(r.as_str(), "Update" | "Hotfix" | "Security Update"))
+        {
             return true;
         }
         let lowered = name.to_ascii_lowercase();
@@ -441,7 +509,10 @@ mod windows_impl {
                 let Some(key) = parent.child(&sub) else {
                     continue;
                 };
-                let Some(name) = key.string("DisplayName") else {
+                let Some(name) = key
+                    .string("DisplayName")
+                    .and_then(|raw| resolve_resource("", &raw))
+                else {
                     continue;
                 };
                 if skip_entry(&key, &name) || by_id.len() >= MAX_APPS {
@@ -450,13 +521,24 @@ mod windows_impl {
                 let id = app_id(&name);
                 let display_icon = key.string("DisplayIcon");
                 let location = key.string("InstallLocation");
-                let (exes, icon_source) = discover(&name, display_icon.as_deref(), location.as_deref());
+                let (exes, icon_source) =
+                    discover(&name, display_icon.as_deref(), location.as_deref());
                 let entry = by_id.entry(id.clone()).or_insert_with(|| Found {
                     info: AppInfo {
                         id,
                         name: name.chars().take(120).collect(),
-                        publisher: key.string("Publisher").unwrap_or_default().chars().take(80).collect(),
-                        version: key.string("DisplayVersion").unwrap_or_default().chars().take(40).collect(),
+                        publisher: key
+                            .string("Publisher")
+                            .unwrap_or_default()
+                            .chars()
+                            .take(80)
+                            .collect(),
+                        version: key
+                            .string("DisplayVersion")
+                            .unwrap_or_default()
+                            .chars()
+                            .take(40)
+                            .collect(),
                         ..AppInfo::default()
                     },
                     exes: Vec::new(),
@@ -482,7 +564,11 @@ mod windows_impl {
             match by_id.get_mut(&pkg.info.id) {
                 Some(existing) => {
                     for exe in pkg.exes {
-                        if !existing.exes.iter().any(|e| lower_name(e) == lower_name(&exe)) {
+                        if !existing
+                            .exes
+                            .iter()
+                            .any(|e| lower_name(e) == lower_name(&exe))
+                        {
                             existing.exes.push(exe);
                         }
                     }
@@ -521,8 +607,7 @@ mod windows_impl {
     }
 
     // ------------------------------------------------- Store (MSIX) apps
-    const PACKAGES: &str =
-        r"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages";
+    const PACKAGES: &str = r"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages";
 
     fn unescape_xml(text: &str) -> String {
         text.replace("&lt;", "<")
@@ -562,26 +647,40 @@ mod windows_impl {
     }
     /// Resolves `ms-resource:` display names the way Settings does.
     fn resolve_resource(full_name: &str, raw: &str) -> Option<String> {
-        if !raw.starts_with("ms-resource:") {
-            return Some(raw.to_owned());
+        let raw = raw.trim();
+        if !raw.starts_with('@') && !raw.starts_with("ms-resource:") {
+            return (!raw.is_empty()).then(|| raw.to_owned());
         }
-        let source: Vec<u16> = format!("@{{{full_name}?{raw}}}").encode_utf16().chain(std::iter::once(0)).collect();
-        let mut buffer = [0u16; 256];
+        let indirect = if raw.starts_with('@') {
+            raw.to_owned()
+        } else {
+            format!("@{{{full_name}?{raw}}}")
+        };
+        let source: Vec<u16> = indirect.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut buffer = [0u16; 1024];
         // SAFETY: `source` is NUL-terminated; `buffer` is a valid output slice.
         unsafe { SHLoadIndirectString(PCWSTR(source.as_ptr()), &mut buffer, None) }.ok()?;
         let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
         let text = String::from_utf16_lossy(&buffer[..len]);
-        (!text.trim().is_empty()).then(|| text.trim().to_owned())
+        let text = text.trim();
+        (!text.is_empty() && !text.starts_with('@') && !text.starts_with("ms-resource:"))
+            .then(|| text.to_owned())
     }
     /// The best small PNG among a logo's scale/size variants.
     fn pick_logo(root: &Path, logo: &str) -> Option<PathBuf> {
         let logo_path = root.join(logo.replace('/', "\\"));
         let dir = logo_path.parent()?;
-        let stem = logo_path.file_stem()?.to_string_lossy().to_ascii_lowercase();
+        let stem = logo_path
+            .file_stem()?
+            .to_string_lossy()
+            .to_ascii_lowercase();
         let mut best: Option<(u32, PathBuf)> = None;
         for entry in std::fs::read_dir(dir).ok()?.flatten().take(400) {
             let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
-            if !name.starts_with(&stem) || !name.ends_with(".png") || entry.metadata().map_or(true, |m| m.len() > 60_000) {
+            if !name.starts_with(&stem)
+                || !name.ends_with(".png")
+                || entry.metadata().map_or(true, |m| m.len() > 60_000)
+            {
                 continue;
             }
             let score = if name.contains("targetsize-48") && name.contains("unplated") {
@@ -590,7 +689,10 @@ mod windows_impl {
                 6
             } else if name.contains("scale-200") {
                 5
-            } else if name.contains("targetsize-64") || name.contains("targetsize-72") || name.contains("targetsize-96") {
+            } else if name.contains("targetsize-64")
+                || name.contains("targetsize-72")
+                || name.contains("targetsize-96")
+            {
                 4
             } else if name.contains("scale-100") || name.contains("scale-150") {
                 3
@@ -610,7 +712,9 @@ mod windows_impl {
         let Some(parent) = Key::open(HKEY_CURRENT_USER, PACKAGES, REG_SAM_FLAGS(0)) else {
             return Vec::new();
         };
-        let windir = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into()).to_ascii_lowercase();
+        let windir = std::env::var("SystemRoot")
+            .unwrap_or_else(|_| r"C:\Windows".into())
+            .to_ascii_lowercase();
         let mut found = Vec::new();
         for full_name in parent.subkeys() {
             let Some(key) = parent.child(&full_name) else {
@@ -619,7 +723,11 @@ mod windows_impl {
             let Some(root) = key.string("PackageRootFolder").map(PathBuf::from) else {
                 continue;
             };
-            if root.to_string_lossy().to_ascii_lowercase().starts_with(&windir) {
+            if root
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .starts_with(&windir)
+            {
                 continue; // shell/system components, not listed under Installed apps
             }
             let Ok(manifest) = std::fs::read_to_string(root.join("AppxManifest.xml")) else {
@@ -637,7 +745,9 @@ mod windows_impl {
             for chunk in manifest.split("<Application ").skip(1) {
                 let chunk = chunk.split("</Application>").next().unwrap_or(chunk);
                 let head = chunk.split('>').next().unwrap_or("");
-                let Some(exe) = attr(head, "Executable").filter(|e| e.to_ascii_lowercase().ends_with(".exe")) else {
+                let Some(exe) =
+                    attr(head, "Executable").filter(|e| e.to_ascii_lowercase().ends_with(".exe"))
+                else {
                     continue;
                 };
                 let Some(visual) = first_tag(chunk, "VisualElements") else {
@@ -647,14 +757,21 @@ mod windows_impl {
                     continue;
                 }
                 if name.is_none() {
-                    name = attr(visual, "DisplayName").and_then(|raw| resolve_resource(&full_name, &raw));
+                    name = attr(visual, "DisplayName")
+                        .and_then(|raw| resolve_resource(&full_name, &raw));
                     logo = attr(visual, "Square44x44Logo");
                 }
                 exes.push(root.join(exe));
             }
             let Some(name) = name
-                .or_else(|| key.string("DisplayName").and_then(|raw| resolve_resource(&full_name, &raw)))
-                .filter(|n| !n.starts_with("ms-resource:"))
+                .or_else(|| {
+                    key.string("DisplayName")
+                        .and_then(|raw| resolve_resource(&full_name, &raw))
+                })
+                .or_else(|| {
+                    attr(identity, "Name")
+                        .map(|n| n.strip_prefix("Microsoft.").unwrap_or(&n).replace('.', " "))
+                })
             else {
                 continue;
             };
@@ -662,7 +779,10 @@ mod windows_impl {
                 continue;
             }
             let publisher = attr(identity, "Publisher")
-                .and_then(|p| p.split(',').find_map(|part| part.trim().strip_prefix("CN=").map(str::to_owned)))
+                .and_then(|p| {
+                    p.split(',')
+                        .find_map(|part| part.trim().strip_prefix("CN=").map(str::to_owned))
+                })
                 .unwrap_or_default();
             found.push(Found {
                 info: AppInfo {
@@ -692,7 +812,9 @@ mod windows_impl {
                     .icon_file
                     .as_deref()
                     .and_then(|p| std::fs::read(p).ok())
-                    .map(|bytes| base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes))
+                    .map(|bytes| {
+                        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes)
+                    })
                     .or_else(|| {
                         found
                             .icon_source
@@ -702,7 +824,11 @@ mod windows_impl {
             }
             apps.push(info);
         }
-        AppReport { supported: true, apps, notes: Vec::new() }
+        AppReport {
+            supported: true,
+            apps,
+            notes: Vec::new(),
+        }
     }
 
     // --------------------------------------------------------- enforcement
@@ -715,7 +841,11 @@ mod windows_impl {
     }
     fn reg(args: &[&str]) -> Result<()> {
         let output = run("reg.exe", args)?;
-        anyhow::ensure!(output.status.success(), "reg.exe failed: {}", String::from_utf8_lossy(&output.stderr).trim());
+        anyhow::ensure!(
+            output.status.success(),
+            "reg.exe failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
         Ok(())
     }
     fn ifeo_path(exe: &str) -> String {
@@ -730,11 +860,22 @@ mod windows_impl {
         let Ok(output) = run("reg.exe", &["query", &ifeo_path(exe), "/v", "Debugger"]) else {
             return false;
         };
-        output.status.success() && !String::from_utf8_lossy(&output.stdout).contains("--app-blocked")
+        output.status.success()
+            && !String::from_utf8_lossy(&output.stdout).contains("--app-blocked")
     }
     fn stub_path() -> Result<PathBuf> {
         let base = std::env::var_os("ProgramData").context("ProgramData is not set")?;
-        let dir = PathBuf::from(base).join("Classroom").join("AppBlock");
+        // A notice from the previous build may still be running. Never overwrite
+        // that loaded EXE; new rules point to the current build's own stub.
+        let build: String = env!("CLASSROOM_BUILD_ID")
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            .take(120)
+            .collect();
+        let dir = PathBuf::from(base)
+            .join("Classroom")
+            .join("AppBlock")
+            .join(build);
         std::fs::create_dir_all(&dir)?;
         let stub = dir.join(STUB_NAME);
         let me = std::env::current_exe()?;
@@ -748,20 +889,31 @@ mod windows_impl {
         Ok(stub)
     }
     fn read_state_value() -> Option<Value> {
-        let output = run("reg.exe", &["query", &format!("HKLM\\{STATE_KEY}"), "/v", "State"]).ok()?;
+        let output = run(
+            "reg.exe",
+            &["query", &format!("HKLM\\{STATE_KEY}"), "/v", "State"],
+        )
+        .ok()?;
         let text = String::from_utf8_lossy(&output.stdout);
-        text.split_once("REG_SZ").and_then(|(_, v)| serde_json::from_str::<Value>(v.trim()).ok())
+        text.split_once("REG_SZ")
+            .and_then(|(_, v)| serde_json::from_str::<Value>(v.trim()).ok())
     }
     fn read_state() -> Vec<String> {
         read_state_value()
             .and_then(|v| {
-                v["exes"].as_array().map(|a| a.iter().filter_map(|e| e.as_str().map(str::to_owned)).collect())
+                v["exes"].as_array().map(|a| {
+                    a.iter()
+                        .filter_map(|e| e.as_str().map(str::to_owned))
+                        .collect()
+                })
             })
             .unwrap_or_default()
     }
     /// Fingerprint of the policy this computer enforces, or empty.
     pub fn applied_hash() -> String {
-        read_state_value().and_then(|v| v["hash"].as_str().map(str::to_owned)).unwrap_or_default()
+        read_state_value()
+            .and_then(|v| v["hash"].as_str().map(str::to_owned))
+            .unwrap_or_default()
     }
     fn remove_ifeo(exe: &str) {
         if foreign_debugger(exe) {
@@ -775,7 +927,9 @@ mod windows_impl {
     fn targets(policy: &AppPolicy) -> BTreeMap<String, (String, bool)> {
         let selected: HashSet<&str> = policy.ids.iter().map(String::as_str).collect();
         let allow_only = policy.mode == MODE_ALLOW_ONLY;
-        let own_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf));
+        let own_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(Path::to_path_buf));
         let mut out = BTreeMap::new(); // lowercase file name -> (app name, packaged)
         for found in scan() {
             let chosen = selected.contains(found.info.id.as_str());
@@ -789,7 +943,8 @@ mod windows_impl {
                 if file.is_empty() || is_protected(&file) || in_own_dir {
                     continue;
                 }
-                out.entry(file).or_insert_with(|| (found.info.name.clone(), packaged));
+                out.entry(file)
+                    .or_insert_with(|| (found.info.name.clone(), packaged));
             }
         }
         out
@@ -806,7 +961,10 @@ mod windows_impl {
         let stub = stub_path()?;
         let debugger = debugger_value(&stub);
         let previous = read_state();
-        for exe in previous.iter().filter(|e| !blocked.contains_key(e.as_str())) {
+        for exe in previous
+            .iter()
+            .filter(|e| !blocked.contains_key(e.as_str()))
+        {
             remove_ifeo(exe);
         }
         let mut names: HashSet<String> = HashSet::new();
@@ -819,8 +977,19 @@ mod windows_impl {
                 continue;
             }
             for view in ["/reg:64", "/reg:32"] {
-                reg(&["add", &ifeo_path(exe), "/v", "Debugger", "/t", "REG_SZ", "/d", &debugger, "/f", view])
-                    .context("Could not write the application block (run as administrator?)")?;
+                reg(&[
+                    "add",
+                    &ifeo_path(exe),
+                    "/v",
+                    "Debugger",
+                    "/t",
+                    "REG_SZ",
+                    "/d",
+                    &debugger,
+                    "/f",
+                    view,
+                ])
+                .context("Could not write the application block (run as administrator?)")?;
             }
         }
         let mut sorted: Vec<&String> = names.iter().collect();
@@ -832,12 +1001,53 @@ mod windows_impl {
             "day": crate::local_day::today(),
         })
         .to_string();
-        reg(&["add", &format!("HKLM\\{STATE_KEY}"), "/v", "State", "/t", "REG_SZ", "/d", &state, "/f"])
-            .context("Could not record the application block")?;
+        reg(&[
+            "add",
+            &format!("HKLM\\{STATE_KEY}"),
+            "/v",
+            "State",
+            "/t",
+            "REG_SZ",
+            "/d",
+            &state,
+            "/f",
+        ])
+        .context("Could not record the application block")?;
         // Programs already running keep running until they exit; closing them
         // is what the Teacher expects "blocked" to mean.
         for exe in &names {
             let _ = run("taskkill.exe", &["/F", "/IM", exe, "/T"]);
+        }
+        // Do not acknowledge a successful block while a running copy survived
+        // taskkill (for example because it belongs to an elevated session).
+        let mut system = sysinfo::System::new();
+        for attempt in 0..4 {
+            system.refresh_processes_specifics(
+                sysinfo::ProcessesToUpdate::All,
+                true,
+                sysinfo::ProcessRefreshKind::nothing(),
+            );
+            let running: Vec<_> = system
+                .processes()
+                .values()
+                .filter(|p| names.contains(&p.name().to_string_lossy().to_ascii_lowercase()))
+                .collect();
+            if running.is_empty() {
+                break;
+            }
+            anyhow::ensure!(
+                attempt < 3,
+                "Application block installed, but could not close: {}",
+                running
+                    .iter()
+                    .map(|p| p.name().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            for process in running {
+                process.kill();
+            }
+            std::thread::sleep(Duration::from_millis(100));
         }
         tracing::info!(count = names.len(), mode = %policy.mode, "application block applied");
         Ok(names)
@@ -862,16 +1072,21 @@ mod windows_impl {
     }
     impl Enforcer {
         pub fn start() -> Self {
-            let blocked: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(read_state().into_iter().collect()));
+            let blocked: Arc<Mutex<HashSet<String>>> =
+                Arc::new(Mutex::new(read_state().into_iter().collect()));
             let shared = Arc::clone(&blocked);
             // Lives as long as the Student process; there is nothing to join.
-            let _ = std::thread::Builder::new().name("app-enforcer".into()).spawn(move || watch(&shared));
+            let _ = std::thread::Builder::new()
+                .name("app-enforcer".into())
+                .spawn(move || watch(&shared));
             Self { blocked }
         }
         pub fn apply(&self, policy: &AppPolicy) -> Result<()> {
-            let names = apply_registry(policy)?;
-            *self.blocked.lock().unwrap() = names;
-            Ok(())
+            let outcome = apply_registry(policy);
+            // A close failure can follow a successful registry write. Keep the
+            // watcher enforcing that installed rule even while reporting it.
+            *self.blocked.lock().unwrap() = read_state().into_iter().collect();
+            outcome.map(|_| ())
         }
         /// A block lasts until the Teacher changes it or the local day ends.
         /// Lifts one left over from an earlier day (and stamps one from
@@ -910,7 +1125,6 @@ mod windows_impl {
             std::thread::sleep(Duration::from_millis(500));
             let names = shared.lock().unwrap().clone();
             if names.is_empty() {
-                std::thread::sleep(Duration::from_millis(1500));
                 continue;
             }
             system.refresh_processes_specifics(
@@ -926,7 +1140,11 @@ mod windows_impl {
         }
     }
     pub fn is_applied() -> bool {
-        run("reg.exe", &["query", &format!("HKLM\\{STATE_KEY}"), "/v", "State"]).is_ok_and(|o| o.status.success())
+        run(
+            "reg.exe",
+            &["query", &format!("HKLM\\{STATE_KEY}"), "/v", "State"],
+        )
+        .is_ok_and(|o| o.status.success())
     }
     pub fn supported() -> bool {
         true
@@ -941,9 +1159,14 @@ mod windows_impl {
             return None;
         }
         let target = args.next().map(PathBuf::from).unwrap_or_default();
-        let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "This program".into());
-        let text: Vec<u16> =
-            format!("{name} is blocked by your teacher.").encode_utf16().chain(std::iter::once(0)).collect();
+        let name = target
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "This program".into());
+        let text: Vec<u16> = format!("{name} is blocked by your teacher.")
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
         // SAFETY: both strings are NUL-terminated and outlive the call.
         unsafe {
             MessageBoxW(
@@ -1003,7 +1226,10 @@ mod tests {
     #[test]
     fn versions_and_architectures_do_not_split_one_program() {
         assert_eq!(normalize_name("Python 3.12.1 (64-bit)"), "python");
-        assert_eq!(app_id("Python 3.12.1 (64-bit)"), app_id("Python 3.11.9 (64-bit)"));
+        assert_eq!(
+            app_id("Python 3.12.1 (64-bit)"),
+            app_id("Python 3.11.9 (64-bit)")
+        );
         assert_eq!(normalize_name("7-Zip 24.07 (x64 edition)"), "7-zip");
         assert_eq!(normalize_name("Google Chrome"), "google chrome");
         assert_eq!(normalize_name("Notepad++ (64-bit x64)"), "notepad++");
@@ -1012,12 +1238,31 @@ mod tests {
     }
     #[test]
     fn policy_hash_ignores_order_and_is_empty_when_off() {
-        let a = AppPolicy { enabled: true, mode: MODE_BLOCK.into(), ids: vec!["b".repeat(12), "a".repeat(12)] };
-        let b = AppPolicy { ids: vec!["a".repeat(12), "b".repeat(12)], ..a.clone() };
+        let a = AppPolicy {
+            enabled: true,
+            mode: MODE_BLOCK.into(),
+            ids: vec!["b".repeat(12), "a".repeat(12)],
+        };
+        let b = AppPolicy {
+            ids: vec!["a".repeat(12), "b".repeat(12)],
+            ..a.clone()
+        };
         assert_eq!(policy_hash(&a), policy_hash(&b));
         assert_eq!(policy_hash(&a).len(), 16);
-        assert_ne!(policy_hash(&a), policy_hash(&AppPolicy { mode: MODE_ALLOW_ONLY.into(), ..a.clone() }));
-        assert_eq!(policy_hash(&AppPolicy { enabled: false, ..a }), "");
+        assert_ne!(
+            policy_hash(&a),
+            policy_hash(&AppPolicy {
+                mode: MODE_ALLOW_ONLY.into(),
+                ..a.clone()
+            })
+        );
+        assert_eq!(
+            policy_hash(&AppPolicy {
+                enabled: false,
+                ..a
+            }),
+            ""
+        );
     }
     #[test]
     fn a_name_that_is_only_a_version_is_kept() {
@@ -1025,11 +1270,30 @@ mod tests {
     }
     #[test]
     fn policy_validation_rejects_bad_input() {
-        let good = AppPolicy { enabled: true, mode: MODE_BLOCK.into(), ids: vec![app_id("Zoom")] };
+        let good = AppPolicy {
+            enabled: true,
+            mode: MODE_BLOCK.into(),
+            ids: vec![app_id("Zoom")],
+        };
         assert!(good.validate().is_ok());
-        assert!(AppPolicy { mode: "other".into(), ..good.clone() }.validate().is_err());
-        assert!(AppPolicy { ids: vec!["zz".into()], ..good.clone() }.validate().is_err());
-        assert!(AppPolicy { ids: vec!["a".repeat(12); 401], ..good }.validate().is_err());
+        assert!(AppPolicy {
+            mode: "other".into(),
+            ..good.clone()
+        }
+        .validate()
+        .is_err());
+        assert!(AppPolicy {
+            ids: vec!["zz".into()],
+            ..good.clone()
+        }
+        .validate()
+        .is_err());
+        assert!(AppPolicy {
+            ids: vec!["a".repeat(12); 401],
+            ..good
+        }
+        .validate()
+        .is_err());
     }
     #[test]
     fn classroom_and_core_programs_are_never_blockable() {

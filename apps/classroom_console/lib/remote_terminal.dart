@@ -355,69 +355,6 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
         });
   }
 
-  Future<void> pairing() async {
-    var wasRevoked = false;
-    final result = await agent.request(
-      'terminal_pair',
-      selected: [widget.studentId],
-    );
-    if (!mounted) return;
-    if (result['ok'] != true) {
-      setState(() {
-        error = Agent.failure(result);
-      });
-      return;
-    }
-    final policy = const JsonEncoder.withIndent('  ').convert(result['result']);
-    await showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Managed terminal pairing'),
-        content: SizedBox(
-          width: 580,
-          child: Text(
-            'An administrator must install this computer-specific policy over a trusted channel. It contains a secret: do not send it through classroom messages.\n\nWindows: C:\\ProgramData\\Classroom\\remote-terminal.json\nmacOS: /Library/Application Support/Classroom/remote-terminal.json\n\nAllow only administrators to change the file. Student users need read access. No shell starts before this policy is installed.',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () async {
-              final revoked = await agent.request(
-                'terminal_revoke',
-                selected: [widget.studentId],
-              );
-              if (!context.mounted) return;
-              if (revoked['ok'] == true) {
-                wasRevoked = true;
-                ended = true;
-                connected = false;
-                Navigator.pop(context);
-              }
-            },
-            child: const Text('Revoke pairing'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Done'),
-          ),
-          FilledButton.icon(
-            onPressed: () async {
-              await Clipboard.setData(ClipboardData(text: policy));
-            },
-            icon: const Icon(Icons.copy),
-            label: const Text('Copy policy'),
-          ),
-        ],
-      ),
-    );
-    if (!mounted) return;
-    setState(() {
-      error = wasRevoked
-          ? 'Pairing revoked. This computer can no longer open terminal sessions.'
-          : 'After installing the policy, click Retry.';
-    });
-  }
-
   Future<void> settings() async {
     final font = TextEditingController(text: family),
         fall = TextEditingController(text: fallback),
@@ -540,6 +477,9 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
   }
 
   KeyEventResult terminalKey(FocusNode node, KeyEvent event) {
+    // xterm's hardware listener must not insert a character again on key-up.
+    if (Platform.isWindows && event is KeyUpEvent)
+      return KeyEventResult.handled;
     final keyboard = HardwareKeyboard.instance;
     final copyModifier = Platform.isMacOS
         ? keyboard.isMetaPressed
@@ -586,7 +526,11 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
   Future<void> downloadOutput() async {
     if (terminal == null || exporting) return;
     // Include the complete available scrollback, not just the visible viewport.
-    final text = terminal!.mainBuffer.getText() + (terminal!.isUsingAltBuffer ? '\n\n--- Active screen ---\n${terminal!.altBuffer.getText()}' : '');
+    final text =
+        terminal!.mainBuffer.getText() +
+        (terminal!.isUsingAltBuffer
+            ? '\n\n--- Active screen ---\n${terminal!.altBuffer.getText()}'
+            : '');
     setState(() => exporting = true);
     try {
       final reply = await agent.request('terminal_desktop');
@@ -674,13 +618,6 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
                 ),
               ),
               IconButton(
-                onPressed: pairing,
-                tooltip: 'Managed pairing / revoke access',
-                iconSize: 18,
-                visualDensity: VisualDensity.compact,
-                icon: const Icon(Icons.admin_panel_settings_outlined),
-              ),
-              IconButton(
                 onPressed: settings,
                 tooltip: 'Terminal settings',
                 iconSize: 18,
@@ -710,11 +647,6 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
           MaterialBanner(
             content: Text(error!),
             actions: [
-              if (session == null)
-                TextButton(
-                  onPressed: pairing,
-                  child: const Text('Pair managed computer'),
-                ),
               if (session == null)
                 TextButton(
                   onPressed: () {
@@ -748,6 +680,10 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
                         unawaited(terminalMenu(details)),
                     textScaler: TextScaler.noScaling,
                     autofocus: true,
+                    // Windows delivered Enter through key events but printable
+                    // keys were lost by the text-input bridge. xterm provides a
+                    // desktop hardware path that forwards KeyEvent.character.
+                    hardwareKeyboardOnly: Platform.isWindows,
                     readOnly: !connected,
                     theme: black
                         ? TerminalThemes.whiteOnBlack

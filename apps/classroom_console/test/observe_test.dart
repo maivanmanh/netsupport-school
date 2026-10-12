@@ -304,15 +304,32 @@ void main() {
     expect(data(live: false).delay, isNull);
     expect(data(live: false).resolution, '—');
   });
-  test('Width preserves aspect and Fill stretches both dimensions', () {
+  test('Native preserves aspect without upscaling and Fill stretches', () {
     const viewport = Size(1200, 800), source = Size(1080, 1920);
     final width = observeImageSize(viewport, source, stretch: false);
     expect(
       observeImageSize(viewport, Size.zero, stretch: false),
       const Size(1200, 675),
     );
-    expect(width.width, 1200);
-    expect(width.height, closeTo(2133.3333, 0.001));
+    expect(width.width, 450);
+    expect(width.height, 800);
+    expect(
+      observeImageSize(
+        const Size(1920, 1080),
+        const Size(1024, 768),
+        stretch: false,
+      ),
+      const Size(1024, 768),
+    );
+    expect(
+      observeImageSize(
+        const Size(1920, 1080),
+        const Size(1024, 768),
+        stretch: false,
+        pixelRatio: 2,
+      ),
+      const Size(512, 384),
+    );
     expect(observeImageSize(viewport, source, stretch: true), viewport);
     expect(
       observePosition(Offset(width.width / 2, width.height / 2), width),
@@ -811,11 +828,9 @@ void main() {
         ),
       );
     }
-    expect(
-      a.inputs.where((v) => v['action'] == 'scroll').map((v) => v['y']),
-      [1],
-      reason: 'Small wheel deltas must accumulate rather than disappear',
-    );
+    expect(a.inputs.where((v) => v['action'] == 'scroll').map((v) => v['y']), [
+      1,
+    ], reason: 'Small wheel deltas must accumulate rather than disappear');
     a.inputs.clear();
     await t.sendEventToBinding(
       const PointerPanZoomStartEvent(pointer: 8, position: Offset(400, 300)),
@@ -833,11 +848,9 @@ void main() {
     await t.sendEventToBinding(
       const PointerPanZoomEndEvent(pointer: 8, position: Offset(400, 300)),
     );
-    expect(
-      a.inputs.where((v) => v['action'] == 'scroll').map((v) => v['y']),
-      [1],
-      reason: 'Trackpad content pan must become remote wheel input',
-    );
+    expect(a.inputs.where((v) => v['action'] == 'scroll').map((v) => v['y']), [
+      1,
+    ], reason: 'Trackpad content pan must become remote wheel input');
     // A new frame shape changes the crop immediately after native stats update.
     source = const Size(1920, 1080);
     await t.pump(const Duration(seconds: 1));

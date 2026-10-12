@@ -4,6 +4,36 @@ import 'package:screen_retriever/screen_retriever.dart';
 import 'package:classroom_console/observe_startup.dart';
 
 void main() {
+  test('source pixels fit without upscaling at different ratios and DPI', () {
+    const work = Rect.fromLTWH(0, 0, 1920, 1040);
+    expect(
+      observeNativeBounds(
+        work,
+        const Size(1024, 768),
+        1,
+        const Size(16, 39),
+      ).size,
+      const Size(1040, 807),
+    );
+    expect(
+      observeNativeBounds(
+        work,
+        const Size(1280, 1024),
+        2,
+        const Size(16, 39),
+      ).size,
+      const Size(656, 551),
+    );
+    final large = observeNativeBounds(
+      work,
+      const Size(3840, 2160),
+      1,
+      const Size(16, 39),
+    );
+    expect(large.width, lessThanOrEqualTo(work.width));
+    expect(large.height, lessThanOrEqualTo(work.height));
+    expect((large.width - 16) / (large.height - 39), closeTo(16 / 9, 0.0001));
+  });
   test(
     'Observe fills the Teacher monitor work area in logical Retina units',
     () {

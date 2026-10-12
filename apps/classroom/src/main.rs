@@ -279,6 +279,10 @@ enum RestartRequest {
 }
 
 fn main() -> Result<()> {
+    #[cfg(windows)]
+    if let Some(result) = classroom_tools::screenshot::early_operation() {
+        return result;
+    }
     if std::env::args_os().nth(1).is_some_and(|v| v == "--hardware-reset") {
         return hardware_control::emergency_reset();
     }

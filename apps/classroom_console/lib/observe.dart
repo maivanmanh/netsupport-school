@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -14,6 +13,8 @@ import 'observe_stats.dart';
 import 'observe_control_recovery.dart';
 import 'classroom_tools_ui.dart';
 import 'file_transfer.dart';
+import 'observe_startup.dart';
+import 'package:screen_retriever/screen_retriever.dart';
 
 import 'package:desktop_drop/desktop_drop.dart';
 
@@ -65,7 +66,52 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
   final viewportScroll = ScrollController();
   final horizontalScroll = ScrollController();
   Timer? chromeTimer;
-  String displayMode = 'fill';
+  String displayMode = 'fit';
+  Size? autoSizedSource;
+  bool sizingWindow = false;
+
+  Future<void> sizeWindowToSource(Map<String, dynamic> value) async {
+    final source = Size(
+      (value['width'] as num? ?? 0).toDouble(),
+      (value['height'] as num? ?? 0).toDouble(),
+    );
+    if (!mounted ||
+        sizingWindow ||
+        fullScreen ||
+        source.isEmpty ||
+        autoSizedSource == source) {
+      return;
+    }
+    sizingWindow = true;
+    final pixelRatio = MediaQuery.devicePixelRatioOf(context);
+    final client = MediaQuery.sizeOf(context);
+    try {
+      final current = await windowManager.getBounds();
+      final work = observeWorkArea(
+        await screenRetriever.getAllDisplays(),
+        current.center,
+      );
+      final bounds = observeNativeBounds(
+        work,
+        source,
+        pixelRatio,
+        Size(
+          math.max(0, current.width - client.width),
+          math.max(0, current.height - client.height),
+        ),
+      );
+      if (!mounted || closing || fullScreen) return;
+      await windowManager.setMinimumSize(const Size(320, 240));
+      await windowManager.setBounds(bounds);
+      autoSizedSource = source;
+    } catch (_) {
+      // Fit still preserves source pixels if the desktop API is unavailable.
+      autoSizedSource = source;
+    } finally {
+      sizingWindow = false;
+    }
+  }
+
   bool autoHide = true, chromeVisible = true, fullScreen = false;
   bool overChrome = false;
   Offset? pointerPosition;
@@ -758,6 +804,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
               .invokeMapMethod<String, dynamic>('stats')
               .timeout(const Duration(seconds: 1));
           if (mounted && value != null) {
+            unawaited(sizeWindowToSource(value));
             final count = (value['native_frames'] as num? ?? 0).toInt();
             final now = previewClock.elapsed;
             final previous = previousPreviewFrames;
@@ -896,9 +943,6 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
 
   Future<void> toggleFullScreen() async {
     final next = !fullScreen;
-    if (next && displayMode != 'fill' && mounted) {
-      setState(() => displayMode = 'fill');
-    }
     await windowManager.setFullScreen(next);
     if (mounted) setState(() => fullScreen = next);
     revealChrome();
@@ -1372,6 +1416,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                       viewport,
                       source,
                       stretch: fill,
+                      pixelRatio: MediaQuery.devicePixelRatioOf(context),
                     );
                     if (fill) {
                       return video(size, source: source, fit: BoxFit.fill);
@@ -1430,19 +1475,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                         ),
                       );
                     }
-                    return Scrollbar(
-                      key: const ValueKey('observe-scrollbar'),
-                      controller: viewportScroll,
-                      thumbVisibility: size.height > viewport.height,
-                      interactive: true,
-                      child: SingleChildScrollView(
-                        controller: viewportScroll,
-                        physics: controls
-                            ? const NeverScrollableScrollPhysics()
-                            : null,
-                        child: video(size),
-                      ),
-                    );
+                    return Center(child: video(size));
                   },
                 ),
               ),
@@ -1578,6 +1611,13 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                             visualDensity: VisualDensity.compact,
                           ),
                           segments: const [
+                            ButtonSegment(
+                              value: 'fit',
+                              label: Text('Native'),
+                              tooltip:
+                                  'Keep aspect ratio without enlarging source pixels',
+                              icon: Icon(Icons.aspect_ratio, size: 18),
+                            ),
                             ButtonSegment(
                               value: 'stretch',
                               label: Text('Stretch'),
@@ -1855,7 +1895,12 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
 }
 
 /// One geometry for drawing and hit testing, including stretched and scrolled views.
-Size observeImageSize(Size viewport, Size source, {required bool stretch}) {
+Size observeImageSize(
+  Size viewport,
+  Size source, {
+  required bool stretch,
+  double pixelRatio = 1,
+}) {
   if (stretch) {
     // Fill intentionally stretches the decoded texture to every logical pixel.
     // Width mode below remains aspect preserving and can exceed the viewport.
@@ -1863,14 +1908,19 @@ Size observeImageSize(Size viewport, Size source, {required bool stretch}) {
   }
   // Native stats are zero before the first copied frame. Keep a valid texture
   // layout while connecting so the first frame can actually be painted.
-  final ratio =
+  final valid =
       source.width > 0 &&
-          source.height > 0 &&
-          source.width.isFinite &&
-          source.height.isFinite
-      ? source.height / source.width
-      : 9 / 16;
-  return Size(viewport.width, viewport.width * ratio);
+      source.height > 0 &&
+      source.width.isFinite &&
+      source.height.isFinite;
+  final native = valid
+      ? source / (pixelRatio > 0 ? pixelRatio : 1)
+      : Size(viewport.width, viewport.width * 9 / 16);
+  final scale = math.min(
+    1.0,
+    math.min(viewport.width / native.width, viewport.height / native.height),
+  );
+  return native * scale;
 }
 
 Offset observePosition(Offset local, Size image, {Size? source, BoxFit? fit}) {

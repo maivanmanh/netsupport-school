@@ -1,11 +1,7 @@
 use anyhow::{ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::HashMap,
-    net::Ipv4Addr,
-    path::{Path, PathBuf},
-};
+use std::{net::Ipv4Addr, path::Path};
 use tokio_rustls::rustls::{
     pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
     ServerConfig,
@@ -21,57 +17,31 @@ pub struct Policy {
     pub teacher_certificate: String,
     pub secret: String,
 }
-pub fn policy_path() -> PathBuf {
-    #[cfg(windows)]
-    {
-        super::windows_worker::policy_path()
-            .unwrap_or_else(|_| PathBuf::from("C:/ProgramData/Classroom/remote-terminal.json"))
-    }
-    #[cfg(not(windows))]
-    {
-        PathBuf::from("/Library/Application Support/Classroom/remote-terminal.json")
-    }
-}
 impl Policy {
-    pub fn load() -> Result<Self> {
-        let path = policy_path();
-        #[cfg(windows)]
-        {
-            super::windows_worker::managed_acl(&path)?;
-            super::windows_worker::managed_acl(path.parent().context("Policy directory missing")?)?;
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            let m = std::fs::metadata(&path)?;
-            ensure!(
-                m.uid() == 0 && m.mode() & 0o022 == 0,
-                "Terminal policy must be managed by root"
-            );
-            let parent = std::fs::metadata(path.parent().context("Policy directory missing")?)?;
-            ensure!(
-                parent.uid() == 0 && parent.mode() & 0o022 == 0,
-                "Terminal policy directory must be managed by root"
-            );
-        }
+    /// Session authorization arrives only over the Student's configured Teacher
+    /// tools connection. It is not a persistent administrator pairing policy.
+    pub fn validate(&self, teacher_ip: &Ipv4Addr) -> Result<()> {
+        ensure!(self.enabled, "Remote terminal session is disabled");
         ensure!(
-            std::fs::metadata(&path)?.len() <= 8192,
-            "Terminal policy exceeds limit"
+            !teacher_ip.is_unspecified() && self.teacher_ip == *teacher_ip,
+            "Terminal authorization must match configured Teacher"
         );
-        let p: Self = serde_json::from_slice(&std::fs::read(path)?)?;
         ensure!(
-            p.enabled && STANDARD.decode(&p.secret)?.len() == 32,
-            "Remote terminal is not authorized"
+            STANDARD.decode(&self.secret)?.len() == 32,
+            "Invalid terminal session secret"
         );
-        ensure!(!p.teacher_ip.is_unspecified(), "Invalid Teacher address");
-        Ok(p)
+        ensure!(
+            self.teacher_certificate.len() <= 4096
+                && !STANDARD.decode(&self.teacher_certificate)?.is_empty(),
+            "Invalid terminal Teacher certificate"
+        );
+        Ok(())
     }
 }
 #[derive(Serialize, Deserialize)]
 pub struct Identity {
     pub certificate: String,
     key: String,
-    pub peers: HashMap<String, String>,
 }
 impl Identity {
     pub fn load(root: &Path) -> Result<Self> {
@@ -85,7 +55,6 @@ impl Identity {
         let identity = Self {
             certificate: STANDARD.encode(cert.der()),
             key: STANDARD.encode(signing_key.serialize_der()),
-            peers: HashMap::new(),
         };
         identity.save(root)?;
         Ok(identity)
@@ -128,25 +97,6 @@ pub fn private_write(path: &Path, bytes: &[u8]) -> Result<()> {
         let _ = std::fs::remove_file(&temporary);
     }
     result
-}
-pub fn provision(root: &Path, student: &str, teacher_ip: Ipv4Addr) -> Result<serde_json::Value> {
-    let mut identity = Identity::load(root)?;
-    if !identity.peers.contains_key(student) {
-        let mut bytes = [0; 32];
-        getrandom::fill(&mut bytes).map_err(|e| anyhow::anyhow!("OS random unavailable: {e}"))?;
-        identity
-            .peers
-            .insert(student.into(), STANDARD.encode(bytes));
-    }
-    let secret = identity.peers[student].clone();
-    identity.save(root)?;
-    Ok(serde_json::to_value(Policy {
-        enabled: true,
-        allow_desktop_open: false,
-        teacher_ip,
-        teacher_certificate: identity.certificate,
-        secret,
-    })?)
 }
 pub fn audit(root: &Path, session: &str, event: &str, detail: serde_json::Value) -> Result<()> {
     use std::io::Write;

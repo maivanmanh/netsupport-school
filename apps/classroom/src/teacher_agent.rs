@@ -664,29 +664,9 @@ pub(super) fn run(
                 let mut job_id: Option<String> = None;
                 let mut payload: Option<Value> = None;
                 let response = match command.action.as_str() {
-                    "terminal_pair" => {
-                        let rows = roster.lock().unwrap().snapshot();
-                        if let Some(row) = rows
-                            .iter()
-                            .find(|r| r.online && command.selected.first() == Some(&r.instance_id))
-                        {
-                            match super::remote_terminal::provision(
-                                path.parent().unwrap_or(Path::new(".")),
-                                &row.instance_id,
-                                bind_ip,
-                            ) {
-                                Ok(value) => {
-                                    payload = Some(value);
-                                    Ok(())
-                                }
-                                Err(error) => {
-                                    snapshot.error = Some(error.to_string());
-                                    Err("Could not prepare terminal pairing")
-                                }
-                            }
-                        } else {
-                            Err("Select one online Student")
-                        }
+                    "app_policy_state" => {
+                        payload = Some(json!({"rule": class_rules.apps}));
+                        Ok(())
                     }
                     "terminal_desktop" => match crate::classroom_tools::user_folder("Desktop") {
                         Ok(folder) => {
@@ -708,6 +688,8 @@ pub(super) fn run(
                                 .6
                                 .open(path.parent().unwrap_or(Path::new(".")), &row.instance_id)
                                 .and_then(|session| {
+                                    let authorization = tools_hub.6.authorization(&session, bind_ip)
+                                        .inspect_err(|_| tools_hub.6.close(&session))?;
                                     if let Err(error) = tools_hub.terminal_start(
                                         &row.instance_id,
                                         &session,
@@ -716,6 +698,7 @@ pub(super) fn run(
                                             .get("compatibility")
                                             .and_then(Value::as_bool)
                                             .unwrap_or(true),
+                                        authorization,
                                     ) {
                                         tools_hub.6.close(&session);
                                         return Err(error);
@@ -729,7 +712,7 @@ pub(super) fn run(
                                 }
                                 Err(error) => {
                                     snapshot.error = Some(error.to_string());
-                                    Err("Remote Terminal could not start; check pairing and Student policy")
+                                    Err("Remote Terminal could not start; check Student connection and version")
                                 }
                             }
                         } else {
@@ -742,22 +725,6 @@ pub(super) fn run(
                             Ok(())
                         } else {
                             Err("Terminal session missing")
-                        }
-                    }
-                    "terminal_revoke" => {
-                        if let Some(student) = command.selected.first() {
-                            match tools_hub
-                                .6
-                                .revoke(path.parent().unwrap_or(Path::new(".")), student)
-                            {
-                                Ok(()) => Ok(()),
-                                Err(error) => {
-                                    snapshot.error = Some(error.to_string());
-                                    Err("Could not revoke terminal pairing")
-                                }
-                            }
-                        } else {
-                            Err("Student missing")
                         }
                     }
                     "thumbnail_size" => command.input["width"]

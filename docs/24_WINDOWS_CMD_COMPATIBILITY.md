@@ -43,7 +43,7 @@ they are never guessed into a stronger operation.
 | `du`, `df` | Rust recursive byte accounting (`-s`, `-h`); Windows logical-disk capacity/free-space query. |
 | `wc` | `-l`, `-w`, `-c`, `-m`; UTF-8 words/scalars; byte/newline counts also accept binary input. |
 | `basename`, `dirname`, `realpath` | Literal native path components / canonical existing absolute path. |
-| `open` | Literal ShellExecute target, disabled unless administrator policy enables `allow_desktop_open`. No `runas` or command interpolation. |
+| `open` | Literal ShellExecute target, disabled in direct classroom Terminal sessions. No `runas` or command interpolation. |
 
 CMD builtins take priority even when their syntax differs from Unix. In
 particular, this implementation does not replace `date`, `rmdir`, `cd`, `mkdir`,

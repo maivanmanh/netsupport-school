@@ -5,7 +5,8 @@ from pathlib import Path
 s=importlib.util.spec_from_file_location('ipc','scripts/classroom-dev-update.py');m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
 endpoint=Path(sys.argv[sys.argv.index('--endpoint')+1] if '--endpoint' in sys.argv else 'target/source-switch-endpoint.json');c=m.IPC(endpoint)
 while not c.state.get('students'):c.read()
-student=next(r['id'] for r in c.state['students'] if r['ip']=='192.168.50.94' and r['online'])
+student_ip=sys.argv[sys.argv.index('--student')+1] if '--student' in sys.argv else '192.168.50.94'
+student=next(r['id'] for r in c.state['students'] if r['ip']==student_ip and r['online'])
 r=None
 if '--network' in sys.argv:
     rs=importlib.util.spec_from_file_location('remote','scripts/run-four-machine-test.py');rm=importlib.util.module_from_spec(rs);rs.loader.exec_module(rm)
@@ -27,7 +28,7 @@ def exact(n):
     return b
 def read_until(marker,seconds=15):
     global last,ready
-    if marker and marker in out:return
+    if marker and (marker.search(out) if hasattr(marker, 'search') else marker in out):return
     deadline=time.monotonic()+seconds
     while time.monotonic()<deadline:
         k,seq,n=struct.unpack('!BQI',exact(13));b=exact(n)
@@ -37,7 +38,7 @@ def read_until(marker,seconds=15):
                 out.extend(b);last=seq
                 if b'\x1b[6n' in b:send(2,b'\x1b[1;1R')
             send(7,seq=seq)
-            if marker and marker in out:return
+            if marker and (marker.search(out) if hasattr(marker, 'search') else marker in out):return
         elif k==5:
             ready=json.loads(b)
             send(8)
@@ -52,11 +53,14 @@ case=0
 def run(command,expected=None,code=0,seconds=30):
     global case
     case+=1; start=len(out)
+    send(2,b'cmd /d /c exit 0\r') # Builtins such as ECHO preserve the previous errorlevel.
     send(2,command.encode('utf-8')+b'\r')
     # Separate input lines preserve CMD's per-line ERRORLEVEL expansion.
     marker=f'CHECK_{case}_'
     send(2,f'echo {marker}%ERRORLEVEL%_DONE\r'.encode())
-    read_until(f'{marker}{code}_DONE'.encode(),seconds)
+    read_until(re.compile(f'{marker}([0-9]+)_DONE'.encode()),seconds)
+    actual=int(re.search(f'{marker}([0-9]+)_DONE'.encode(),out).group(1))
+    assert actual==code, (command, actual, bytes(out[start:])[-1600:])
     result=bytes(out[start:])
     if expected is not None:assert expected.encode('utf-8') in result,(command,result[-400:])
     print(f'case_{case}: pass ({command.split()[0]})')
@@ -97,11 +101,17 @@ try:
     run('dirname "folder space\\file.txt"','folder space')
     run('realpath "moved.txt"',fixture)
     run('history')
-    run('man dir',seconds=40)
+    run('man dir',code=1,seconds=40) # Windows HELP DIR preserves native exit status 1.
     run('sleep 0.01')
     run('mkdir "empty dir"');run('rmdir "empty dir"')
-    run('date /t');run('whoami','mvmanh')
+    run('date /t');run('whoami')
+    groups=run('whoami /groups','S-1-16-8192')
+    assert b'S-1-16-12288' not in groups, 'Shell must use the ordinary desktop token'
     run('clear')
+    send(3,struct.pack('!HH',80,24))
+    sock.shutdown(socket.SHUT_RDWR);sock.close();time.sleep(.5)
+    attach();read_until(None)
+    run('echo RECONNECTED_%OS%','RECONNECTED_Windows_NT')
     run('rm --bad "moved.txt"',code=2)
     run('cat "moved.txt"','Alpha beta')
     run('rm "moved.txt"')

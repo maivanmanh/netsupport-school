@@ -4697,3 +4697,58 @@ not deployed. The new Teacher and helper are running from the stable path.
   Exact next step when Windows becomes available: paired fresh roles/updated
   service, then execute the documented real-device/reboot/standard-user/restore
   matrix. Do not claim OS runtime or performance acceptance from these checks.
+
+## 2026-10-12 — Windows x64 paired build requested by owner
+
+- Built unchanged application source at f5f25a0 with scripts/build-flutter-windows.ps1; label paired-20261012-073748. Fresh MSVC release Teacher agent and Student, Flutter Teacher, matching app-local CRT and bundled Student update ZIP completed.
+- Outputs: target/Classroom-Console-Windows-x64/classroom_console.exe; target/Classroom-Teacher-Windows-x64-20261012.zip; target/Classroom-Student-Portable-Windows-x64-20261012.zip. Keep all files beside the Teacher executable. Student portable ZIP includes app-local CRT.
+- Verified bundled Student update ZIP matches freshly generated ZIP (SHA256 FB4E48295C85BEC3C92C7D36CC55057CAFE8C5F7B1BD3A30EFBF234FCB774529). Flutter SDK refreshed six resolved dependencies for this build; generated tracked lock/registrant changes were restored afterward. No application source changes or endpoint deployment.
+- Windows local executable smoke passed registration/thumbnail, two share-stop cycles, stable-identity Student reconnect and live native Observe frames (sequence samples 72, 176). Evidence: target/windows-flutter-smoke/20261012-074151/results.json. Script cleaned up its owned processes.
+- Checks are NOT fully green: cargo fmt --check reports existing formatting differences; strict Clippy fails on three items_after_statements findings in apps/classroom/build.rs; cargo test --workspace stops at Classroom tests (246 passed, 1 failed, 1 ignored), failing activity::windows::tests::chrome_timestamps_convert_to_unix_milliseconds (1704470400000 versus 1704067200000). Flutter tests: 56 passed, 9 failed in class Control/Observe expectations and layout overflow. Logs remain under target/build-tests.log, target/build-clippy.log and target/flutter-build-tests.log.
+- Limits: smoke is same-host functional evidence, not physical wired 1080p/40-PC acceptance. Hardware Control and installed Guard service/device enforcement were not validated or deployed by this build.
+- Exact next step: owner can extract the complete Teacher ZIP and run classroom_console.exe; investigate recorded test failures before declaring all checks green, then run the documented physical Windows LAN acceptance matrix.
+# 2026-10-12: four physical Windows Students — screenshot diagnosis
+
+Idle screenshot failed on all four Students with DXGI E_INVALIDARG (0x80070057),
+while screenshots during presentation succeeded. Monitoring already owns the
+desktop duplication in the idle Student process. Windows permits one duplication
+per output per process (Microsoft IDXGIOutput1::DuplicateOutput documentation).
+Implement a bounded, cancellable one-shot child process for Windows screenshots;
+retain the existing capture/PNG path, media pipeline and non-Windows behavior.
+This is a file-job operation, not a second classroom encoder. Verify idle
+screenshots on all four real Windows endpoints after supported updater deployment.
+Terminal remains unpaired; no reboot or hardware disconnection is authorized.
+
+## 2026-10-12 ? Four physical Windows Students: autonomous validation
+
+Screenshot DXGI ownership bug fixed with bounded one-shot Windows child; fresh
+paired Teacher/Student built, supported updater confirmed all four Student builds.
+Idle screenshot + fresh thumbnail regression PASS 4/4, keyboard input proof 4/4,
+VS Code settings/ACL restored 4/4, badge/source switching/policy ACK checks complete.
+Smoke harness now refuses concurrent Teacher to preserve shared AppData logs.
+Clean 1600x900 run: render 22.48?22.54 FPS, decode errors/missing packets zero,
+one encoder. Not 1080p/40-PC acceptance. Terminal unpaired; hardware mock only,
+no service/reboot/device disconnection. Teacher fresh bundle build/smoke verified,
+active Teacher kept at old path because isolated new path failed LAN connectivity
+(firewall filter query Access denied); automatic review rejected old-build deletion.
+See [full evidence and limits](diagnostics/2026-10-12-four-windows-students.md).
+Rust tests 246 pass/1 ignored/1 known baseline filtered failure; strict lint/Flutter
+baseline failures remain documented. No checkpoint commit: Git identity unset.
+Next: resolve new Teacher path firewall in an authorized admin context, then long
+physical x64 media runs and receiver/network measurements per docs/06.
+# 2026-10-12 — Owner changes Remote Terminal authorization model
+
+Owner explicitly requests no pairing or per-Student admin provisioning. Replace
+the managed-policy prerequisite with per-session authorization delivered by the
+Student's existing configured Teacher tools connection. Retain TLS with the
+offered Teacher certificate, random session secret, roster/local IPC checks,
+non-elevated worker and bounded PTY/session lifecycle. This intentionally trusts
+the configured Teacher connection for initial authorization; it is no longer
+out-of-band certificate provisioning and must not be described as such. Remove
+pairing UI. Build paired roles, deploy via Classroom updater and test all four
+Windows Students, including shell identity, input/output, close and reconnect.
+
+
+### 2026-10-12 — chốt nhanh và dọn bàn giao phòng máy
+
+Bản đồng bộ Teacher/Student `room-fixes-input-20261012` đã build; 709-17 và 709-18 xác nhận cập nhật. Terminal keyboard regression pass, App Control Apply cả hai complete và rule test đã hoàn nguyên. Các sửa badge/native sizing chưa được runtime xác minh; Ctrl+Alt+Del chưa hoàn tất vì Keyboard Filter disabled và không được reboot. Bản chạy/logs lưu ngoài repo trên Desktop. Code/test/report được stage, giữ .git, dọn build/cache theo yêu cầu owner; không commit. Chi tiết, giới hạn và bước tiếp theo: [room final handoff](diagnostics/2026-10-12-room-final-handoff.md).
