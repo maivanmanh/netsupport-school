@@ -1144,6 +1144,7 @@ fn run_teacher_media(
         rtp_payload_type: u32::from(H264_PAYLOAD_TYPE),
         rtp_clock_hz: RTP_VIDEO_CLOCK_HZ,
         teacher_media_udp_port,
+        preserve_aspect: config.video.presentation_preserve_aspect,
     };
     let (event_sender, event_receiver) = std::sync::mpsc::channel();
     let control_config = presentation.clone();
@@ -2384,14 +2385,17 @@ fn run_student_media_loop(
     let mut renderer = if headless || observation.is_some() {
         None
     } else {
-        let renderer = PlatformRenderer::new_student_presentation(
+        let mut renderer = PlatformRenderer::new_student_presentation(
             presentation.width,
             presentation.height,
             "Classroom — Teacher presentation",
         )?;
+        #[cfg(windows)]
+        renderer.set_preserve_aspect(presentation.preserve_aspect);
         info!(
             fullscreen = true,
             topmost = true,
+            preserve_aspect = presentation.preserve_aspect,
             "student forced presentation window ready"
         );
         Some(renderer)

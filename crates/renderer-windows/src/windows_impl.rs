@@ -31,6 +31,7 @@ pub struct NativeRenderer {
     window: HWND,
     open: bool,
     forced_presentation: bool,
+    preserve_aspect: bool,
     last_enforced: Instant,
     timer_period_active: bool,
     gpu: Option<crate::gpu::GpuRenderer>,
@@ -40,6 +41,14 @@ pub struct NativeRenderer {
 }
 
 impl NativeRenderer {
+    /// Select Student display geometry without changing stream dimensions.
+    pub fn set_preserve_aspect(&mut self, preserve: bool) {
+        self.preserve_aspect = preserve;
+        if let Some(gpu) = self.gpu.as_mut() {
+            gpu.set_preserve_aspect(preserve);
+        }
+    }
+
     /// Creates the native M2 preview window.
     ///
     /// # Errors
@@ -166,6 +175,7 @@ impl NativeRenderer {
                 window,
                 open: true,
                 forced_presentation,
+                preserve_aspect: !forced_presentation,
                 last_enforced: Instant::now(),
                 // Only while this presentation is alive; balance on this thread.
                 timer_period_active: timeBeginPeriod(1) == 0,
@@ -296,6 +306,7 @@ impl Renderer for NativeRenderer {
                 return Ok(());
             }
             if let Some(gpu) = self.gpu.as_mut() {
+                gpu.set_preserve_aspect(self.preserve_aspect);
                 match gpu.render(
                     frame,
                     u32::try_from(client_width).unwrap_or(0),
@@ -344,8 +355,13 @@ impl Renderer for NativeRenderer {
                 let _ = ReleaseDC(Some(self.window), dc);
                 return Ok(());
             }
-            let (fit_width, fit_height) =
-                crate::fit::fit_rect(frame.width, frame.height, client_width, client_height);
+            let (fit_width, fit_height) = crate::fit::display_rect(
+                frame.width,
+                frame.height,
+                client_width,
+                client_height,
+                self.preserve_aspect,
+            );
             let left = (client_width - fit_width) / 2;
             let top = (client_height - fit_height) / 2;
             // A common window DC resets to its defaults after release. Select filtered

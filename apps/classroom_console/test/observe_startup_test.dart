@@ -4,6 +4,37 @@ import 'package:screen_retriever/screen_retriever.dart';
 import 'package:classroom_console/observe_startup.dart';
 
 void main() {
+  test(
+    'loading uses Student aspect and stays within work area including chrome',
+    () {
+      const work = Rect.fromLTWH(0, 0, 1920, 1040);
+      const frame = Size(16, 39);
+      for (final source in [
+        const Size(640, 480),
+        const Size(506, 404),
+        const Size(480, 720),
+      ]) {
+        final bounds = observePreviewBounds(work, source, frame);
+        expect(bounds.width, lessThanOrEqualTo(work.width));
+        expect(bounds.height, lessThanOrEqualTo(work.height));
+        expect(
+          (bounds.width - 16) / (bounds.height - 39),
+          closeTo(source.aspectRatio, .00001),
+        );
+        expect(bounds.center.dx, closeTo(work.center.dx, .00001));
+        expect(bounds.center.dy, closeTo(work.center.dy, .00001));
+      }
+      expect(
+        observeSameAspect(const Size(506, 404), const Size(1280, 1024)),
+        isTrue,
+      );
+      expect(
+        observeSameAspect(const Size(640, 480), const Size(1920, 1080)),
+        isFalse,
+      );
+      expect(observeSameAspect(Size.zero, const Size(1280, 1024)), isFalse);
+    },
+  );
   test('source pixels fit without upscaling at different ratios and DPI', () {
     const work = Rect.fromLTWH(0, 0, 1920, 1040);
     expect(

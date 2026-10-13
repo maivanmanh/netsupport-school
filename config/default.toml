@@ -70,6 +70,8 @@ adaptive_bitrate_step_down_percent = 20
 adaptive_bitrate_step_up_percent = 10
 adaptive_bitrate_cooldown_ms = 5000
 preserve_resolution_first = true
+# Windows Student display: false stretches to fill; true adds bars as needed.
+presentation_preserve_aspect = false
 
 [phase1]
 audio = false

@@ -53,6 +53,31 @@ bool recordingSessionPending(Map session) =>
               (target['received'] as num? ?? 0);
     });
 
+Map? activeRecordingForStudent(Map tools, String studentId) {
+  for (final session in tools['recordings'] as List? ?? const []) {
+    for (final target in session['targets'] as List? ?? const []) {
+      final phase = (target['report'] as Map?)?['phase'];
+      if (target['id'] == studentId &&
+          (phase == 'recording' || phase == 'starting')) {
+        return session;
+      }
+    }
+  }
+  return null;
+}
+
+bool studentIsRecording(Map tools, String studentId) {
+  for (final session in tools['recordings'] as List? ?? const []) {
+    for (final target in session['targets'] as List? ?? const []) {
+      if (target['id'] == studentId &&
+          (target['report'] as Map?)?['phase'] == 'recording') {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 Future<void> showRecordings(
   BuildContext context,
   Agent agent,

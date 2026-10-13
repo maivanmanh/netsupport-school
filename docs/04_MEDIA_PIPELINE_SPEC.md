@@ -32,7 +32,7 @@ Unicast fan-out to registered student media endpoints
 
 ## Latest-frame rule
 
-Windows capture resolves its output dimensions at startup: fit the complete source within the configured bounds and the Phase 1 1920×1080 cap, do not upscale, and round to even pixels for NV12. Cursor composition precedes resizing. The application uses these actual dimensions for both H.264 and `StartPresentation`; it must not announce the configured bounds as the stream size. Windows Student preserves that aspect ratio in its local client rectangle. Decoder storage padding is distinct from the visible image; honor a matching zero-origin Media Foundation display aperture and skip padded luma rows before reading chroma. See [Microsoft's display-area guidance](https://learn.microsoft.com/en-us/windows/win32/medfound/picture-aspect-ratio).
+Windows capture resolves its output dimensions at startup: fit the complete source within the configured bounds and the Phase 1 1920×1080 cap, do not upscale, and round to even pixels for NV12. Cursor composition precedes resizing. The application uses these actual dimensions for both H.264 and `StartPresentation`; it must not announce the configured bounds as the stream size. Windows Student stretches the received picture to its complete client rectangle by default (owner override 2026-10-13); Teacher can choose aspect preservation instead. Decoder storage padding is distinct from the visible image; honor a matching zero-origin Media Foundation display aperture and skip padded luma rows before reading chroma. See [Microsoft's display-area guidance](https://learn.microsoft.com/en-us/windows/win32/medfound/picture-aspect-ratio).
 
 A waiting unencoded frame is disposable. If capture produces F101, F102, F103 while the encoder is busy and only one waiting slot is available, the slot should contain F103 when the encoder becomes available. Old waiting frames must not create accumulated latency.
 
@@ -74,8 +74,8 @@ No NVIDIA/discrete GPU dependency is allowed.
 
 ## Student presentation surface
 
-An active Teacher presentation uses a borderless primary-display Student window, preserves the
-announced video aspect ratio with black bars as needed, and stays above ordinary application
+An active Teacher presentation uses a borderless primary-display Student window, stretches the
+picture to fill by default (or preserves aspect with bars when selected), and stays above ordinary application
 windows. The presentation surface is removed when the media/control session ends. The diagnostic
 `--headless` mode intentionally creates no window, and the M2 local codec preview remains a normal
 resizable window. This application-level presentation behavior does not replace the future

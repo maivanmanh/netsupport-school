@@ -164,6 +164,10 @@ pub struct StartPresentation {
     /// Teacher UDP port used for the Student's route probe and RTP source.
     #[prost(uint32, tag = "8")]
     pub teacher_media_udp_port: u32,
+    /// Windows Student display policy. False (including legacy absent field)
+    /// stretches to the whole screen; true preserves aspect with bars.
+    #[prost(bool, tag = "9")]
+    pub preserve_aspect: bool,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -337,6 +341,26 @@ impl Envelope {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn presentation_geometry_is_additive_and_round_trips() {
+        // Old Teachers omit tag 9. New Windows Students use the stretch default.
+        let legacy = [0x08, 0x01, 0x10, 0x80, 0x0f, 0x18, 0xb8, 0x08];
+        let decoded = StartPresentation::decode(legacy.as_slice()).unwrap();
+        assert_eq!((decoded.width, decoded.height), (1920, 1080));
+        assert!(!decoded.preserve_aspect);
+        for preserve_aspect in [false, true] {
+            let presentation = StartPresentation {
+                preserve_aspect,
+                ..decoded.clone()
+            };
+            let wire = presentation.encode_to_vec();
+            assert_eq!(
+                StartPresentation::decode(wire.as_slice()).unwrap(),
+                presentation
+            );
+        }
+    }
 
     #[test]
     fn envelope_round_trips() {

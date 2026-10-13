@@ -33,6 +33,87 @@ class ObserveAgent extends Agent {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   testWidgets(
+    'Fill is the only default and follows resize in Observe and Control',
+    (t) async {
+      await t.binding.setSurfaceSize(const Size(1000, 700));
+      addTearDown(() => t.binding.setSurfaceSize(null));
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(
+        const MethodChannel('window_manager'),
+        (_) async => null,
+      );
+      messenger.setMockMethodCallHandler(
+        const MethodChannel('classroom/observe'),
+        (call) async => call.method == 'attach'
+            ? 4
+            : call.method == 'stats'
+            ? {
+                'width': 1024,
+                'height': 768,
+                'sequence': 2,
+                'source_sequence': 2,
+                'native_frames': 2,
+                'connected': true,
+              }
+            : null,
+      );
+      final agent = ObserveAgent()
+        ..state = {
+          'observe': {
+            'id': 'pc',
+            'phase': 'live',
+            'mode': 'observe',
+            'surface': '/test-only/frame',
+          },
+          'students': [
+            {'id': 'pc', 'online': true},
+          ],
+        };
+      await t.pumpWidget(
+        MaterialApp(
+          home: ObserveWindow(agent: agent, studentId: 'pc', name: 'PC'),
+        ),
+      );
+      agent.notifyListeners();
+      await t.pump(const Duration(milliseconds: 100));
+      await t.pump();
+      final toolbar = t.widget<SegmentedButton<String>>(
+        find.byKey(const ValueKey('observe-display-mode')),
+      );
+      expect(toolbar.segments.map((s) => s.label.toString()), hasLength(2));
+      expect(toolbar.selected, {'fill'});
+      expect(find.text('Fill'), findsOneWidget);
+      expect(find.text('Stretch'), findsOneWidget);
+      expect(find.text('Gốc'), findsNothing);
+      expect(
+        t.getSize(find.byKey(const ValueKey('observe-image'))),
+        const Size(1000, 700),
+      );
+      await t.binding.setSurfaceSize(const Size(1300, 900));
+      await t.pump();
+      expect(
+        t.getSize(find.byKey(const ValueKey('observe-image'))),
+        const Size(1300, 900),
+      );
+      agent.state['observe']['mode'] = 'control';
+      agent.notifyListeners();
+      await t.pump();
+      await t.binding.setSurfaceSize(const Size(1100, 750));
+      await t.pump();
+      expect(
+        t.getSize(find.byKey(const ValueKey('observe-image'))),
+        const Size(1100, 750),
+      );
+      expect(
+        observePosition(const Offset(550, 375), const Size(1100, 750)),
+        const Offset(.5, .5),
+      );
+      await t.pumpWidget(const SizedBox());
+      agent.dispose();
+    },
+  );
+  testWidgets(
     'initial connection keeps the blurred preview until native media is connected',
     (t) async {
       await t.binding.setSurfaceSize(const Size(1200, 800));
@@ -463,7 +544,14 @@ void main() {
       );
       await t.pump(const Duration(milliseconds: 900));
       expect(find.byType(Dialog), findsNothing);
-      expect(find.text('Lấp đầy'), findsOneWidget);
+      expect(find.text('Fill'), findsOneWidget);
+      expect(find.text('Stretch'), findsOneWidget);
+      expect(find.text('Gốc'), findsNothing);
+      final display = t.widget<SegmentedButton<String>>(
+        find.byKey(const ValueKey('observe-display-mode')),
+      );
+      expect(display.segments.map((s) => s.value), ['stretch', 'fill']);
+      expect(display.selected, {'fill'});
       expect(find.text('Quan sát · Chỉ xem'), findsOneWidget);
       expect(find.byType(Texture), findsOneWidget);
       expect(find.byType(ObserveStatsPanel), findsNothing);
@@ -498,7 +586,7 @@ void main() {
         t.getSize(find.byKey(const ValueKey('observe-image'))),
         const Size(800, 600),
       );
-      await t.tap(find.text('Lấp đầy'));
+      await t.tap(find.text('Fill'));
       await t.pump();
       expect(
         t.getSize(find.byKey(const ValueKey('observe-image'))),
@@ -828,11 +916,9 @@ void main() {
         ),
       );
     }
-    expect(
-      a.inputs.where((v) => v['action'] == 'scroll').map((v) => v['y']),
-      [1],
-      reason: 'Small wheel deltas must accumulate rather than disappear',
-    );
+    expect(a.inputs.where((v) => v['action'] == 'scroll').map((v) => v['y']), [
+      1,
+    ], reason: 'Small wheel deltas must accumulate rather than disappear');
     a.inputs.clear();
     await t.sendEventToBinding(
       const PointerPanZoomStartEvent(pointer: 8, position: Offset(400, 300)),
@@ -850,11 +936,9 @@ void main() {
     await t.sendEventToBinding(
       const PointerPanZoomEndEvent(pointer: 8, position: Offset(400, 300)),
     );
-    expect(
-      a.inputs.where((v) => v['action'] == 'scroll').map((v) => v['y']),
-      [1],
-      reason: 'Trackpad content pan must become remote wheel input',
-    );
+    expect(a.inputs.where((v) => v['action'] == 'scroll').map((v) => v['y']), [
+      1,
+    ], reason: 'Trackpad content pan must become remote wheel input');
     // A new frame shape changes the crop immediately after native stats update.
     source = const Size(1920, 1080);
     await t.pump(const Duration(seconds: 1));

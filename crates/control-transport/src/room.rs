@@ -631,6 +631,7 @@ mod tests {
                     rtp_payload_type: 96,
                     rtp_clock_hz: 90_000,
                     teacher_media_udp_port: 47811,
+                    preserve_aspect: false,
                 },
                 events,
                 recipients: None,

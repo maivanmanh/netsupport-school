@@ -41,6 +41,7 @@ class _TeacherSettingsDialogState extends State<TeacherSettingsDialog> {
   int resolution = 1920, fps = 30, observeFps = 60, interval = 2000;
   double bitrate = 6;
   bool adaptive = true, enhanced = true;
+  bool presentationPreserveAspect = false;
   bool autoCollect = false;
   String codec = 'auto', level = 'info';
   Map get effective => widget.agent.state['settings'] as Map? ?? const {};
@@ -84,6 +85,8 @@ class _TeacherSettingsDialogState extends State<TeacherSettingsDialog> {
       8,
     );
     adaptive = video['adaptive'] as bool? ?? true;
+    presentationPreserveAspect =
+        video['presentation_preserve_aspect'] as bool? ?? false;
     final observe = section('observe');
     enhanced = observe['enhanced'] as bool? ?? true;
     codec = '${observe['codec'] ?? 'auto'}';
@@ -261,6 +264,7 @@ class _TeacherSettingsDialogState extends State<TeacherSettingsDialog> {
           'min_bitrate_kbps': 1500,
           'max_bitrate_kbps': 8000,
           'adaptive': adaptive,
+          'presentation_preserve_aspect': presentationPreserveAspect,
         },
         'monitoring': {...section('monitoring'), 'interval_ms': interval},
         'observe': {
@@ -383,6 +387,13 @@ class _TeacherSettingsDialogState extends State<TeacherSettingsDialog> {
           1600: '1600 × 900',
           1280: '1280 × 720',
         }, (v) => resolution = v),
+        choice('Hiển thị trên màn hình học viên', presentationPreserveAspect, {
+          false: 'Kéo giãn phủ kín màn hình (mặc định)',
+          true: 'Giữ tỉ lệ nguồn (có thể có viền đen)',
+        }, (v) => presentationPreserveAspect = v),
+        note(
+          'Kéo giãn phủ kín màn hình học viên, chấp nhận hình bị méo khi khác tỉ lệ. Lựa chọn áp dụng cho lần chiếu tiếp theo sau khi lưu.',
+        ),
         choice('Tốc độ khung hình tối đa', fps, {
           15: '15 fps',
           20: '20 fps',
@@ -407,7 +418,7 @@ class _TeacherSettingsDialogState extends State<TeacherSettingsDialog> {
         ),
         const SizedBox(height: 8),
         note(
-          'Tỉ lệ khung hình nguồn được giữ nguyên; màn hình nhỏ không bị phóng to. Con trỏ chuột của giảng viên luôn hiện với học viên.',
+          'Độ phân giải truyền giữ tỉ lệ nguồn; học viên hiển thị theo chế độ đã chọn. Con trỏ chuột của giảng viên luôn hiện với học viên.',
         ),
       ],
       [

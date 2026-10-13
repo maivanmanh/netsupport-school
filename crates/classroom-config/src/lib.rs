@@ -167,6 +167,9 @@ pub struct VideoConfig {
     pub adaptive_bitrate_step_up_percent: u32,
     pub adaptive_bitrate_cooldown_ms: u32,
     pub preserve_resolution_first: bool,
+    /// Windows Student presentation geometry; missing in old profiles means stretch.
+    #[serde(default)]
+    pub presentation_preserve_aspect: bool,
     /// Elementary codec for this media session; empty/`h264` for classroom
     /// broadcast. Observe sessions set it after negotiation.
     #[serde(default)]
@@ -489,6 +492,20 @@ fn merge_toml(base: &mut toml::Value, overlay: toml::Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn presentation_geometry_defaults_for_old_profiles_and_persists_both_modes() {
+        let legacy = EMBEDDED_DEFAULTS.replace("presentation_preserve_aspect = false", "");
+        let mut config: Config = toml::from_str(&legacy).unwrap();
+        assert!(!config.video.presentation_preserve_aspect);
+        for preserve in [false, true] {
+            config.video.presentation_preserve_aspect = preserve;
+            let stored = toml::to_string(&config).unwrap();
+            let loaded: Config = toml::from_str(&stored).unwrap();
+            assert_eq!(loaded.video.presentation_preserve_aspect, preserve);
+            loaded.validate().unwrap();
+        }
+    }
 
     #[test]
     fn file_transfer_limit_defaults_and_bounds() {

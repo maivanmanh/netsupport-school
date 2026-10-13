@@ -101,6 +101,11 @@ impl View {
     pub fn is_live(&self) -> bool {
         self.status.lock().unwrap().value["phase"] == "live"
     }
+    pub fn can_attach(&self, id: &str, restart: bool) -> bool {
+        !restart
+            && self.id == id
+            && matches!(self.state()["phase"].as_str(), Some("starting" | "live"))
+    }
     /// A completed receiver is retained for UI diagnostics/reconnect, but must
     /// not block a new presentation explicitly requested by the teacher.
     pub fn retire_finished(view: &mut Option<Self>) {
@@ -160,6 +165,11 @@ mod tests {
             });
             View::retire_finished(&mut view);
             assert_eq!(view.is_some(), matches!(phase, "starting" | "live"));
+            if let Some(view) = view {
+                assert!(view.can_attach("student", false));
+                assert!(!view.can_attach("other", false));
+                assert!(!view.can_attach("student", true));
+            }
         }
     }
     #[test]

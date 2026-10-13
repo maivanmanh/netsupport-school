@@ -81,8 +81,22 @@ Future<void> main(List<String> args) async {
     }
   });
   Rect? observeBounds;
+  Rect? observeArea;
+  Size? observeSourceHint;
   Uint8List? observePreview;
   if (observeId != null) {
+    final sw = double.tryParse(agent.option('--observe-source-width') ?? '');
+    final sh = double.tryParse(agent.option('--observe-source-height') ?? '');
+    if (sw != null &&
+        sh != null &&
+        sw.isFinite &&
+        sh.isFinite &&
+        sw > 0 &&
+        sh > 0 &&
+        sw <= 16384 &&
+        sh <= 16384) {
+      observeSourceHint = Size(sw, sh);
+    }
     final previewPath = agent.option('--observe-preview');
     if (previewPath != null) {
       final previewFile = File(previewPath);
@@ -103,10 +117,13 @@ Future<void> main(List<String> args) async {
     final y = double.tryParse(agent.option('--teacher-center-y') ?? '');
     final center = x != null && y != null ? Offset(x, y) : null;
     try {
-      observeBounds = observeWorkArea(
+      observeArea = observeWorkArea(
         await screenRetriever.getAllDisplays(),
         center,
       );
+      observeBounds = observeSourceHint == null
+          ? observeArea
+          : observePreviewBounds(observeArea, observeSourceHint, Size.zero);
     } catch (_) {
       // Native maximize below is a usable fallback if monitor discovery fails.
     }
@@ -188,12 +205,10 @@ Future<void> main(List<String> args) async {
       name: name,
       ip: ip,
       previewImage: observePreview,
+      initialSourceSize: observeSourceHint,
     );
     windowSize = observeBounds?.size ?? const Size(1280, 800);
-    minimumSize = Size(
-      (observeBounds?.width ?? 800).clamp(0, 800),
-      (observeBounds?.height ?? 600).clamp(0, 600),
-    );
+    minimumSize = const Size(320, 240);
     title = 'Quan sát · $name${ip.isEmpty ? '' : ' · $ip'}';
   } else {
     home = ClassroomApp(agent: agent);
@@ -232,6 +247,18 @@ Future<void> main(List<String> args) async {
         if (observeBounds != null) {
           // Set the complete native frame before showing; no small-window flash
           // and no full-screen Space. Filling this rect also centers the window.
+          final area = observeArea;
+          final sourceHint = observeSourceHint;
+          if (area != null && sourceHint != null) {
+            final current = await windowManager.getBounds();
+            final view = WidgetsBinding.instance.platformDispatcher.views.first;
+            final client = view.physicalSize / view.devicePixelRatio;
+            final frame = Size(
+              (current.width - client.width).clamp(0, 100),
+              (current.height - client.height).clamp(0, 100),
+            );
+            observeBounds = observePreviewBounds(area, sourceHint, frame);
+          }
           await windowManager.setBounds(observeBounds);
         } else {
           await windowManager.maximize();
@@ -313,6 +340,7 @@ class _ConsoleState extends State<Console> with WindowListener {
   bool selectionMode = false;
   bool preparingFile = false;
   bool gridAuto = true;
+  bool showOffline = true;
   double gridSize = 300;
   final selected = <String>{};
   int request = 0;
@@ -472,6 +500,11 @@ class _ConsoleState extends State<Console> with WindowListener {
     if (row['online'] != true) return;
     final studentId = '${row['id']}';
     final badgeEnabled = badgeState(agent, studentId)['enabled'] == true;
+    final recordingSession = activeRecordingForStudent(
+      (agent.state['tools'] as Map?) ?? const {},
+      studentId,
+    );
+    final recordingActive = recordingSession != null;
     final choice = await showMenu<String>(
       context: context,
       position: RelativeRect.fromLTRB(at.dx, at.dy, at.dx, at.dy),
@@ -511,13 +544,22 @@ class _ConsoleState extends State<Console> with WindowListener {
           ),
         ),
         PopupMenuItem(
-          value: 'recording',
+          value: recordingActive ? 'recording_stop' : 'recording',
           enabled: agent.connected && !agent.commandBusy,
-          child: const ListTile(
+          child: ListTile(
             dense: true,
-            leading: Icon(Icons.video_camera_back_outlined),
-            title: Text('Ghi màn hình'),
-            subtitle: Text('Ghi máy này • Tự lưu MP4 về Desktop'),
+            leading: Icon(
+              recordingActive
+                  ? Icons.stop_circle_outlined
+                  : Icons.video_camera_back_outlined,
+              color: recordingActive ? Colors.red : null,
+            ),
+            title: Text(recordingActive ? 'Dừng ghi màn hình' : 'Ghi màn hình'),
+            subtitle: Text(
+              recordingActive
+                  ? 'Dừng ghi trên máy này'
+                  : 'Ghi máy này • Tự lưu MP4 về Desktop',
+            ),
           ),
         ),
         PopupMenuItem(
@@ -569,6 +611,11 @@ class _ConsoleState extends State<Console> with WindowListener {
       await inspect(row);
     } else if (choice == 'recording') {
       await showRecordings(context, agent, [studentId], startImmediately: true);
+    } else if (choice == 'recording_stop' && recordingSession != null) {
+      await agent.commandChecked('recording_stop', const [], {
+        'id': recordingSession['id'] as String,
+        'student_id': studentId,
+      });
     } else if (choice == 'screenshot') {
       try {
         await screenshotStudent(row);
@@ -841,6 +888,7 @@ class _ConsoleState extends State<Console> with WindowListener {
           agent.preferences['view'] as String? ??
           (agent.preferences['grid'] == false ? 'list' : 'grid');
       gridAuto = agent.preferences['grid_auto'] as bool? ?? true;
+      showOffline = agent.preferences['show_offline'] as bool? ?? true;
       gridSize = (agent.preferences['grid_size'] as num? ?? 300)
           .toDouble()
           .clamp(180, 480);
@@ -895,6 +943,7 @@ class _ConsoleState extends State<Console> with WindowListener {
   @override
   Widget build(BuildContext context) {
     final rows = agent.students
+        .where((r) => showOffline || r['online'] == true)
         .where(
           (r) => '${r['name']} ${r['ip']}'.toLowerCase().contains(
             query.toLowerCase(),
@@ -1604,16 +1653,17 @@ class _ConsoleState extends State<Console> with WindowListener {
                           }),
                         ),
                       ),
-                      FilterChip(
-                        label: const Text(
-                          'Tự động',
-                          style: TextStyle(fontSize: 11),
+                      IconButton(
+                        key: const ValueKey('grid-auto-toggle'),
+                        tooltip: 'Tự động sắp xếp kích thước ô máy',
+                        icon: const Icon(
+                          Icons.auto_awesome_mosaic_outlined,
+                          size: 18,
                         ),
-                        selected: gridAuto,
+                        isSelected: gridAuto,
                         visualDensity: VisualDensity.compact,
-                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        onSelected: (value) {
-                          setState(() => gridAuto = value);
+                        onPressed: () {
+                          setState(() => gridAuto = !gridAuto);
                           agent.savePreferences({
                             'grid_auto': gridAuto,
                             'grid_size': gridSize,
@@ -1621,6 +1671,36 @@ class _ConsoleState extends State<Console> with WindowListener {
                         },
                       ),
                     ],
+                    const SizedBox(width: 4),
+                    IconButton(
+                      key: const ValueKey('offline-visibility-toggle'),
+                      tooltip: showOffline
+                          ? 'Ẩn máy offline'
+                          : 'Hiện máy offline',
+                      icon: Icon(
+                        showOffline
+                            ? Icons.visibility_off_outlined
+                            : Icons.visibility_outlined,
+                        size: 18,
+                      ),
+                      isSelected: !showOffline,
+                      visualDensity: VisualDensity.compact,
+                      onPressed: () {
+                        setState(() {
+                          showOffline = !showOffline;
+                          if (!showOffline) {
+                            final onlineIds = agent.students
+                                .where((r) => r['online'] == true)
+                                .map((r) => r['id'])
+                                .toSet();
+                            selected.removeWhere(
+                              (id) => !onlineIds.contains(id),
+                            );
+                          }
+                        });
+                        agent.savePreferences({'show_offline': showOffline});
+                      },
+                    ),
                     const SizedBox(width: 16),
                     Icon(
                       Icons.computer_outlined,
@@ -1883,6 +1963,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                   onChanged: (_) => toggle(id),
                 ),
               if (!selectionMode) const SizedBox(width: 14),
+              recordingIndicator(r),
               connectionDot(r),
               const SizedBox(width: 12),
               Expanded(
@@ -1977,6 +2058,22 @@ class _ConsoleState extends State<Console> with WindowListener {
     ),
   );
 
+  Widget recordingIndicator(Map<String, dynamic> r) {
+    if (!studentIsRecording(
+      (agent.state['tools'] as Map?) ?? const {},
+      '${r['id']}',
+    )) {
+      return const SizedBox.shrink();
+    }
+    return const Tooltip(
+      message: 'Đang ghi màn hình',
+      child: Padding(
+        padding: EdgeInsets.symmetric(horizontal: 5),
+        child: Icon(Icons.fiber_manual_record, size: 10, color: Colors.red),
+      ),
+    );
+  }
+
   Widget card(Map<String, dynamic> r, {bool list = false}) {
     final id = r['id'] as String;
     final chosen = selectionMode && selected.contains(id);
@@ -2034,6 +2131,7 @@ class _ConsoleState extends State<Console> with WindowListener {
           ),
         ),
         moreButton(r),
+        recordingIndicator(r),
         connectionDot(r),
       ],
     );

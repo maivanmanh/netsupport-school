@@ -1,5 +1,23 @@
 # 11 — Locked decisions and rationale
 
+## Owner override — Windows Student fill and Observe toolbar (2026-10-13)
+
+Windows Student class presentation defaults to stretching the complete picture to
+the whole display, accepting distortion on mismatched ratios. Teacher Settings →
+Phát màn hình offers stretch-to-fill and preserve-aspect; the saved selection
+applies to the next presentation. `[video].presentation_preserve_aspect` defaults
+to false, including old profiles. Additive `StartPresentation.preserve_aspect`
+(Protobuf tag 9, protocol 8 unchanged) conveys the policy; old Students ignore
+it and retain their old aspect behavior until updated. GPU and GDI share the
+same geometry; capture dimensions, encode-once, RTP and bounded queues remain.
+macOS/Linux renderers retain their current behavior.
+
+Observe/Control removes the Native/Gốc toolbar choice and uses English Fill and
+Stretch. Fill is selected initially and resizes the picture with the window.
+Initial native window sizing still fits source pixels/DPI within the Teacher
+work area. Stretch retains the existing aspect-preserving cover/scroll behavior.
+This overrides the earlier Student aspect-preservation display default below.
+
 ## Owner-approved Windows smoothness optimization (2026-09-28)
 
 The first physical Windows LAN run exposed render-call p95 of 15–53 ms and

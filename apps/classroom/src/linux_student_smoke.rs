@@ -43,6 +43,7 @@ fn presentation(id: u64, media_port: u16) -> protocol::StartPresentation {
         rtp_payload_type: 96,
         rtp_clock_hz: RTP_VIDEO_CLOCK_HZ,
         teacher_media_udp_port: u32::from(media_port),
+        preserve_aspect: false,
     }
 }
 

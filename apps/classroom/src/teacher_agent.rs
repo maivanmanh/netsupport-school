@@ -321,7 +321,15 @@ fn store_readable(namespace: &str) -> bool {
 /// are written only by the agent's own validated commands.
 fn store_writable(namespace: &str) -> bool {
     use classroom_store::ns;
-    [ns::PREFS, ns::CONFIG, ns::ROSTER, ns::INVENTORY, ns::UI, ns::ACTIVITY].contains(&namespace)
+    [
+        ns::PREFS,
+        ns::CONFIG,
+        ns::ROSTER,
+        ns::INVENTORY,
+        ns::UI,
+        ns::ACTIVITY,
+    ]
+    .contains(&namespace)
 }
 fn store_list(store: &classroom_store::Store, input: &Value) -> Result<Value, &'static str> {
     let namespace = input["ns"].as_str().ok_or("Missing settings namespace")?;
@@ -341,7 +349,9 @@ fn store_apply(store: &classroom_store::Store, input: &Value) -> Result<(), &'st
     if !store_writable(namespace) {
         return Err("This settings namespace is read-only");
     }
-    let changes = input["changes"].as_object().ok_or("Missing settings changes")?;
+    let changes = input["changes"]
+        .as_object()
+        .ok_or("Missing settings changes")?;
     if changes.len() > 512 {
         return Err("Too many settings changes");
     }
@@ -398,8 +408,9 @@ pub(super) fn run(
     ));
     let tools_hub = Arc::new(super::classroom_tools::Hub::default());
     // One local database holds everything the Teacher remembers.
-    let store: classroom_store::Shared =
-        Arc::new(classroom_store::Store::open(&parent.join(classroom_store::FILE_NAME))?);
+    let store: classroom_store::Shared = Arc::new(classroom_store::Store::open(
+        &parent.join(classroom_store::FILE_NAME),
+    )?);
     store.import_legacy(parent)?;
     tools_hub.load_badges(store.doc(classroom_store::ns::BADGES, "enabled"))?;
     tools_hub.load_recordings(store.doc(classroom_store::ns::RECORDINGS, "journal"))?;
@@ -576,7 +587,10 @@ pub(super) fn run(
                     let id = &row.instance_id;
                     for (action, input) in class_rules.fixes_for(id, &caps[id]) {
                         let key = (id.clone(), action);
-                        if rule_attempts.get(&key).is_some_and(|t| t.elapsed() < Duration::from_secs(30)) {
+                        if rule_attempts
+                            .get(&key)
+                            .is_some_and(|t| t.elapsed() < Duration::from_secs(30))
+                        {
                             continue;
                         }
                         rule_attempts.insert(key, Instant::now());
@@ -591,7 +605,9 @@ pub(super) fn run(
                                 info!(student = %row.hostname, rule = action, "Class rule sent to a computer that was out of step");
                                 publish_due = Instant::now();
                             }
-                            Err(error) => warn!(%error, rule = action, "Could not send a class rule"),
+                            Err(error) => {
+                                warn!(%error, rule = action, "Could not send a class rule")
+                            }
                         }
                     }
                 }
@@ -755,7 +771,9 @@ pub(super) fn run(
                                 .6
                                 .open(path.parent().unwrap_or(Path::new(".")), &row.instance_id)
                                 .and_then(|session| {
-                                    let authorization = tools_hub.6.authorization(&session, bind_ip)
+                                    let authorization = tools_hub
+                                        .6
+                                        .authorization(&session, bind_ip)
                                         .inspect_err(|_| tools_hub.6.close(&session))?;
                                     if let Err(error) = tools_hub.terminal_start(
                                         &row.instance_id,
@@ -911,10 +929,17 @@ pub(super) fn run(
                                         .arg(row.endpoint.ip().to_string())
                                         .arg("--ipc-file")
                                         .arg(path);
-                                    if let Some(preview) =
-                                        command.input["preview_path"].as_str()
-                                    {
+                                    if let Some(preview) = command.input["preview_path"].as_str() {
                                         launch.arg("--observe-preview").arg(preview);
+                                    }
+                                    // The thumbnail preserves the Student display aspect.
+                                    // Send geometry even when this IPC publication omitted JPEG.
+                                    if let Some(thumbnail) = row.thumbnail.as_ref() {
+                                        launch
+                                            .arg("--observe-source-width")
+                                            .arg(thumbnail.width.to_string())
+                                            .arg("--observe-source-height")
+                                            .arg(thumbnail.height.to_string());
                                     }
                                     for (input, flag) in [
                                         ("center_x", "--teacher-center-x"),
@@ -928,6 +953,28 @@ pub(super) fn run(
                                     }
                                     match launch.spawn() {
                                         Ok(child) => {
+                                            // Start the publisher while the independent Flutter
+                                            // engine loads. The window's first observe_open
+                                            // attaches to this attempt instead of replacing it.
+                                            super::observe_coordinator::View::retire_finished(
+                                                &mut observe,
+                                            );
+                                            if observe.is_none() {
+                                                if let Ok(view) =
+                                                    super::observe_coordinator::View::start(
+                                                        row.instance_id.clone(),
+                                                        row.endpoint.ip().to_string(),
+                                                        parent,
+                                                        Arc::clone(&observe_jobs),
+                                                    )
+                                                {
+                                                    observe = Some(view);
+                                                    snapshot.observe = observe.as_ref().map_or(
+                                                        Value::Null,
+                                                        super::observe_coordinator::View::state,
+                                                    );
+                                                }
+                                            }
                                             snapshot.observe_focus.0 = row.instance_id.clone();
                                             snapshot.observe_focus.1 += 1;
                                             snapshot.observe_focus.2 = child.id();
@@ -1152,26 +1199,38 @@ pub(super) fn run(
                                 job_id = Some(job);
                                 {
                                     use super::class_rules::Scoped;
-                                    let scope = (command.input["class_wide"].as_bool() != Some(true))
-                                        .then(|| recipients.clone());
+                                    let scope = (command.input["class_wide"].as_bool()
+                                        != Some(true))
+                                    .then(|| recipients.clone());
                                     let input = &command.input;
                                     match command.action.as_str() {
                                         "tool_policy" => {
-                                            if let Ok(p) = serde_json::from_value::<super::guard::Policy>(input["policy"].clone()) {
-                                                class_rules.internet = Some(Scoped::new(p.internet, scope));
+                                            if let Ok(p) =
+                                                serde_json::from_value::<super::guard::Policy>(
+                                                    input["policy"].clone(),
+                                                )
+                                            {
+                                                class_rules.internet =
+                                                    Some(Scoped::new(p.internet, scope));
                                             }
                                         }
                                         "tool_copilot_policy" => {
-                                            class_rules.copilot =
-                                                Some(Scoped::new(input["enabled"].as_bool() == Some(true), scope));
+                                            class_rules.copilot = Some(Scoped::new(
+                                                input["enabled"].as_bool() == Some(true),
+                                                scope,
+                                            ));
                                         }
                                         "tool_vscode_policy" => {
-                                            if let Ok(p) = serde_json::from_value(input["policy"].clone()) {
+                                            if let Ok(p) =
+                                                serde_json::from_value(input["policy"].clone())
+                                            {
                                                 class_rules.vscode = Some(Scoped::new(p, scope));
                                             }
                                         }
                                         "tool_app_policy" => {
-                                            if let Ok(p) = serde_json::from_value(input["policy"].clone()) {
+                                            if let Ok(p) =
+                                                serde_json::from_value(input["policy"].clone())
+                                            {
                                                 class_rules.apps = Some(Scoped::new(p, scope));
                                             }
                                         }
@@ -1181,7 +1240,8 @@ pub(super) fn run(
                                                 Some("clipboard_allow") => Some(false),
                                                 _ => None,
                                             } {
-                                                class_rules.clipboard = Some(Scoped::new(on, scope));
+                                                class_rules.clipboard =
+                                                    Some(Scoped::new(on, scope));
                                             }
                                         }
                                         _ => {}
@@ -1263,7 +1323,12 @@ pub(super) fn run(
                                 Ok(None)
                             }
                             "recording_stop" => {
-                                tools_hub.recording_stop(input["id"].as_str().unwrap_or(""))?;
+                                let session_id = input["id"].as_str().unwrap_or("");
+                                if let Some(student_id) = input["student_id"].as_str() {
+                                    tools_hub.recording_stop_target(session_id, student_id)?;
+                                } else {
+                                    tools_hub.recording_stop(session_id)?;
+                                }
                                 Ok(None)
                             }
                             "recording_open" => {
@@ -1715,29 +1780,35 @@ pub(super) fn run(
                             .iter()
                             .find(|r| r.online && command.selected.first() == Some(&r.instance_id))
                         {
-                            observe.take();
-                            match super::observe_coordinator::View::start(
-                                row.instance_id.clone(),
-                                row.endpoint.ip().to_string(),
-                                parent,
-                                Arc::clone(&observe_jobs),
-                            ) {
-                                Ok(view) => {
-                                    observe = Some(view);
-                                    // Publish the surface path immediately with
-                                    // the command acknowledgement. Observe's
-                                    // Flutter window can otherwise receive the
-                                    // ack before the next 500 ms state tick and
-                                    // miss the one-shot texture attachment.
-                                    snapshot.observe = observe.as_ref().map_or(
-                                        Value::Null,
-                                        super::observe_coordinator::View::state,
-                                    );
-                                    Ok(())
-                                }
-                                Err(e) => {
-                                    snapshot.error = Some(format!("{e:#}"));
-                                    Err("Cannot start Observe")
+                            if observe.as_ref().is_some_and(|view| {
+                                view.can_attach(&row.instance_id, command.input["restart"] == true)
+                            }) {
+                                snapshot.observe = observe
+                                    .as_ref()
+                                    .map_or(Value::Null, super::observe_coordinator::View::state);
+                                Ok(())
+                            } else {
+                                observe.take();
+                                match super::observe_coordinator::View::start(
+                                    row.instance_id.clone(),
+                                    row.endpoint.ip().to_string(),
+                                    parent,
+                                    Arc::clone(&observe_jobs),
+                                ) {
+                                    Ok(view) => {
+                                        observe = Some(view);
+                                        // Publish the surface with the ack so
+                                        // the child can attach immediately.
+                                        snapshot.observe = observe.as_ref().map_or(
+                                            Value::Null,
+                                            super::observe_coordinator::View::state,
+                                        );
+                                        Ok(())
+                                    }
+                                    Err(e) => {
+                                        snapshot.error = Some(format!("{e:#}"));
+                                        Err("Cannot start Observe")
+                                    }
                                 }
                             }
                         } else {
@@ -1767,6 +1838,16 @@ pub(super) fn run(
                         }
                     }
                     "observe_close" => {
+                        // A hidden closing UI can outlive its media teardown.
+                        // Unregister only that exact process so the next click
+                        // cannot focus it, and an old close cannot retire a new UI.
+                        if let Some(id) = command.selected.first() {
+                            if observe_windows.get(id).is_some_and(|child| {
+                                command.input["window_pid"].as_u64() == Some(u64::from(child.id()))
+                            }) {
+                                observe_windows.remove(id);
+                            }
+                        }
                         if observe.as_ref().is_some_and(|v| {
                             command.selected.first() == Some(&v.id)
                                 && command
@@ -1828,9 +1909,8 @@ pub(super) fn run(
                             }
                             Ok(target) => {
                                 let label = target.label();
-                                let preview_path = command.input["preview_path"]
-                                    .as_str()
-                                    .map(str::to_owned);
+                                let preview_path =
+                                    command.input["preview_path"].as_str().map(str::to_owned);
                                 source_switch.queue(target, preview_path).map(|()| {
                                     snapshot.next_source = Some(label.clone());
                                     snapshot.phase = "switching".into();
@@ -1881,9 +1961,7 @@ pub(super) fn run(
                                     .arg(source.endpoint.ip().to_string())
                                     .arg("--ipc-file")
                                     .arg(path);
-                                if let Some(preview) =
-                                    command.input["preview_path"].as_str()
-                                {
+                                if let Some(preview) = command.input["preview_path"].as_str() {
                                     launch.arg("--observe-preview").arg(preview);
                                 }
                                 let child = launch.spawn()?;
@@ -2239,7 +2317,11 @@ mod store_ipc_tests {
     #[test]
     fn console_can_write_its_namespaces_and_null_removes() {
         let store = store();
-        store_apply(&store, &json!({"ns":"prefs","changes":{"view":"list","a":1}})).unwrap();
+        store_apply(
+            &store,
+            &json!({"ns":"prefs","changes":{"view":"list","a":1}}),
+        )
+        .unwrap();
         store_apply(&store, &json!({"ns":"prefs","changes":{"a":null}})).unwrap();
         let listed = store_list(&store, &json!({"ns":"prefs"})).unwrap();
         assert_eq!(listed, json!({"view":"list"}));
@@ -2248,13 +2330,20 @@ mod store_ipc_tests {
     #[test]
     fn replace_swaps_a_namespace_and_ignores_nulls() {
         let store = store();
-        store_apply(&store, &json!({"ns":"roster","changes":{"old":{"id":"old"}}})).unwrap();
+        store_apply(
+            &store,
+            &json!({"ns":"roster","changes":{"old":{"id":"old"}}}),
+        )
+        .unwrap();
         store_apply(
             &store,
             &json!({"ns":"roster","replace":true,"changes":{"new":{"id":"new"},"gone":null}}),
         )
         .unwrap();
-        assert_eq!(store_list(&store, &json!({"ns":"roster"})).unwrap(), json!({"new":{"id":"new"}}));
+        assert_eq!(
+            store_list(&store, &json!({"ns":"roster"})).unwrap(),
+            json!({"new":{"id":"new"}})
+        );
     }
 
     #[test]
@@ -2266,7 +2355,10 @@ mod store_ipc_tests {
                 "{namespace} must not be writable"
             );
         }
-        assert!(store_list(&store, &json!({"ns":"meta"})).is_err(), "internal bookkeeping stays hidden");
+        assert!(
+            store_list(&store, &json!({"ns":"meta"})).is_err(),
+            "internal bookkeeping stays hidden"
+        );
         assert!(store_list(&store, &json!({"ns":"rules"})).is_ok());
         assert!(store_apply(&store, &json!({"ns":"prefs"})).is_err());
     }

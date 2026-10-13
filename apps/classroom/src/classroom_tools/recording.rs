@@ -51,6 +51,8 @@ struct Target {
     folder: PathBuf,
     token: String,
     #[serde(default)]
+    stop: bool,
+    #[serde(default)]
     report: Value,
     #[serde(default)]
     received: HashMap<u64, Receipt>,
@@ -228,6 +230,7 @@ impl Hub {
                     name: name.clone(),
                     folder,
                     token: nonce()?,
+                    stop: false,
                     report: json!({"phase":"pending"}),
                     received: HashMap::new(),
                     seen: None,
@@ -268,6 +271,18 @@ impl Hub {
         }
         save(&state)
     }
+    pub fn recording_stop_target(&self, id: &str, student: &str) -> Result<()> {
+        let mut state = self.7.lock().unwrap();
+        let target = state
+            .sessions
+            .iter_mut()
+            .find(|session| session.id == id)
+            .and_then(|session| session.targets.get_mut(student))
+            .context("Student is not part of this recording")?;
+        target.stop = true;
+        target.requested = None;
+        save(&state)
+    }
     pub fn recording_folder(&self, id: &str) -> Result<PathBuf> {
         self.7
             .lock()
@@ -285,7 +300,7 @@ impl Hub {
                 continue;
             };
             let expired = epoch() >= session.created + MAX_SECONDS;
-            let stop = session.stop || expired;
+            let stop = session.stop || target.stop || expired;
             let phase = target.report["phase"].as_str().unwrap_or("pending");
             let terminal = matches!(phase, "stopped" | "error" | "interrupted");
             // Do not restart acknowledged capture after a transient disconnect.
@@ -525,8 +540,11 @@ mod tests {
         assert!(hub
             .recording_start_at(&[("a".into(), "PC".into())], &root)
             .is_err());
-        hub.recording_stop(&id).unwrap();
+        hub.recording_stop_target(&id, "a").unwrap();
         assert_eq!(hub.recording_poll("a").unwrap().action, "recording_stop");
+        assert_eq!(hub.recording_poll("b").unwrap().action, "recording_start");
+        hub.recording_stop(&id).unwrap();
+        assert_eq!(hub.recording_poll("b").unwrap().action, "recording_stop");
         let reloaded = Hub::default();
         reloaded.load_recordings(journal).unwrap();
         assert_eq!(

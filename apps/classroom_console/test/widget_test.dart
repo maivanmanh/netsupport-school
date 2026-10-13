@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -19,6 +20,101 @@ class LiveAgent extends Agent {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  testWidgets(
+    'offline toggle hides remembered PCs and restores them without removing roster',
+    (tester) async {
+      tester.view.physicalSize = const Size(1100, 800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final agent = LiveAgent()
+        ..state = {
+          'phase': 'idle',
+          'students': [
+            {
+              'id': 'on',
+              'name': 'Online PC',
+              'ip': '10.0.68.117',
+              'online': true,
+            },
+            {
+              'id': 'off',
+              'name': 'Offline PC',
+              'ip': '10.0.68.118',
+              'online': false,
+            },
+          ],
+        };
+      await tester.pumpWidget(ClassroomApp(agent: agent));
+      await tester.pumpAndSettle();
+      expect(find.text('Offline PC'), findsOneWidget);
+      expect(find.text('Tự động'), findsNothing);
+      expect(
+        find.byTooltip('Tự động sắp xếp kích thước ô máy'),
+        findsOneWidget,
+      );
+      await tester.tap(find.byTooltip('Ẩn máy offline'));
+      await tester.pumpAndSettle();
+      expect(find.text('Offline PC'), findsNothing);
+      expect(find.text('Online PC'), findsOneWidget);
+      expect(agent.students, hasLength(2));
+      expect(agent.preferences['show_offline'], false);
+      await tester.tap(find.byTooltip('Hiện máy offline'));
+      await tester.pumpAndSettle();
+      expect(find.text('Offline PC'), findsOneWidget);
+      expect(agent.preferences['show_offline'], true);
+      await tester.pumpWidget(const SizedBox());
+      agent.dispose();
+    },
+  );
+  testWidgets(
+    'recording status appears in every roster view and context menu',
+    (tester) async {
+      tester.view.physicalSize = const Size(1100, 800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final agent = LiveAgent()
+        ..state = {
+          'phase': 'idle',
+          'students': [
+            {
+              'id': 'one',
+              'name': 'Lab PC 01',
+              'ip': '10.0.55.11',
+              'online': true,
+            },
+          ],
+          'tools': {
+            'recordings': [
+              {
+                'id': 'recording-session',
+                'targets': [
+                  {
+                    'id': 'one',
+                    'report': {'phase': 'recording'},
+                  },
+                ],
+              },
+            ],
+          },
+        };
+      await tester.pumpWidget(ClassroomApp(agent: agent));
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('Đang ghi màn hình'), findsOneWidget);
+      await tester.tap(find.byIcon(Icons.view_list_outlined));
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('Đang ghi màn hình'), findsOneWidget);
+      await tester.tap(find.byIcon(Icons.format_list_bulleted));
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('Đang ghi màn hình'), findsOneWidget);
+      await tester.tap(find.text('Lab PC 01'), buttons: kSecondaryMouseButton);
+      await tester.pumpAndSettle();
+      expect(find.text('Dừng ghi màn hình'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+      agent.dispose();
+    },
+  );
   final windowCalls = <String>[];
   setUp(() {
     windowCalls.clear();
@@ -210,10 +306,12 @@ void main() {
       await tester.pumpAndSettle();
       expect(columns(), lessThan(before));
       expect(
-        tester.widget<FilterChip>(find.byType(FilterChip)).selected,
+        tester
+            .widget<IconButton>(find.byKey(const ValueKey('grid-auto-toggle')))
+            .isSelected,
         false,
       );
-      await tester.tap(find.text('Tự động'));
+      await tester.tap(find.byKey(const ValueKey('grid-auto-toggle')));
       await tester.pumpAndSettle();
       expect(columns(), before);
       tester.view.physicalSize = const Size(740, 520);

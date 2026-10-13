@@ -121,6 +121,7 @@ pub fn run(
     )?;
     let (events, receiver) = mpsc::sync_channel(256);
     let mut presentation = source.clone();
+    presentation.preserve_aspect = config.video.presentation_preserve_aspect;
     presentation.stream_id = stream_id;
     presentation.teacher_media_udp_port = u32::from(socket.local_addr()?.port());
     if stop.load(Ordering::Acquire) {
@@ -456,6 +457,7 @@ mod tests {
                 rtp_payload_type: 96,
                 rtp_clock_hz: 90_000,
                 teacher_media_udp_port: u32::from(source_udp.local_addr().unwrap().port()),
+                preserve_aspect: false,
             },
             events: source_events,
             recipients: Some(Arc::new(HashSet::from(["source-auth".into()]))),

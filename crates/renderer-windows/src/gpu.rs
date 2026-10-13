@@ -83,6 +83,7 @@ pub struct GpuRenderer {
     image: Option<ID3D11ShaderResourceView>,
     source_size: (u32, u32),
     client_size: (u32, u32),
+    preserve_aspect: bool,
     /// O1: locally drawn Teacher pointer (alpha-blended quad).
     pointer_pixel: ID3D11PixelShader,
     blend: ID3D11BlendState,
@@ -205,6 +206,7 @@ impl GpuRenderer {
                 pointer_pixel: pointer_pixel.unwrap(),
                 blend: blend.unwrap(),
                 pointer: None,
+                preserve_aspect: true,
                 pointer_texture: None,
             };
             renderer.create_target()?;
@@ -358,6 +360,10 @@ impl GpuRenderer {
         self.pointer = pointer;
     }
 
+    pub fn set_preserve_aspect(&mut self, preserve: bool) {
+        self.preserve_aspect = preserve;
+    }
+
     /// Re-presents the last uploaded frame (pointer-only motion).
     pub fn redraw(&mut self, width: u32, height: u32) -> Result<bool> {
         if self.image.is_none() || self.client_size != (width, height) {
@@ -378,11 +384,12 @@ impl GpuRenderer {
         // textures created above; the pointer texture is created with its data.
         unsafe {
             let draw_started = Instant::now();
-            let (fit_width, fit_height) = crate::fit::fit_rect(
+            let (fit_width, fit_height) = crate::fit::display_rect(
                 source_width,
                 source_height,
                 i32::try_from(width).unwrap_or(i32::MAX),
                 i32::try_from(height).unwrap_or(i32::MAX),
+                self.preserve_aspect,
             );
             let view = D3D11_VIEWPORT {
                 TopLeftX: (width as f32 - fit_width as f32) / 2.0,

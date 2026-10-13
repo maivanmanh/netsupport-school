@@ -2,6 +2,26 @@ import 'package:flutter/widgets.dart';
 import 'package:screen_retriever/screen_retriever.dart';
 import 'dart:math' as math;
 
+/// A thumbnail carries aspect, not the original display's pixel resolution.
+/// Fit that aspect in the work area before showing the loading window.
+Rect observePreviewBounds(Rect work, Size source, Size frame) {
+  final scale = math.min(
+    math.max(1, work.width - frame.width) / source.width,
+    math.max(1, work.height - frame.height) / source.height,
+  );
+  return Rect.fromCenter(
+    center: work.center,
+    width: source.width * scale + frame.width,
+    height: source.height * scale + frame.height,
+  );
+}
+
+/// Thumbnail even-pixel rounding must not resize the window on first video.
+bool observeSameAspect(Size a, Size b) =>
+    !a.isEmpty &&
+    !b.isEmpty &&
+    ((a.width / a.height) / (b.width / b.height) - 1).abs() < .01;
+
 /// Outer logical window bounds for a source displayed without upscaling.
 Rect observeNativeBounds(
   Rect work,

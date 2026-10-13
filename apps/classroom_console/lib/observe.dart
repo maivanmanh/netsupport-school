@@ -28,10 +28,12 @@ class ObserveWindow extends StatefulWidget {
     required this.name,
     this.ip = '',
     this.previewImage,
+    this.initialSourceSize,
   });
   final Agent agent;
   final String studentId, name, ip;
   final Uint8List? previewImage;
+  final Size? initialSourceSize;
   @override
   State<ObserveWindow> createState() => _ObserveWindowState();
 }
@@ -67,7 +69,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
   final viewportScroll = ScrollController();
   final horizontalScroll = ScrollController();
   Timer? chromeTimer;
-  String displayMode = 'fit';
+  String displayMode = 'fill';
   Size? autoSizedSource;
   bool sizingWindow = false;
 
@@ -80,7 +82,8 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
         sizingWindow ||
         fullScreen ||
         source.isEmpty ||
-        autoSizedSource == source) {
+        (autoSizedSource != null &&
+            observeSameAspect(autoSizedSource!, source))) {
       return;
     }
     sizingWindow = true;
@@ -106,7 +109,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
       await windowManager.setBounds(bounds);
       autoSizedSource = source;
     } catch (_) {
-      // Fit still preserves source pixels if the desktop API is unavailable.
+      // Keep Fill responsive to manual resizing even if native sizing is unavailable.
       autoSizedSource = source;
     } finally {
       sizingWindow = false;
@@ -532,6 +535,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
   @override
   void initState() {
     super.initState();
+    autoSizedSource = widget.initialSourceSize;
     toolActivity;
     if (Platform.isWindows || Platform.isMacOS) {
       native.setMethodCallHandler(nativeKey);
@@ -629,7 +633,15 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
     openingObserve = true;
     lastOpenAt = recoveryClock.elapsed;
     try {
-      await widget.agent.commandChecked('observe_open', [widget.studentId], {});
+      await widget.agent.commandChecked(
+        'observe_open',
+        [widget.studentId],
+        {
+          // Initial attempts can already be running while this Flutter engine
+          // starts. Only recovery of an established session may replace one.
+          'restart': hasEverBeenLive,
+        },
+      );
       // The command acknowledgement is sent just before the next state
       // publication. Give that publication a chance, then explicitly retry the
       // surface lookup so a listener scheduling race cannot leave this window in
@@ -717,7 +729,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
           (phase == 'ended' ||
               phase == 'error' ||
               phase == null ||
-              phase == 'live' ||
+              (phase == 'live' && hasEverBeenLive) ||
               (phase == 'starting' && returnedOnline))) {
         reconnectAttempts++;
         unawaited(
@@ -919,7 +931,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
         widget.agent.command(
           'observe_close',
           [widget.studentId],
-          {'surface': surface},
+          {'surface': surface, 'window_pid': pid},
         ),
       );
       try {
@@ -1609,23 +1621,19 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                           style: const ButtonStyle(
                             visualDensity: VisualDensity.compact,
                           ),
+                          key: const ValueKey('observe-display-mode'),
                           segments: const [
                             ButtonSegment(
-                              value: 'fit',
-                              label: Text('Gốc'),
-                              tooltip: 'Giữ tỉ lệ, không phóng to điểm ảnh gốc',
-                              icon: Icon(Icons.aspect_ratio, size: 18),
-                            ),
-                            ButtonSegment(
                               value: 'stretch',
-                              label: Text('Giãn'),
-                              tooltip: 'Phủ kín cửa sổ, bỏ dải đen hai bên',
+                              label: Text('Stretch'),
+                              tooltip:
+                                  'Cover the window; scroll to see the full image',
                               icon: Icon(Icons.width_full, size: 18),
                             ),
                             ButtonSegment(
                               value: 'fill',
-                              label: Text('Lấp đầy'),
-                              tooltip: 'Lấp đầy cửa sổ · Kéo giãn ảnh',
+                              label: Text('Fill'),
+                              tooltip: 'Resize the image with the window',
                               icon: Icon(Icons.fit_screen, size: 18),
                             ),
                           ],

@@ -824,6 +824,7 @@ mod tests {
                 rtp_payload_type: 96,
                 rtp_clock_hz: 90_000,
                 teacher_media_udp_port: 47_811,
+                preserve_aspect: false,
             };
             let _ = handle_media_student(stream, peer, 1, presentation, events).await;
         });

@@ -79,6 +79,7 @@ pub(super) fn publish_with_cursor_policy(
                 ),
                 rtp_clock_hz: RTP_VIDEO_CLOCK_HZ,
                 teacher_media_udp_port: u32::from(media_port),
+                preserve_aspect: config.video.presentation_preserve_aspect,
             },
             events,
             recipients: recipients.cloned(),

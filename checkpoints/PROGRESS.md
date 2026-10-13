@@ -5176,3 +5176,81 @@ ZIP and run ClassroomStudent.exe; verify roster registration and classroom media
 Investigate the nine Flutter UI test failures separately before release acceptance.
 
 Checkpoint commit could not be created: this Windows Git installation has no author name/email configured. No identity was invented or global Git configuration changed.
+
+
+## 2026-10-13 — Owner override: Student presentation stretch default (in progress)
+
+Owner explicitly changes the previous aspect-preserving Student display decision: Windows class presentation defaults to stretch-to-fill, accepting distortion; Teacher Settings must offer stretch and preserve-aspect. Source capture/encode dimensions remain unchanged. During the live class, only background non-disruptive checks are allowed on occupied endpoints; visible presentation and test update are restricted to the vacant IP suffix .117. Do not broadcast to the whole class or update other Students. Plan: additive Protobuf StartPresentation flag, persisted Teacher video setting, shared GPU/GDI display geometry, focused tests, paired build in an isolated output, and targeted .117 validation.
+
+
+## 2026-10-13 — Student stretch default, Observe Fill, targeted .117 update
+
+Completed implementation/build and targeted updater deployment; owner visual QA
+is pending. Windows Student presentation now stretches to the complete display
+by default; Teacher Settings -> Phat man hinh offers stretch or preserve-aspect,
+persisted as video.presentation_preserve_aspect. Applies to the next presentation
+after Save & reconnect. GPU/GDI use shared geometry. Additive Protobuf tag 9 in
+StartPresentation, no protocol-version bump; old Students ignore it and retain
+letterboxing. Existing capture/encode/transport/queues and non-Windows renderers
+retain their behavior. Student-source relay uses Teacher's chosen display policy.
+
+Owner also requested removing Goc/Native from Observe/Control toolbar. English
+Fill and Stretch remain, default Fill. Initial source/DPI/work-area window sizing
+is retained; manual resizing now expands the image with the window by default.
+Stretch retains existing aspect-preserving cover/scroll and input mapping.
+
+Validation:
+- cargo test -p renderer-windows -p protocol -p classroom-config -p control-transport
+  --target x86_64-pc-windows-msvc: 25 passed.
+- cargo clippy for those four packages with --all-targets: completed, warnings
+  remain (including independent renderer boolean fields); no errors.
+- Flutter presentation_display/settings/observe_startup tests: 6 passed.
+- Focused Observe test 'Fill is the only default': passed for default toolbar,
+  resizing in Observe and Control, and normalized midpoint coordinates. Total
+  focused Flutter checks: 7 passed.
+- Broader existing 'Independent fit window' test still fails on its pre-existing
+  English window-title expectation versus Vietnamese runtime title and toolbar
+  overflow at 800px. Not a clean full Observe regression claim. The prior full
+  suite's nine failures remain recorded above; no unrelated repair was attempted.
+- Flutter analyze: 9 informational lints, no warnings/errors, nonzero info status.
+- Dart formatting applied to changed Dart files; targeted new geometry formatted.
+  Whole-repo Rust formatting differences remain as recorded above.
+
+Paired x64 build label stretch-20261013-135048. Isolated Flutter 3.47.7, explicit
+VC145 x64 CRT; both fresh Rust roles and fresh bundled Student ZIP. Full paired
+script rerun after the Observe toolbar changes (same label, unchanged Rust input).
+Student SHA-256 f1e5a70cee83c8f769a704af048e0ccd98e3d7d4d1f44c6b7d00311ba5f4fb12.
+Build lockfile preserved at target/teacher-live/stretch-build-pubspec.lock;
+SDK-generated tracked files restored as before. No dependency migration intended.
+
+Only 10.0.68.117 was deployed, using classroom-dev-update.py with explicit
+--student 10.0.68.117. Job 02bc8992b4edc65ab4c9831eabdf8cb7 reached complete after
+restart, same Student ID, build 1791874255-stretch-20261013-135048. Other Students
+were not updated. No Share/Observe/Control/input/lock command was issued to any
+Student by the agent during this task. Owner may test the vacant .117 manually.
+
+Teacher was idle before graceful quit. Automatic command review blocked removal
+of target/Classroom-Console-Windows-x64, so no replacement/deletion was retried.
+Per owner fallback rule, active Teacher is now the isolated package at
+`target/Classroom-Console-Windows-x64-stretch/classroom_console.exe`, same saved
+settings/profile/log locations and same private IPC endpoint. No old Teacher
+process remained when the new package launched. Old package remains on disk.
+Do not launch both. Teacher binds physical Ethernet 10.0.68.200. Fresh Student
+ZIP share restarted on http://10.0.68.200:8888/; actual GET verified ZIP CRC,
+executable hash and bootstrap 10.0.68.200:47800, 5,511,914 bytes. Evidence:
+`target/teacher-live/verification.json`, `stretch-roster-verification.json`.
+
+No physical display/media test was initiated while class was active. Unit/UI and
+update/download evidence do not prove visual ratio/cursor behavior or performance.
+Exact next step: owner tests Share selected to .117 and both display settings,
+then Observe/Control opening size and resize behavior on .117. Update remaining
+Students only after class and owner authorization. Git commit remains unavailable
+because this machine has no author name/email configured; do not invent identity.
+
+## Recording status in roster — 2026-10-13
+
+- Added a small red recording dot with tooltip to Grid, List and Compact student rows; right-click switches to “Dừng ghi màn hình” for the selected student while recording or starting.
+- Right-click stop now identifies both session and student. Added target-scoped stop state in the journal so stopping one student does not stop other students recorded in the same session; older journal entries default the new flag to false.
+- Verification: Flutter widget tests pass for all three views and the context menu; focused Rust recording test passes, including proof that stopping Student A leaves Student B recording. `flutter analyze` reports only existing informational lints. `git diff --check` passes.
+- Paired Windows x64 build `recording-indicator-20261013` completed in isolated `target/Classroom-Console-Windows-x64-recording-indicator`; fresh Student ZIP CRC verified, version `recording-indicator-20261013`, SHA-256 `9a04620a0d36b44996c79d36e01c08849f843ba91aac4fcb06fd3c437797f4f0`.
+- Runtime verification: launched the isolated Teacher with the existing `target/teacher-live` room store and explicit LAN bind `10.0.68.200`; verified listener `10.0.68.200:47800`, phase idle, and 15/15 Students online. The Student share is listening on `10.0.68.200:8888`; HTTP GET returned 200, full ZIP CRC passed, and embedded bootstrap names Teacher `10.0.68.200:47800`. No presentation/Observe/Control was started.

@@ -44,6 +44,7 @@ message StartPresentation {
   uint32 rtp_payload_type = 6;
   uint32 rtp_clock_hz = 7;
   uint32 teacher_media_udp_port = 8;
+  bool preserve_aspect = 9; // false = stretch to fill on Windows Student
 }
 
 message ReceiverReport {
