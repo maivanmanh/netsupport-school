@@ -5133,3 +5133,46 @@ No new release build requested or produced; the permitted existing Teacher was
 reused. This publication step runs whitespace/package checks; prior runtime and
 Rust/Flutter validation remains recorded separately, rather than claiming a new
 full test run.
+
+## 2026-10-13 — Paired Windows build and live Teacher launch
+
+Owner requested Windows Teacher + Student build, Teacher launch and bundled
+Student ZIP ready to serve. Built both Rust x64 MSVC roles from source revision
+9c6f201 with label paired-20261013-132814. Teacher portable bundle:
+`target/Classroom-Console-Windows-x64/classroom_console.exe`; standalone Student:
+`target/Classroom-Student-Windows-x64/ClassroomStudent.exe`. Fresh package is
+included at `target/Classroom-Console-Windows-x64/student-packages/student-windows-x64.zip`.
+Student SHA-256: 6c9dd294bf4de077b869634372b0b4b1c5b480e9fdfa9aefbe73ab923657af64.
+
+System Flutter 3.0/Dart 2.17 was incompatible. Prepared isolated Flutter 3.47.7 /
+Dart 3.13.5 in target/toolchains/flutter; stopped its optional git tag-history
+fetch after it delayed setup. Used explicit x64 CRT directory under Visual Studio
+18 Community, because runtime auto-discovery selected SQL Server tools. Both
+portable bundles contain the matching runtime DLLs. Flutter SDK pins resolved
+six lockfile dependencies differently; preserved the actual build lockfile at
+`target/teacher-live/build-pubspec.lock` and restored generated tracked files to
+their original contents. No product source changes.
+
+Runtime verified: Teacher window and owned Rust agent running. Initial saved
+binding was loopback; gracefully quit/relaunched with CLI --bind-ip 10.0.68.200,
+the physical Ethernet 4/default-gateway adapter. Preserved settings/profile/logs.
+Download service left running on http://10.0.68.200:8888/ (80 occupied by OS;
+8888 was selected in the live UI). Actual HTTP GET returned 5,512,831-byte ZIP;
+CRC, Student executable SHA-256 and bootstrap teacher_ip/control_port verified.
+Bootstrap points to 10.0.68.200:47800. Evidence:
+`target/teacher-live/verification.json`. Student --help executable smoke passed.
+This is a local HTTP download check, not a second-PC/firewall or media acceptance.
+
+Checks: release builds passed; git diff --check passed. New-SDK Flutter analyze:
+8 informational findings, no warnings/errors (nonzero lint status). Flutter tests:
+79 passed, 9 failed in class_control/observe UI cases; no claim of clean regression
+suite. An initial analyzer invocation accidentally selected the old system SDK;
+its incompatible-SDK findings were discarded and analysis rerun explicitly with
+the local SDK. cargo fmt --check reports existing repository formatting differences;
+no broad formatting changes applied. No physical 40-PC/performance test performed.
+
+Exact next step: on a Windows Student PC open http://10.0.68.200:8888/, extract the
+ZIP and run ClassroomStudent.exe; verify roster registration and classroom media.
+Investigate the nine Flutter UI test failures separately before release acceptance.
+
+Checkpoint commit could not be created: this Windows Git installation has no author name/email configured. No identity was invented or global Git configuration changed.
