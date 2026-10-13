@@ -19,7 +19,7 @@ Uri websiteUri(String value) {
       uri.host.contains('*') ||
       !RegExp(r'^[a-zA-Z0-9._-]+$').hasMatch(uri.host)) {
     throw const FormatException(
-      'Enter an HTTP(S) website, without wildcards or credentials.',
+      'Hãy nhập một website HTTP(S), không có ký tự đại diện hay thông tin đăng nhập.',
     );
   }
   return uri.replace(path: uri.path.isEmpty ? '/' : uri.path).removeFragment();
@@ -194,7 +194,7 @@ class WebsiteScanner {
     if (configured != null && configured.trim().isNotEmpty) {
       if (await File(configured.trim()).exists()) return configured.trim();
       throw const FileSystemException(
-        'Configured browser executable was not found.',
+        'Không tìm thấy tệp thực thi của trình duyệt đã cấu hình.',
       );
     }
     final candidates = <String>[];
@@ -245,38 +245,37 @@ class WebsiteScanner {
     final url = websiteUri(value);
     if (budget < const Duration(seconds: 3) ||
         budget > const Duration(seconds: 30)) {
-      throw const FormatException('Scan timeout must be 3–30 seconds.');
+      throw const FormatException('Thời gian chờ quét phải từ 3 đến 30 giây.');
     }
     final collector = DependencyCollector(url.host.toLowerCase());
     Directory? profile;
     String
     status = 'scanned',
     note =
-        'Page scanned; interactive or signed-in content may need additional domains.';
+        'Đã quét trang; nội dung tương tác hoặc cần đăng nhập có thể cần thêm tên miền.';
     try {
       final browser = await findBrowser(browserPath);
       if (browser == null) {
         throw StateError(
-          'Chrome or Edge is required to scan. Install one or configure its executable path. Saved groups still work without a browser.',
+          'Cần Chrome hoặc Edge để quét. Hãy cài một trình duyệt hoặc cấu hình đường dẫn. Nhóm đã lưu vẫn dùng được khi không có trình duyệt.',
         );
       }
       profile = await Directory.systemTemp.createTemp('classroom-site-scan-');
       await _run(browser, profile, url, collector).timeout(budget);
       if (_cancelled) {
         status = 'cancelled';
-        note = 'Scan stopped. Partial results retained.';
+        note = 'Đã dừng quét; giữ kết quả một phần.';
       } else if (collector.capped) {
         status = 'partial';
-        note = 'Domain/request limit reached; partial results retained.';
+        note = 'Đã chạm giới hạn tên miền/yêu cầu; giữ kết quả một phần.';
       }
     } on TimeoutException {
       status = 'timeout';
-      note =
-          'Time limit reached; partial results retained. No automatic rescan.';
+      note = 'Đã hết thời gian; giữ kết quả một phần. Không tự quét lại.';
     } catch (_) {
       if (!_cancelled) rethrow;
       status = 'cancelled';
-      note = 'Scan stopped. Partial results retained.';
+      note = 'Đã dừng quét; giữ kết quả một phần.';
     } finally {
       _cancelled = true;
       final cdp = _cdp;
@@ -352,7 +351,7 @@ class WebsiteScanner {
       if (_cancelled) return;
       if (startup.elapsed > const Duration(seconds: 5)) {
         throw StateError(
-          'The headless browser did not start within 5 seconds. Check the configured browser.',
+          'Trình duyệt ẩn không khởi động được trong 5 giây. Hãy kiểm tra trình duyệt đã cấu hình.',
         );
       }
       await Future<void>.delayed(const Duration(milliseconds: 50));
@@ -477,7 +476,7 @@ class WebsiteScanner {
     };
     final navigation = await call('Page.navigate', {'url': url.toString()});
     if (navigation['errorText'] != null) {
-      throw StateError('Page could not load: ${navigation['errorText']}');
+      throw StateError('Không tải được trang: ${navigation['errorText']}');
     }
     final elapsed = Stopwatch()..start();
     int scrolls = 0;
@@ -520,7 +519,7 @@ class _DevTools {
         }
       },
       onError: (Object e) => fail(e),
-      onDone: () => fail(StateError('Browser connection closed.')),
+      onDone: () => fail(StateError('Kết nối tới trình duyệt đã đóng.')),
     );
   }
   final WebSocket socket;

@@ -2,9 +2,9 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'agent.dart';
+import 'app_dialog.dart';
+import 'window_shell.dart';
 
-const _teal = Color(0xff156b79);
-const _bg = Color(0xfff3f5f9);
 const _danger = Color(0xffb83b40);
 const _copilotIds = {
   'github.copilot',
@@ -293,7 +293,7 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
       }
       await Future<void>.delayed(const Duration(milliseconds: 200));
     }
-    return 'No completion confirmation received. Check the computers and retry.';
+    return 'Chưa nhận được xác nhận hoàn tất. Hãy kiểm tra các máy rồi thử lại.';
   }
 
   Future<void> changeCopilot(bool value) async {
@@ -308,7 +308,7 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
     String? failure;
     if (ids.isEmpty) {
       failure =
-          'No connected computer supports this. Windows administrator + updated Student required.';
+          'Chưa có máy nào đang kết nối hỗ trợ việc này. Cần Windows chạy quyền quản trị và Student bản mới.';
     } else {
       final response = await agent.request(
         'tool_copilot_policy',
@@ -337,31 +337,21 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
     if (busy || !changed) return;
     if (enabled && selected.isEmpty) {
       setState(
-        () =>
-            error = 'Allow at least one extension, or turn the allowlist off.',
+        () => error =
+            'Hãy cho phép ít nhất một tiện ích, hoặc tắt danh sách cho phép.',
       );
       return;
     }
-    final confirmedByTeacher = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Apply VS Code extension policy?'),
-        content: const Text(
-          'Applying restrictions will close and reopen VS Code on the selected Windows computers. Ask students to save their work first. The Copilot network checkbox is applied separately.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Apply'),
-          ),
-        ],
-      ),
+    final confirmedByTeacher = await confirmDialog(
+      context,
+      title: 'Áp dụng chính sách tiện ích VS Code?',
+      icon: Icons.extension_outlined,
+      confirmLabel: 'Áp dụng',
+      destructive: true,
+      message:
+          'Áp dụng hạn chế sẽ đóng rồi mở lại VS Code trên các máy Windows đã chọn. Hãy nhắc học viên lưu bài trước. Ô chặn mạng Copilot được áp dụng riêng.',
     );
-    if (!mounted || confirmedByTeacher != true) return;
+    if (!mounted || !confirmedByTeacher) return;
     setState(() {
       busy = true;
       applied = false;
@@ -427,7 +417,7 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
           confirmationError ??
           (confirmed
               ? null
-              : 'No completion confirmation received. Check the selected computers and retry.');
+              : 'Chưa nhận được xác nhận hoàn tất. Hãy kiểm tra các máy đã chọn rồi thử lại.');
       skipped = [
         if (skippedList is List)
           for (final s in skippedList)
@@ -454,368 +444,266 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
                     e.id.contains(filter),
               )
               .toList();
-    return Scaffold(
-      backgroundColor: _bg,
-      body: SafeArea(
-        child: Column(
-          children: [
-            Material(
-              color: Colors.white,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
-                child: Row(
-                  children: [
-                    const Icon(
-                      Icons.extension_outlined,
-                      color: _teal,
-                      size: 20,
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        'VS Code extensions · ${widget.audience}',
-                        style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                        ),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    Text(
-                      blocked == 0
-                          ? 'No computer has an allowlist enforced'
-                          : '$blocked computer${blocked == 1 ? '' : 's'} currently enforcing an allowlist',
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: Colors.blueGrey,
-                      ),
-                    ),
-                  ],
+    return WindowShell(
+      icon: Icons.extension_outlined,
+      title: 'Tiện ích VS Code · ${widget.audience}',
+      subtitle: blocked == 0
+          ? 'Chưa có máy nào đang áp dụng danh sách cho phép'
+          : '$blocked máy đang áp dụng danh sách cho phép',
+      footer: _footerBar(),
+      child: AbsorbPointer(
+        absorbing: busy,
+        child: Opacity(
+          opacity: busy ? 0.6 : 1,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _CopilotRow(
+                  value: copilot,
+                  onChanged: copilotBusy
+                      ? null
+                      : (v) => changeCopilot(v ?? false),
+                  busy: copilotBusy,
+                  applied: copilotCount,
+                  eligible: eligible.length,
+                  unsupported: onlineIds.length - eligible.length,
                 ),
-              ),
-            ),
-            const Divider(height: 1),
-            Expanded(
-              child: AbsorbPointer(
-                absorbing: busy,
-                child: Opacity(
-                  opacity: busy ? 0.6 : 1,
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        _CopilotRow(
-                          value: copilot,
-                          onChanged: copilotBusy
-                              ? null
-                              : (v) => changeCopilot(v ?? false),
-                          busy: copilotBusy,
-                          applied: copilotCount,
-                          eligible: eligible.length,
-                          unsupported: onlineIds.length - eligible.length,
-                        ),
-                        if (copilotError != null)
-                          Row(
-                            children: [
-                              Expanded(
-                                child: Text(
-                                  copilotError!,
-                                  style: const TextStyle(
-                                    color: _danger,
-                                    fontSize: 12,
-                                  ),
-                                ),
-                              ),
-                              TextButton(
-                                onPressed: copilotBusy
-                                    ? null
-                                    : () => changeCopilot(copilot),
-                                child: const Text('Retry'),
-                              ),
-                            ],
-                          ),
-                        const SizedBox(height: 12),
-                        Row(
-                          children: [
-                            Switch(
-                              value: enabled,
-                              onChanged: busy
-                                  ? null
-                                  : (v) => setState(() {
-                                      enabled = v;
-                                      applied = false;
-                                    }),
-                            ),
-                            const SizedBox(width: 4),
-                            const Text(
-                              'Enforce an allowlist: only checked extensions below may run',
-                              style: TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            const Spacer(),
-                            if (extensions.isNotEmpty)
-                              Text(
-                                '${selected.length}/${extensions.length} allowed',
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  color: Colors.blueGrey,
-                                ),
-                              ),
-                          ],
-                        ),
-                        const SizedBox(height: 10),
-                        Row(
-                          children: [
-                            if (loading) ...[
-                              const SizedBox(
-                                width: 14,
-                                height: 14,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Text('Scanning $scanDone/$scanTotal computers…'),
-                            ] else
-                              Text('Extensions · ${extensions.length} unique'),
-                            const Spacer(),
-                            if (loading)
-                              TextButton.icon(
-                                onPressed: stopScan,
-                                icon: const Icon(
-                                  Icons.stop_circle_outlined,
-                                  size: 18,
-                                ),
-                                label: const Text('Stop'),
-                              )
-                            else
-                              TextButton.icon(
-                                onPressed: load,
-                                icon: const Icon(Icons.refresh, size: 18),
-                                label: const Text('Rescan all connected'),
-                              ),
-                          ],
-                        ),
-                        TextField(
-                          controller: search,
-                          onChanged: (_) => setState(() {}),
-                          decoration: const InputDecoration(
-                            isDense: true,
-                            prefixIcon: Icon(Icons.search, size: 18),
-                            hintText: 'Search installed extensions…',
-                            border: OutlineInputBorder(),
-                          ),
-                        ),
-                        if (fetchErrors.isNotEmpty) ...[
-                          const SizedBox(height: 8),
-                          Text(
-                            fetchErrors.toSet().join(' · '),
-                            style: const TextStyle(
-                              fontSize: 11.5,
-                              color: Colors.blueGrey,
-                            ),
-                          ),
-                        ],
-                        const SizedBox(height: 8),
-                        Expanded(
-                          child: extensions.isEmpty
-                              ? Center(
-                                  child: Text(
-                                    !agent.connected
-                                        ? 'Connecting to the Teacher agent…'
-                                        : 'No user-installed extensions were found on the selected computers.',
-                                    style: const TextStyle(
-                                      color: Colors.blueGrey,
-                                    ),
-                                  ),
-                                )
-                              : ListView.separated(
-                                  itemCount: shown.length,
-                                  separatorBuilder: (_, _) =>
-                                      const Divider(height: 1),
-                                  itemBuilder: (context, i) {
-                                    final e = shown[i];
-                                    final checked = selected.contains(e.id);
-                                    return CheckboxListTile(
-                                      // Not on the allowlist while it is on = blocked.
-                                      tileColor: newIds.contains(e.id)
-                                          ? const Color(0xffe0f3ed)
-                                          : enabled && !checked
-                                          ? const Color(0xffffeaea)
-                                          : null,
-                                      dense: true,
-                                      value: checked,
-                                      onChanged: busy
-                                          ? null
-                                          : (v) => setState(() {
-                                              applied = false;
-                                              if (v == true) {
-                                                selected.add(e.id);
-                                              } else {
-                                                selected.remove(e.id);
-                                              }
-                                            }),
-                                      title: Row(
-                                        children: [
-                                          Expanded(
-                                            child: Text(
-                                              e.name,
-                                              style: const TextStyle(
-                                                fontSize: 13,
-                                                fontWeight: FontWeight.w600,
-                                              ),
-                                            ),
-                                          ),
-                                          if (newIds.contains(e.id))
-                                            const Text(
-                                              'NEW',
-                                              style: TextStyle(
-                                                fontSize: 10,
-                                                fontWeight: FontWeight.w800,
-                                                color: Color(0xff167452),
-                                              ),
-                                            ),
-                                        ],
-                                      ),
-                                      subtitle: Text(
-                                        e.description.isEmpty
-                                            ? e.id
-                                            : '${e.description}  ·  ${e.id}',
-                                        style: const TextStyle(fontSize: 11.5),
-                                        maxLines: 2,
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                      controlAffinity:
-                                          ListTileControlAffinity.leading,
-                                    );
-                                  },
-                                ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            const Divider(height: 1),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (applied)
-                    const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.check_circle,
-                          size: 17,
-                          color: Color(0xff1f7a4d),
-                        ),
-                        SizedBox(width: 6),
-                        Text(
-                          'Applied',
-                          style: TextStyle(
-                            color: Color(0xff1f7a4d),
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
-                    ),
-                  if (error != null) ...[
-                    const SizedBox(height: 8),
-                    Text(
-                      error!,
-                      style: const TextStyle(fontSize: 12.5, color: _danger),
-                    ),
-                  ],
-                  if (skipped.isNotEmpty) ...[
-                    const SizedBox(height: 10),
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: const Color(0xfffdf1e0),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: const Color(0xffe8c57a)),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              const Icon(
-                                Icons.warning_amber_rounded,
-                                size: 16,
-                                color: Color(0xffb86b22),
-                              ),
-                              const SizedBox(width: 6),
-                              Expanded(
-                                child: Text(
-                                  'Applied to the rest of the class, but skipped '
-                                  '${skipped.length} computer${skipped.length == 1 ? '' : 's'} '
-                                  'that cannot enforce this (needs the updated build running as administrator):',
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w600,
-                                    color: Color(0xff8a4e14),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 6),
-                          Wrap(
-                            spacing: 10,
-                            runSpacing: 4,
-                            children: [
-                              for (final s in skipped)
-                                Text(
-                                  '${s['name']} (${s['ip']})',
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    fontFamily: 'Menlo',
-                                    color: Color(0xff8a4e14),
-                                  ),
-                                ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                  const SizedBox(height: 12),
+                if (copilotError != null) ...[
+                  const SizedBox(height: 8),
                   Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
                     children: [
-                      FilledButton.icon(
-                        onPressed: busy || copilotBusy || loading || !changed
+                      Expanded(child: InlineNotice(copilotError!)),
+                      const SizedBox(width: 8),
+                      TextButton(
+                        onPressed: copilotBusy
                             ? null
-                            : apply,
-                        icon: busy
-                            ? const SizedBox(
-                                width: 16,
-                                height: 16,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: Colors.white,
-                                ),
-                              )
-                            : const Icon(Icons.check, size: 18),
-                        label: Text(busy ? 'Applying…' : 'Apply'),
+                            : () => changeCopilot(copilot),
+                        child: const Text('Thử lại'),
                       ),
                     ],
                   ),
                 ],
-              ),
+                const SizedBox(height: 14),
+                WindowCard(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 6,
+                  ),
+                  child: Row(
+                    children: [
+                      Switch(
+                        value: enabled,
+                        onChanged: busy
+                            ? null
+                            : (v) => setState(() {
+                                enabled = v;
+                                applied = false;
+                              }),
+                      ),
+                      const SizedBox(width: 6),
+                      const Expanded(
+                        child: Text(
+                          'Bật danh sách cho phép: chỉ các tiện ích được đánh dấu bên dưới mới chạy được',
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      if (extensions.isNotEmpty)
+                        StatusChip(
+                          '${selected.length}/${extensions.length} được phép',
+                          const Color(0xff156b79),
+                        ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    if (loading) ...[
+                      const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                      const SizedBox(width: 8),
+                      Text('Đang quét $scanDone/$scanTotal máy…'),
+                    ] else
+                      Text(
+                        'Tiện ích · ${extensions.length} loại',
+                        style: const TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                    const Spacer(),
+                    if (loading)
+                      TextButton.icon(
+                        onPressed: stopScan,
+                        icon: const Icon(Icons.stop_circle_outlined, size: 18),
+                        label: const Text('Dừng'),
+                      )
+                    else
+                      TextButton.icon(
+                        onPressed: load,
+                        icon: const Icon(Icons.refresh, size: 18),
+                        label: const Text('Quét lại mọi máy đang kết nối'),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: search,
+                  onChanged: (_) => setState(() {}),
+                  decoration: const InputDecoration(
+                    isDense: true,
+                    prefixIcon: Icon(Icons.search, size: 18),
+                    hintText: 'Tìm tiện ích đã cài…',
+                    filled: true,
+                    fillColor: Colors.white,
+                  ),
+                ),
+                if (fetchErrors.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    fetchErrors.toSet().join(' · '),
+                    style: const TextStyle(
+                      fontSize: 11.5,
+                      color: AppDialog.muted,
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 10),
+                Expanded(
+                  child: Container(
+                    clipBehavior: Clip.antiAlias,
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: AppDialog.border),
+                    ),
+                    child: extensions.isEmpty
+                        ? DialogEmpty(
+                            icon: Icons.extension_off_outlined,
+                            title: !agent.connected
+                                ? 'Đang kết nối tới agent giảng viên…'
+                                : 'Không tìm thấy tiện ích nào do người dùng cài trên các máy đã chọn',
+                          )
+                        : ListView.separated(
+                            itemCount: shown.length,
+                            separatorBuilder: (_, _) =>
+                                const Divider(height: 1),
+                            itemBuilder: (context, i) {
+                              final e = shown[i];
+                              final checked = selected.contains(e.id);
+                              return CheckboxListTile(
+                                // Not on the allowlist while it is on = blocked.
+                                tileColor: newIds.contains(e.id)
+                                    ? const Color(0xffe0f3ed)
+                                    : enabled && !checked
+                                    ? const Color(0xffffeaea)
+                                    : null,
+                                dense: true,
+                                value: checked,
+                                onChanged: busy
+                                    ? null
+                                    : (v) => setState(() {
+                                        applied = false;
+                                        if (v == true) {
+                                          selected.add(e.id);
+                                        } else {
+                                          selected.remove(e.id);
+                                        }
+                                      }),
+                                title: Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        e.name,
+                                        style: const TextStyle(
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ),
+                                    if (newIds.contains(e.id))
+                                      const StatusChip(
+                                        'MỚI',
+                                        Color(0xff167452),
+                                      ),
+                                  ],
+                                ),
+                                subtitle: Text(
+                                  e.description.isEmpty
+                                      ? e.id
+                                      : '${e.description}  ·  ${e.id}',
+                                  style: const TextStyle(fontSize: 11.5),
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                controlAffinity:
+                                    ListTileControlAffinity.leading,
+                              );
+                            },
+                          ),
+                  ),
+                ),
+              ],
             ),
-          ],
+          ),
         ),
       ),
     );
   }
+
+  Widget _footerBar() => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      if (error != null)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: InlineNotice(error!),
+        ),
+      if (skipped.isNotEmpty)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: InlineNotice(
+            'Đã áp dụng cho phần còn lại của lớp, nhưng bỏ qua ${skipped.length} máy không thể thực thi (cần bản mới chạy bằng quyền quản trị): '
+            '${skipped.map((s) => '${s['name']} (${s['ip']})').join(', ')}',
+            tone: AppTone.warning,
+          ),
+        ),
+      Row(
+        children: [
+          if (applied)
+            const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.check_circle, size: 17, color: Color(0xff1f7a4d)),
+                SizedBox(width: 6),
+                Text(
+                  'Đã áp dụng',
+                  style: TextStyle(
+                    color: Color(0xff1f7a4d),
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          const Spacer(),
+          AppDialog.primary(
+            onPressed: busy || copilotBusy || loading || !changed
+                ? null
+                : apply,
+            icon: Icons.check,
+            busy: busy,
+            label: busy ? 'Đang áp dụng…' : 'Áp dụng',
+          ),
+        ],
+      ),
+    ],
+  );
 }
 
 class _CopilotRow extends StatelessWidget {
@@ -848,16 +736,16 @@ class _CopilotRow extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                'Block GitHub Copilot / Copilot Chat',
+                'Chặn GitHub Copilot / Copilot Chat',
                 style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
               ),
               const Text(
-                'Block GitHub Copilot connections · applies immediately to all supported online computers, independently of the extension allowlist.',
+                'Chặn kết nối tới GitHub Copilot · áp dụng ngay cho mọi máy online được hỗ trợ, độc lập với danh sách tiện ích được phép.',
                 style: TextStyle(fontSize: 11, color: Colors.blueGrey),
               ),
               if (unsupported > 0)
                 Text(
-                  '$unsupported connected computer(s) unsupported or need an update',
+                  '$unsupported máy đang kết nối không được hỗ trợ hoặc cần cập nhật',
                   style: const TextStyle(fontSize: 11, color: Colors.blueGrey),
                 ),
             ],
@@ -872,7 +760,7 @@ class _CopilotRow extends StatelessWidget {
           )
         else
           Text(
-            '$applied/$eligible PC blocked',
+            '$applied/$eligible máy đã chặn',
             style: TextStyle(
               fontSize: 12,
               fontWeight: FontWeight.w700,

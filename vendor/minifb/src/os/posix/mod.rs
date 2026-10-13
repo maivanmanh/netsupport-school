@@ -39,6 +39,25 @@ pub enum Window {
 }
 
 impl Window {
+    /// Mapping control for X11. Native Wayland behavior remains unchanged.
+    pub fn set_visible(&mut self, visible: bool) {
+        match self {
+            #[cfg(feature = "x11")]
+            Window::X11(w) => w.set_visible(visible),
+            #[cfg(feature = "wayland")]
+            Window::Wayland(_) => { let _ = visible; }
+        }
+    }
+
+    pub fn is_visible(&self) -> bool {
+        match self {
+            #[cfg(feature = "x11")]
+            Window::X11(w) => w.is_visible(),
+            #[cfg(feature = "wayland")]
+            Window::Wayland(_) => true,
+        }
+    }
+
     #[cfg(all(feature = "x11", feature = "wayland"))]
     pub fn new(name: &str, width: usize, height: usize, opts: WindowOptions) -> Result<Window> {
         // Try to create Wayland display first

@@ -16,8 +16,15 @@ pub fn profile_path(explicit: Option<&Path>) -> Result<PathBuf> {
         .or_else(|| super::launcher::settings_path().map(|p| p.with_file_name("profile.toml")))
         .context("cannot determine Classroom profile directory")
 }
+/// A document of the profile directory's database (the folder holding `path`).
+/// Launch selection, device identity, Student settings and the like live here;
+/// no per-feature file is read or written any more.
+pub(crate) fn profile_doc(path: &Path, key: &str) -> Result<classroom_store::Doc> {
+    let directory = path.parent().unwrap_or_else(|| Path::new("."));
+    Ok(classroom_store::open_shared(directory)?.doc(classroom_store::ns::PROFILE, key))
+}
 pub fn load(path: &Path) -> Option<LaunchSelection> {
-    let value: toml::Value = toml::from_str(&fs::read_to_string(path).ok()?).ok()?;
+    let value: serde_json::Value = profile_doc(path, "launch").ok()?.read().ok()??;
     Some(LaunchSelection {
         role: value.get("role")?.as_str()?.parse().ok()?,
         teacher_ip: value
@@ -28,50 +35,23 @@ pub fn load(path: &Path) -> Option<LaunchSelection> {
     })
 }
 pub fn save(path: &Path, selection: LaunchSelection) -> Result<()> {
-    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        fs::create_dir_all(parent)?;
-    }
-    let content = format!(
-        "role = \"{}\"\nteacher_ip = \"{}\"\n",
-        selection.role, selection.teacher_ip
-    );
-    let temp = path.with_extension(format!("{}.tmp", std::process::id()));
-    fs::write(&temp, content)?;
-    // Windows rename does not replace an existing destination. The profile is
-    // tiny and a failed update is reported rather than silently losing settings.
-    if path.exists() {
-        fs::copy(&temp, path)?;
-        fs::remove_file(temp)?;
-    } else {
-        fs::rename(temp, path)?;
-    }
+    profile_doc(path, "launch")?.write(&serde_json::json!({
+        "role": selection.role.to_string(),
+        "teacher_ip": selection.teacher_ip.to_string(),
+    }))?;
     Ok(())
 }
 pub fn student_identity(path: &Path, port: u16) -> Result<String> {
-    let device = path.with_file_name("device-id.txt");
-    if let Some(parent) = device.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    if !device.exists() {
-        use std::io::Write;
-        let generated = format!(
-            "{}-{}",
-            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos(),
-            std::process::id()
-        );
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&device)
-        {
-            Ok(mut file) => {
-                file.write_all(generated.as_bytes())?;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-    let id = fs::read_to_string(device)?;
+    let doc = profile_doc(path, "device_id")?;
+    let generated = format!(
+        "{}-{}",
+        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos(),
+        std::process::id()
+    );
+    // Two processes starting together must agree on one identity.
+    let store = classroom_store::open_shared(path.parent().unwrap_or_else(|| Path::new(".")))?;
+    store.insert_if_absent(classroom_store::ns::PROFILE, "device_id", &serde_json::json!(generated))?;
+    let id: String = doc.read()?.context("device identity missing after creation")?;
     anyhow::ensure!(
         !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_digit() || c == '-'),
         "invalid saved device identity"
@@ -119,11 +99,10 @@ mod tests {
         };
         expected.save(&path).unwrap();
         assert_eq!(UiPreferences::load(&path), expected);
-        fs::write(
-            path.with_file_name("ui-preferences.toml"),
-            "list=true\nwidth=-1\nheight=700",
-        )
-        .unwrap();
+        profile_doc(&path, "ui_preferences")
+            .unwrap()
+            .write(&serde_json::json!({"list": true, "width": -1, "height": 700}))
+            .unwrap();
         assert_eq!(UiPreferences::load(&path), UiPreferences::default());
         fs::remove_dir_all(folder).unwrap();
     }
@@ -145,7 +124,10 @@ mod tests {
         let id = student_identity(&path, 47810).unwrap();
         assert_eq!(id, student_identity(&path, 47810).unwrap());
         assert_ne!(id, student_identity(&path, 47812).unwrap());
-        fs::write(&path, "role='bad'\nteacher_ip='x'").unwrap();
+        profile_doc(&path, "launch")
+            .unwrap()
+            .write(&serde_json::json!({"role": "bad", "teacher_ip": "x"}))
+            .unwrap();
         assert!(load(&path).is_none());
         fs::remove_dir_all(folder).unwrap();
     }
@@ -169,14 +151,11 @@ impl Default for UiPreferences {
 impl UiPreferences {
     pub fn load(profile: &Path) -> Self {
         let read = || -> Option<Self> {
-            let v: toml::Value = toml::from_str(
-                &fs::read_to_string(profile.with_file_name("ui-preferences.toml")).ok()?,
-            )
-            .ok()?;
+            let v: serde_json::Value = profile_doc(profile, "ui_preferences").ok()?.read().ok()??;
             let value = Self {
                 list: v.get("list")?.as_bool()?,
-                width: usize::try_from(v.get("width")?.as_integer()?).ok()?,
-                height: usize::try_from(v.get("height")?.as_integer()?).ok()?,
+                width: usize::try_from(v.get("width")?.as_i64()?).ok()?,
+                height: usize::try_from(v.get("height")?.as_i64()?).ok()?,
             };
             ((640..=4096).contains(&value.width) && (480..=2160).contains(&value.height))
                 .then_some(value)
@@ -184,18 +163,11 @@ impl UiPreferences {
         read().unwrap_or_default()
     }
     pub fn save(self, profile: &Path) -> Result<()> {
-        if let Some(parent) = profile.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(
-            profile.with_file_name("ui-preferences.toml"),
-            format!(
-                "list = {}\nwidth = {}\nheight = {}\n",
-                self.list,
-                self.width.clamp(640, 4096),
-                self.height.clamp(480, 2160)
-            ),
-        )?;
+        profile_doc(profile, "ui_preferences")?.write(&serde_json::json!({
+            "list": self.list,
+            "width": self.width.clamp(640, 4096),
+            "height": self.height.clamp(480, 2160),
+        }))?;
         Ok(())
     }
 }

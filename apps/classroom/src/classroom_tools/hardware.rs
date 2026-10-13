@@ -6,16 +6,13 @@ use protocol::ToolPacket;
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
-    fs::{self, File},
-    io::Write,
-    path::PathBuf,
     time::{Duration, Instant},
 };
 
 #[derive(Default)]
 pub(super) struct Room {
     policy: Option<Policy>,
-    path: Option<PathBuf>,
+    doc: Option<classroom_store::Doc>,
     reports: HashMap<String, Value>,
     sent: HashMap<String, Instant>,
     acknowledged: HashMap<String, Instant>,
@@ -60,18 +57,14 @@ impl Room {
     }
 }
 impl Hub {
-    pub fn load_hardware(&self, path: PathBuf) -> Result<()> {
-        let policy: Option<Policy> = match fs::read(&path) {
-            Ok(bytes) => Some(serde_json::from_slice(&bytes)?),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => return Err(e.into()),
-        };
+    pub fn load_hardware(&self, doc: classroom_store::Doc) -> Result<()> {
+        let policy: Option<Policy> = doc.read()?;
         if let Some(p) = &policy {
             p.validate()?;
         }
         let mut s = self.0.lock().unwrap();
         s.hardware.policy = policy;
-        s.hardware.path = Some(path);
+        s.hardware.doc = Some(doc);
         Ok(())
     }
     pub fn set_hardware(&self, input: &Value, ids: &[String], end: bool) -> Result<()> {
@@ -94,17 +87,11 @@ impl Hub {
             )?;
         }
         p.revision = nonce()?;
-        let path = s
-            .hardware
-            .path
+        s.hardware
+            .doc
             .as_ref()
-            .context("Hardware persistence unavailable")?;
-        let tmp = path.with_extension("hardware.tmp");
-        let mut f = File::create(&tmp)?;
-        f.write_all(&serde_json::to_vec(&p)?)?;
-        f.sync_all()?;
-        drop(f);
-        crate::monitoring_badge::atomic_replace(&tmp, path)?;
+            .context("Hardware persistence unavailable")?
+            .write(&p)?;
         s.hardware.policy = Some(p);
         s.hardware.sent.clear();
         s.hardware.acknowledged.clear();
@@ -215,7 +202,9 @@ mod tests {
     use super::*;
     #[test]
     fn group_ack_errors_timeout_and_offline_are_not_success() {
-        let path = std::env::temp_dir().join(format!("hardware-{}.json", nonce().unwrap()));
+        let store: classroom_store::Shared =
+            std::sync::Arc::new(classroom_store::Store::open_in_memory().unwrap());
+        let path = store.doc(classroom_store::ns::HARDWARE, "policy");
         let hub = Hub::default();
         hub.load_hardware(path.clone()).unwrap();
         hub.set_hardware(
@@ -264,11 +253,12 @@ mod tests {
             hub.snapshot()["hardware"]["reports"]["pc"]["groups"]["camera_microphone"]["status"],
             "pending"
         );
-        fs::remove_file(path).unwrap();
     }
     #[test]
     fn class_policy_persists_reconnects_and_rejects_stale_ack() {
-        let path = std::env::temp_dir().join(format!("hardware-{}.json", nonce().unwrap()));
+        let store: classroom_store::Shared =
+            std::sync::Arc::new(classroom_store::Store::open_in_memory().unwrap());
+        let path = store.doc(classroom_store::ns::HARDWARE, "policy");
         let hub = Hub::default();
         hub.load_hardware(path.clone()).unwrap();
         hub.set_hardware(
@@ -323,6 +313,5 @@ mod tests {
             )
             .unwrap();
         restored.set_hardware(&json!({}), &[], true).unwrap();
-        fs::remove_file(path).unwrap();
     }
 }

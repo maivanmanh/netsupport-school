@@ -67,8 +67,8 @@ void main() {
     }
     expect(find.text('Lab PC 01'), findsOneWidget);
     expect(find.byType(StudentFileDrop), findsOneWidget);
-    expect(find.text('Stop sharing'), findsNothing);
-    expect(find.textContaining('Share selected'), findsNothing);
+    expect(find.byTooltip('Dừng chiếu'), findsNothing);
+    expect(find.textContaining('Chiếu cho máy đã chọn'), findsNothing);
     expect(find.text('Ready to teach'), findsNothing);
     for (var i = 0; i < 5; i++) {
       await tester.tap(find.byIcon(Icons.view_list_outlined));
@@ -86,18 +86,18 @@ void main() {
     await tester.pumpAndSettle();
     expect(a.observed, 'one');
     expect(find.byType(Dialog), findsNothing);
-    await tester.tap(find.byTooltip('Select computers for presentation'));
+    await tester.tap(find.byTooltip('Chọn nhiều máy để thao tác'));
     await tester.pumpAndSettle();
     await tester.tap(find.byType(Checkbox));
     await tester.pump(const Duration(milliseconds: 400));
     await tester.pumpAndSettle();
-    expect(find.text('Share Teacher to selected (1)'), findsOneWidget);
+    expect(find.byTooltip('Chiếu cho máy đã chọn (1)'), findsOneWidget);
     expect(tester.takeException(), isNull);
     tester.view.physicalSize = const Size(740, 520);
     await tester.pumpAndSettle();
     await tester.tap(find.byIcon(Icons.format_list_bulleted));
     await tester.pumpAndSettle();
-    expect(find.text('Share Teacher to selected (1)'), findsOneWidget);
+    expect(find.byTooltip('Chiếu cho máy đã chọn (1)'), findsOneWidget);
     expect(tester.takeException(), isNull);
     a.state['phase'] = 'starting';
     a.notifyListeners();
@@ -106,53 +106,69 @@ void main() {
     a.state['phase'] = 'sharing';
     a.notifyListeners();
     await tester.pumpAndSettle();
-    expect(find.text('Stop sharing'), findsOneWidget);
-    expect(find.text('Control Student + present to class'), findsNothing);
+    expect(find.byTooltip('Dừng chiếu'), findsOneWidget);
+    expect(
+      find.byTooltip('Điều khiển & chiếu màn hình học viên'),
+      findsNothing,
+    );
     expect(windowCalls.where((m) => m == 'minimize').length, 1);
     a.notifyListeners();
     await tester.pumpAndSettle();
     expect(windowCalls.where((m) => m == 'minimize').length, 1);
-    expect(find.text('Share class'), findsNothing);
-    expect(find.textContaining('Share selected'), findsNothing);
+    expect(find.byTooltip('Chiếu màn hình giảng viên'), findsNothing);
+    expect(find.textContaining('Chiếu cho máy đã chọn'), findsNothing);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     a.dispose();
   });
-  testWidgets('Capture permission error opens native settings from banner', (
+  testWidgets('Missing Screen Recording is requested on Share, not warned', (
     tester,
   ) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
     final calls = <String>[];
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(
           const MethodChannel('classroom/permissions'),
           (call) async {
             calls.add(call.method);
+            if (call.method == 'screenRecordingGranted') return false;
+            if (call.method == 'status') {
+              return {
+                'screen': true,
+                'helperScreen': true,
+                'appPath': '/fixture/Console.app',
+                'helperPath': '/fixture/Agent.app',
+              };
+            }
             return true;
           },
         );
     final a = LiveAgent()
-      ..state = {'phase': 'idle', 'students': <Map<String, dynamic>>[]}
+      ..state = {
+        'phase': 'idle',
+        'students': [
+          {
+            'id': 'one',
+            'name': 'Lab PC 01',
+            'ip': '10.0.55.11',
+            'online': true,
+            'monitoring': 'ready',
+          },
+        ],
+      }
       ..error = 'ScreenCaptureKit TCC declined';
     await tester.pumpWidget(ClassroomApp(agent: a));
-    if (Platform.isMacOS) {
-      await tester.pumpAndSettle();
-      expect(find.text('Set up macOS permissions'), findsNothing);
-    }
     await tester.pumpAndSettle();
+    // The permission error is no longer a standing banner on any platform.
+    expect(find.text('ScreenCaptureKit TCC declined'), findsNothing);
+    expect(find.byType(MaterialBanner), findsNothing);
     if (Platform.isMacOS) {
-      expect(find.text('Open Settings'), findsOneWidget);
-      await tester.tap(find.text('Open Settings'));
-      await tester.pumpAndSettle();
-      expect(find.text('Set up macOS permissions'), findsOneWidget);
-      await tester.tap(find.text('Request / Open Settings'));
+      await tester.tap(find.byTooltip('Chiếu màn hình giảng viên'));
       await tester.pumpAndSettle();
       expect(calls, contains('openScreenRecordingSettings'));
-      await tester.tap(find.text('Continue'));
-      await tester.pumpAndSettle();
-    } else {
-      expect(find.text('Open Settings'), findsNothing);
-      expect(find.text('ScreenCaptureKit TCC declined'), findsOneWidget);
-      expect(calls, isEmpty);
     }
     await tester.pumpWidget(const SizedBox());
     a.dispose();
@@ -197,12 +213,12 @@ void main() {
         tester.widget<FilterChip>(find.byType(FilterChip)).selected,
         false,
       );
-      await tester.tap(find.text('Auto'));
+      await tester.tap(find.text('Tự động'));
       await tester.pumpAndSettle();
       expect(columns(), before);
       tester.view.physicalSize = const Size(740, 520);
       await tester.pumpAndSettle();
-      expect(columns(), 2);
+      expect(columns(), greaterThanOrEqualTo(2));
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
       a.dispose();

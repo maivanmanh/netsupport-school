@@ -1,0 +1,18 @@
+[package]
+name = "renderer-linux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+media-core = { path = "../media-core" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# X11 is intentional: on Wayland desktops use XWayland, not minifb's
+# experimental native Wayland path. Fullscreen requests use EWMH.
+minifb = { version = "0.28.0", default-features = false, features = ["x11"] }
+x11-dl = "2.21"
+
+[lints]
+workspace = true

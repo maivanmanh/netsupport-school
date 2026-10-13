@@ -27,6 +27,8 @@ import 'files_window.dart';
 import 'vscode_access.dart';
 import 'app_access.dart';
 import 'remote_terminal.dart';
+import 'app_dialog.dart';
+import 'teacher_ribbon.dart';
 
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -109,12 +111,7 @@ Future<void> main(List<String> args) async {
       // Native maximize below is a usable fallback if monitor discovery fails.
     }
   }
-  final theme = ThemeData(
-    useMaterial3: true,
-    fontFamily: 'ClassroomSystem',
-    colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xff156b79)),
-    visualDensity: VisualDensity.compact,
-  );
+  final theme = classroomTheme();
   final Widget home;
   final Size windowSize, minimumSize;
   final String title;
@@ -132,13 +129,13 @@ Future<void> main(List<String> args) async {
     );
     windowSize = const Size(1000, 650);
     minimumSize = const Size(640, 400);
-    title = 'Remote Terminal · $name';
+    title = 'Terminal từ xa · $name';
   } else if (filesId != null) {
     final name = agent.option('--files-name') ?? 'Student';
     home = FilesWindow(agent: agent, studentId: filesId, name: name);
     windowSize = const Size(1180, 720);
     minimumSize = const Size(820, 520);
-    title = 'Files · $name';
+    title = 'Tệp · $name';
   } else if (activityId != null) {
     final name = agent.option('--activity-name') ?? 'Student';
     home = ActivityWindow(
@@ -148,9 +145,9 @@ Future<void> main(List<String> args) async {
     );
     windowSize = const Size(1080, 760);
     minimumSize = const Size(760, 560);
-    title = 'Activity · $name';
+    title = 'Hoạt động · $name';
   } else if (internetIds != null) {
-    final audience = agent.option('--internet-audience') ?? 'the class';
+    final audience = agent.option('--internet-audience') ?? 'cả lớp';
     home = InternetWindow(
       agent: agent,
       studentIds: internetIds.split(',').where((s) => s.isNotEmpty).toList(),
@@ -159,9 +156,9 @@ Future<void> main(List<String> args) async {
     );
     windowSize = const Size(980, 660);
     minimumSize = const Size(860, 560);
-    title = 'Internet access · $audience';
+    title = 'Truy cập Internet · $audience';
   } else if (appsIds != null) {
-    final audience = agent.option('--apps-audience') ?? 'the class';
+    final audience = agent.option('--apps-audience') ?? 'cả lớp';
     home = AppsWindow(
       agent: agent,
       studentIds: appsIds.split(',').where((s) => s.isNotEmpty).toList(),
@@ -170,9 +167,9 @@ Future<void> main(List<String> args) async {
     );
     windowSize = const Size(900, 700);
     minimumSize = const Size(700, 520);
-    title = 'Application control · $audience';
+    title = 'Kiểm soát ứng dụng · $audience';
   } else if (vscodeIds != null) {
-    final audience = agent.option('--vscode-audience') ?? 'the class';
+    final audience = agent.option('--vscode-audience') ?? 'cả lớp';
     home = VsCodeWindow(
       agent: agent,
       studentIds: vscodeIds.split(',').where((s) => s.isNotEmpty).toList(),
@@ -181,7 +178,7 @@ Future<void> main(List<String> args) async {
     );
     windowSize = const Size(1020, 720);
     minimumSize = const Size(860, 560);
-    title = 'VS Code extensions · $audience';
+    title = 'Tiện ích VS Code · $audience';
   } else if (observeId != null) {
     final name = agent.option('--observe-name') ?? 'Student';
     final ip = agent.option('--observe-ip') ?? '';
@@ -197,12 +194,12 @@ Future<void> main(List<String> args) async {
       (observeBounds?.width ?? 800).clamp(0, 800),
       (observeBounds?.height ?? 600).clamp(0, 600),
     );
-    title = 'Observe · $name${ip.isEmpty ? '' : ' · $ip'}';
+    title = 'Quan sát · $name${ip.isEmpty ? '' : ' · $ip'}';
   } else {
     home = ClassroomApp(agent: agent);
     windowSize = const Size(1280, 820);
     minimumSize = const Size(740, 520);
-    title = 'Classroom · Teacher console';
+    title = 'Classroom · Giảng viên';
   }
   final dependent =
       hardware ||
@@ -247,6 +244,49 @@ Future<void> main(List<String> args) async {
   await agent.start();
 }
 
+/// Shared by the console and every child window so dialogs look the same.
+ThemeData classroomTheme() => ThemeData(
+  useMaterial3: true,
+  fontFamily: 'ClassroomSystem',
+  colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xff156b79)),
+  scaffoldBackgroundColor: const Color(0xfff3f5f9),
+  visualDensity: VisualDensity.compact,
+  cardTheme: const CardThemeData(elevation: 0, margin: EdgeInsets.zero),
+  dialogTheme: DialogThemeData(
+    backgroundColor: Colors.white,
+    surfaceTintColor: Colors.transparent,
+    elevation: 12,
+    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+    titleTextStyle: const TextStyle(
+      fontFamily: 'ClassroomSystem',
+      fontSize: 17,
+      fontWeight: FontWeight.w700,
+      color: Color(0xff1b2a36),
+    ),
+    contentTextStyle: const TextStyle(
+      fontFamily: 'ClassroomSystem',
+      fontSize: 13.5,
+      height: 1.4,
+      color: Color(0xff33434f),
+    ),
+    actionsPadding: const EdgeInsets.fromLTRB(24, 4, 24, 16),
+  ),
+  inputDecorationTheme: InputDecorationTheme(
+    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+  ),
+  filledButtonTheme: FilledButtonThemeData(
+    style: FilledButton.styleFrom(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+    ),
+  ),
+  outlinedButtonTheme: OutlinedButtonThemeData(
+    style: OutlinedButton.styleFrom(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+    ),
+  ),
+);
+
 class ClassroomApp extends StatelessWidget {
   const ClassroomApp({super.key, required this.agent});
   final Agent agent;
@@ -254,22 +294,7 @@ class ClassroomApp extends StatelessWidget {
   Widget build(BuildContext context) => MaterialApp(
     debugShowCheckedModeBanner: false,
     title: 'Classroom',
-    theme: ThemeData(
-      useMaterial3: true,
-      fontFamily: 'ClassroomSystem',
-      colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xff156b79)),
-      scaffoldBackgroundColor: const Color(0xfff3f5f9),
-      visualDensity: VisualDensity.compact,
-      cardTheme: const CardThemeData(elevation: 0, margin: EdgeInsets.zero),
-      filledButtonTheme: FilledButtonThemeData(
-        style: FilledButton.styleFrom(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
-          ),
-        ),
-      ),
-    ),
+    theme: classroomTheme(),
     home: Console(agent: agent),
   );
 }
@@ -291,6 +316,7 @@ class _ConsoleState extends State<Console> with WindowListener {
   double gridSize = 300;
   final selected = <String>{};
   int request = 0;
+  int ribbonTab = 0;
   Agent get agent => widget.agent;
   late final ToolActivity toolActivity = ToolActivity(agent);
 
@@ -336,8 +362,8 @@ class _ConsoleState extends State<Console> with WindowListener {
     // Yesterday's remembered rule selections are cleared before a window opens.
     await agent.expireDailyRules();
     final audience = selectionMode && selected.isNotEmpty
-        ? '${ids.length} selected computers'
-        : 'the class (${ids.length} online)';
+        ? '${ids.length} máy đã chọn'
+        : 'cả lớp (${ids.length} máy online)';
     // Lets an already-open window come forward instead of silently doing
     // nothing when clicked again (mirrors Observe/Files/Activity).
     agent.pendingObserveFocus = 'internet';
@@ -357,8 +383,8 @@ class _ConsoleState extends State<Console> with WindowListener {
     // Yesterday's remembered rule selections are cleared before a window opens.
     await agent.expireDailyRules();
     final audience = selectionMode && selected.isNotEmpty
-        ? '${ids.length} selected computers'
-        : 'the class (${ids.length} online)';
+        ? '${ids.length} máy đã chọn'
+        : 'cả lớp (${ids.length} máy online)';
     agent.pendingObserveFocus = 'vscode';
     await agent.request(
       'vscode_window',
@@ -376,8 +402,8 @@ class _ConsoleState extends State<Console> with WindowListener {
     // Yesterday's remembered rule selections are cleared before a window opens.
     await agent.expireDailyRules();
     final audience = selectionMode && selected.isNotEmpty
-        ? '${ids.length} selected computers'
-        : 'the class (${ids.length} online)';
+        ? '${ids.length} máy đã chọn'
+        : 'cả lớp (${ids.length} máy online)';
     agent.pendingObserveFocus = 'apps';
     await agent.request(
       'app_window',
@@ -397,8 +423,8 @@ class _ConsoleState extends State<Console> with WindowListener {
       op: op,
       ids: ids,
       audience: selectionMode && selected.isNotEmpty
-          ? '${ids.length} selected computers'
-          : 'the class (${ids.length} online)',
+          ? '${ids.length} máy đã chọn'
+          : 'cả lớp (${ids.length} máy online)',
       classWide: !(selectionMode && selected.isNotEmpty),
     );
   }
@@ -412,7 +438,7 @@ class _ConsoleState extends State<Console> with WindowListener {
       studentIds: ids,
       audience: selectionMode && selected.isNotEmpty
           ? '${ids.length} selected students'
-          : 'the class (${ids.length} online)',
+          : 'cả lớp (${ids.length} máy online)',
     );
   }
 
@@ -424,8 +450,8 @@ class _ConsoleState extends State<Console> with WindowListener {
       agent,
       studentIds: ids,
       audience: selectionMode && selected.isNotEmpty
-          ? '${ids.length} selected computers'
-          : 'the class (${ids.length} online)',
+          ? '${ids.length} máy đã chọn'
+          : 'cả lớp (${ids.length} máy online)',
     );
   }
 
@@ -438,7 +464,7 @@ class _ConsoleState extends State<Console> with WindowListener {
       studentIds: ids,
       audience: selectionMode && selected.isNotEmpty
           ? '${ids.length} selected students'
-          : 'the class (${ids.length} online)',
+          : 'cả lớp (${ids.length} máy online)',
     );
   }
 
@@ -465,7 +491,7 @@ class _ConsoleState extends State<Console> with WindowListener {
           child: ListTile(
             dense: true,
             leading: Icon(Icons.terminal),
-            title: Text('Remote Terminal…'),
+            title: Text('Terminal từ xa…'),
           ),
         ),
         const PopupMenuItem(
@@ -473,7 +499,7 @@ class _ConsoleState extends State<Console> with WindowListener {
           child: ListTile(
             dense: true,
             leading: Icon(Icons.folder_open_outlined),
-            title: Text('Collect files…'),
+            title: Text('Thu tệp…'),
           ),
         ),
         const PopupMenuItem(
@@ -481,7 +507,7 @@ class _ConsoleState extends State<Console> with WindowListener {
           child: ListTile(
             dense: true,
             leading: Icon(Icons.monitor_outlined),
-            title: Text('Observe screen'),
+            title: Text('Quan sát màn hình'),
           ),
         ),
         PopupMenuItem(
@@ -500,8 +526,8 @@ class _ConsoleState extends State<Console> with WindowListener {
           child: const ListTile(
             dense: true,
             leading: Icon(Icons.screenshot_monitor_outlined),
-            title: Text('Screenshot'),
-            subtitle: Text('Save to Teacher Desktop'),
+            title: Text('Chụp màn hình'),
+            subtitle: Text('Lưu vào Desktop giảng viên'),
           ),
         ),
         PopupMenuItem(
@@ -516,7 +542,7 @@ class _ConsoleState extends State<Console> with WindowListener {
           child: const ListTile(
             dense: true,
             leading: Icon(Icons.present_to_all),
-            title: Text('Control Student + present to class'),
+            title: Text(Vi.presentStudent),
           ),
         ),
       ],
@@ -549,7 +575,7 @@ class _ConsoleState extends State<Console> with WindowListener {
       } catch (error) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Cannot take screenshot: $error')),
+          SnackBar(content: Text('Không chụp được màn hình: $error')),
         );
       }
     } else if (choice == 'present') {
@@ -611,7 +637,7 @@ class _ConsoleState extends State<Console> with WindowListener {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              'Screenshot saved to Desktop · ${path.split(RegExp(r'[/\\]')).last}',
+              'Đã lưu ảnh chụp vào Desktop · ${path.split(RegExp(r'[/\\]')).last}',
             ),
           ),
         );
@@ -623,7 +649,7 @@ class _ConsoleState extends State<Console> with WindowListener {
           SnackBar(
             content: Text(
               error is PlatformException
-                  ? error.message ?? 'Could not save screenshot'
+                  ? error.message ?? 'Không lưu được ảnh chụp'
                   : '$error',
             ),
           ),
@@ -657,46 +683,60 @@ class _ConsoleState extends State<Console> with WindowListener {
       });
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Cannot present Student: $error')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Không chiếu được màn hình học viên: $error')),
+      );
     }
   }
 
   Future<void> sendClassMessage() async {
     final controller = TextEditingController();
+    final targetCount = toolRecipients.length;
+    final target = selectionMode && selected.isNotEmpty
+        ? '$targetCount máy đã chọn'
+        : 'cả lớp ($targetCount máy online)';
     final text = await showDialog<String>(
       context: context,
       builder: (context) {
-        return AlertDialog(
-          title: Text(
-            toolRecipients.isEmpty
-                ? 'Message the class'
-                : 'Message ${toolRecipients.length} selected students',
-          ),
-          content: SizedBox(
-            width: 420,
+        return StatefulBuilder(
+          builder: (context, setLocal) => AppDialog(
+            icon: Icons.chat_outlined,
+            title: 'Gửi tin nhắn',
+            subtitle: 'Tin nhắn hiện trên màn hình của $target.',
+            width: 520,
+            footerLeading: Text(
+              '${controller.text.characters.length}/2000',
+              style: const TextStyle(fontSize: 12, color: AppDialog.muted),
+            ),
+            actions: [
+              AppDialog.cancel(context),
+              AppDialog.primary(
+                label: 'Gửi',
+                icon: Icons.send_outlined,
+                onPressed: controller.text.trim().isEmpty
+                    ? null
+                    : () => Navigator.pop(context, controller.text),
+              ),
+            ],
             child: TextField(
               controller: controller,
               autofocus: true,
-              maxLines: 5,
+              minLines: 5,
+              maxLines: 8,
               maxLength: 2000,
+              buildCounter:
+                  (
+                    context, {
+                    required currentLength,
+                    required isFocused,
+                    maxLength,
+                  }) => null,
+              onChanged: (_) => setLocal(() {}),
               decoration: const InputDecoration(
-                hintText: 'Write a message for the student screen',
-                border: OutlineInputBorder(),
+                hintText: 'Nhập nội dung gửi tới học viên…',
               ),
             ),
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, controller.text),
-              child: const Text('Send'),
-            ),
-          ],
         );
       },
     );
@@ -729,8 +769,8 @@ class _ConsoleState extends State<Console> with WindowListener {
           SnackBar(
             content: Text(
               e is PlatformException
-                  ? e.message ?? 'Could not stage the file'
-                  : 'Could not prepare the file: $e',
+                  ? e.message ?? 'Không chuẩn bị được tệp'
+                  : 'Không chuẩn bị được tệp: $e',
             ),
           ),
         );
@@ -748,30 +788,53 @@ class _ConsoleState extends State<Console> with WindowListener {
     wasSharing = agent.state['phase'] == 'sharing';
     havePresentationState = agent.state.containsKey('phase');
     agent.addListener(changed);
+    toolActivity.addListener(refresh);
     windowManager.addListener(this);
     windowManager.setPreventClose(true);
     if (Platform.isMacOS) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) maybeShowMacPermissions(context, agent);
       });
-      permissions
-          .invokeMethod<bool>('screenRecordingGranted')
-          .then((granted) {
-            if (mounted) {
-              setState(() => screenPermissionNeeded = granted == false);
-            }
-          })
-          .catchError((Object _) {
-            /* Agent capture errors remain authoritative. */
-          });
     }
   }
 
   bool loadedView = false;
   bool wasSharing = false;
   bool havePresentationState = false;
-  bool screenPermissionNeeded = false;
+
+  /// macOS only: ask the OS for Screen Recording when sharing is attempted
+  /// without it. Other platforms never prompt.
+  Future<bool> ensureScreenAccess() async {
+    if (!Platform.isMacOS) return true;
+    try {
+      final granted = await permissions.invokeMethod<bool>(
+        'screenRecordingGranted',
+      );
+      if (granted == false) {
+        await permissions.invokeMethod<void>('openScreenRecordingSettings');
+        return false;
+      }
+    } catch (_) {
+      /* Agent capture errors remain authoritative. */
+    }
+    return true;
+  }
+
+  Future<void> shareClass() async {
+    if (await ensureScreenAccess()) await agent.command('share_class');
+  }
+
+  Future<void> shareSelected(List<String> ids) async {
+    if (await ensureScreenAccess()) {
+      await agent.command('share_selected', ids);
+    }
+  }
+
   static const permissions = MethodChannel('classroom/permissions');
+  void refresh() {
+    if (mounted) setState(() {});
+  }
+
   void changed() {
     if (!loadedView && agent.connected) {
       view =
@@ -823,6 +886,7 @@ class _ConsoleState extends State<Console> with WindowListener {
   @override
   void dispose() {
     agent.removeListener(changed);
+    toolActivity.removeListener(refresh);
     toolActivity.dispose();
     windowManager.removeListener(this);
     super.dispose();
@@ -841,8 +905,9 @@ class _ConsoleState extends State<Console> with WindowListener {
     final capturePermissionError =
         agent.error?.contains('TCC') == true ||
         agent.error?.contains('declined') == true;
-    final showPermission =
-        Platform.isMacOS && (screenPermissionNeeded || capturePermissionError);
+    // Missing Screen Recording is handled when the teacher presses Share: the
+    // system dialog appears then, so no standing warning is shown here.
+    final shownError = capturePermissionError ? null : agent.error;
     final phase = agent.state['phase'] ?? 'connecting';
     final idle = phase == 'idle' && agent.connected && !agent.commandBusy;
     final onlineSelected = agent.students
@@ -854,7 +919,7 @@ class _ConsoleState extends State<Console> with WindowListener {
         !agent.commandBusy &&
         (phase == 'idle' || phase == 'sharing');
     final sourceId = agent.state['source_id'];
-    var sourceName = 'Teacher';
+    var sourceName = 'Giảng viên';
     for (final row in agent.students) {
       if (row['id'] == sourceId) {
         sourceName = row['name'] as String? ?? 'Student';
@@ -890,7 +955,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                       const SizedBox(width: 10),
                     if (MediaQuery.sizeOf(context).width >= 900)
                       const Text(
-                        'Teacher',
+                        'Giảng viên',
                         style: TextStyle(
                           color: Color(0xffaabdc9),
                           fontSize: 11,
@@ -900,24 +965,12 @@ class _ConsoleState extends State<Console> with WindowListener {
                     Text(
                       MediaQuery.sizeOf(context).width < 900
                           ? '$online / ${agent.students.length} online'
-                          : '$online online / ${agent.students.length} computers',
+                          : '$online online / ${agent.students.length} máy',
                       style: const TextStyle(
                         color: Color(0xffc2d0d9),
                         fontSize: 12,
                       ),
                     ),
-                    if (selected.isNotEmpty &&
-                        MediaQuery.sizeOf(context).width >= 900)
-                      Padding(
-                        padding: const EdgeInsets.only(left: 12),
-                        child: Text(
-                          '${selected.length} selected',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 12,
-                          ),
-                        ),
-                      ),
                     if (!agent.connected ||
                         phase != 'idle' ||
                         agent.commandBusy)
@@ -925,16 +978,16 @@ class _ConsoleState extends State<Console> with WindowListener {
                         padding: const EdgeInsets.only(left: 14),
                         child: Text(
                           !agent.connected
-                              ? 'Connecting…'
+                              ? 'Đang kết nối…'
                               : agent.commandBusy
-                              ? 'Working…'
+                              ? 'Đang xử lý…'
                               : phase == 'sharing'
-                              ? 'Sharing screen'
+                              ? 'Đang chiếu màn hình'
                               : phase == 'switching'
-                              ? 'Switching source…'
+                              ? 'Đang đổi nguồn chiếu…'
                               : phase == 'starting'
-                              ? 'Starting…'
-                              : 'Stopping…',
+                              ? 'Đang bắt đầu…'
+                              : 'Đang dừng…',
                           style: const TextStyle(
                             color: Color(0xff87d4dc),
                             fontSize: 12,
@@ -944,7 +997,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                     const SizedBox(width: 10),
                     if (Platform.isMacOS)
                       IconButton(
-                        tooltip: 'macOS permissions',
+                        tooltip: 'Quyền macOS',
                         onPressed: () => showMacPermissions(context, agent),
                         icon: const Icon(
                           Icons.verified_user_outlined,
@@ -957,7 +1010,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                       height: 28,
                       child: IconButton(
                         padding: EdgeInsets.zero,
-                        tooltip: 'Classroom settings',
+                        tooltip: 'Cài đặt lớp học',
                         onPressed: idle ? settings : null,
                         icon: Icon(
                           Icons.settings_outlined,
@@ -972,7 +1025,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                       height: 28,
                       child: IconButton(
                         padding: EdgeInsets.zero,
-                        tooltip: 'Exit Classroom',
+                        tooltip: 'Thoát Classroom',
                         onPressed: () async {
                           await agent.command('quit');
                           await windowManager.setPreventClose(false);
@@ -1000,442 +1053,308 @@ class _ConsoleState extends State<Console> with WindowListener {
                 ),
                 child: LayoutBuilder(
                   builder: (context, constraints) {
+                    final canPresentSelected =
+                        agent.connected &&
+                        (phase == 'idle' ||
+                            (phase == 'sharing' && sourceId != null)) &&
+                        selected.length == 1;
+                    final bigIcon = const BoxConstraints(
+                      minWidth: 40,
+                      minHeight: 36,
+                    );
                     final actions = Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        if (agent.connected && phase == 'idle') ...[
-                          Tooltip(
-                            message:
-                                'Broadcast the Teacher screen to every online Student',
-                            child: FilledButton.icon(
-                              style: toolbarButton(),
-                              onPressed: idle && online > 0
-                                  ? () => agent.command('share_class')
-                                  : null,
-                              icon: const Icon(Icons.cast, size: 16),
-                              label: const Text('Share Teacher screen'),
-                            ),
+                        if (agent.connected && phase == 'idle')
+                          IconButton.filled(
+                            tooltip: Vi.shareClass,
+                            constraints: bigIcon,
+                            onPressed: idle && online > 0 ? shareClass : null,
+                            icon: const Icon(Icons.cast, size: 22),
                           ),
-                        ],
-                        if (agent.connected &&
-                            phase == 'idle' &&
-                            selected.isNotEmpty) ...[
-                          const SizedBox(width: 12),
-                          Container(
-                            width: 1,
-                            height: 28,
-                            color: const Color(0xffcbd4dc),
-                            margin: const EdgeInsets.symmetric(horizontal: 2),
-                          ),
-                          const SizedBox(width: 10),
-                        ],
-                        if (agent.connected &&
-                            (phase == 'idle' ||
-                                (phase == 'sharing' && sourceId != null)) &&
-                            selected.length == 1) ...[
-                          Tooltip(
-                            message: onlineSelected.isEmpty
-                                ? 'Selected Student is offline'
-                                : 'Open this Student in Control and broadcast their screen to the class',
-                            child: OutlinedButton.icon(
-                              style: toolbarButton(),
-                              onPressed:
-                                  canSwitch &&
-                                      onlineSelected.length == 1 &&
-                                      onlineSelected.single != sourceId
-                                  ? () => presentStudent(onlineSelected)
-                                  : null,
-                              icon: const Icon(Icons.present_to_all, size: 16),
-                              label: const Text(
-                                'Control Student + present to class',
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                        ],
-                        if (agent.connected &&
-                            phase == 'idle' &&
-                            selected.isNotEmpty)
-                          Tooltip(
-                            message:
-                                'Broadcast the Teacher screen only to the selected online Students',
-                            child: OutlinedButton.icon(
-                              style: toolbarButton(),
-                              onPressed: idle && onlineSelected.isNotEmpty
-                                  ? () => agent.command(
-                                      'share_selected',
-                                      onlineSelected,
-                                    )
-                                  : null,
-                              icon: const Icon(
-                                Icons.screen_share_outlined,
-                                size: 16,
-                              ),
-                              label: Text(
-                                'Share Teacher to selected (${onlineSelected.length})',
-                              ),
-                            ),
-                          ),
-                        if (phase == 'sharing' && sourceId != null) ...[
-                          OutlinedButton.icon(
-                            style: toolbarButton(),
-                            onPressed: canSwitch
-                                ? () => agent.command('switch_source')
-                                : null,
-                            icon: const Icon(
-                              Icons.screen_share_outlined,
-                              size: 16,
-                            ),
-                            label: const Text('Back to Teacher screen'),
-                          ),
-                          const SizedBox(width: 10),
-                        ],
-                        if (phase == 'sharing') ...[
-                          Text('Presenting: $sourceName'),
-                          const SizedBox(width: 8),
-                        ],
                         if (agent.connected &&
                             (phase == 'sharing' ||
                                 phase == 'starting' ||
                                 phase == 'switching'))
-                          FilledButton.icon(
-                            style: toolbarButton().copyWith(
-                              backgroundColor: const WidgetStatePropertyAll(
-                                Color(0xffb83b40),
-                              ),
+                          IconButton.filled(
+                            tooltip: Vi.stopSharing,
+                            constraints: bigIcon,
+                            style: IconButton.styleFrom(
+                              backgroundColor: const Color(0xffb83b40),
+                              foregroundColor: Colors.white,
                             ),
                             onPressed: agent.commandBusy
                                 ? null
                                 : () => agent.command('stop'),
-                            icon: const Icon(Icons.stop, size: 17),
-                            label: const Text('Stop sharing'),
+                            icon: const Icon(Icons.stop, size: 22),
+                          ),
+                        if (phase == 'sharing')
+                          Padding(
+                            padding: const EdgeInsets.only(left: 8),
+                            child: ConstrainedBox(
+                              constraints: const BoxConstraints(maxWidth: 180),
+                              child: Text(
+                                '${Vi.presenting}: $sourceName',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: Color(0xff1f7a4d),
+                                ),
+                              ),
+                            ),
                           ),
                         if (agent.connected && phase == 'stopping')
                           const Text(
-                            'Finishing presentation…',
+                            'Đang kết thúc phiên chiếu…',
                             style: TextStyle(
                               fontSize: 12,
                               color: Colors.blueGrey,
                             ),
                           ),
-                      ],
-                    );
-                    final businessTools = Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (agent.connected) ...[
-                          IconButton(
-                            tooltip: selected.isEmpty
-                                ? 'Collect class diagnostics'
-                                : 'Collect selected diagnostics',
-                            onPressed: () => collectDiagnostics(
-                              context,
-                              agent,
-                              selected.toList(),
-                            ),
-                            icon: const Icon(
-                              Icons.bug_report_outlined,
-                              size: 19,
-                            ),
-                          ),
-                          IconButton(
-                            tooltip: selectionMode && onlineSelected.isNotEmpty
-                                ? 'Message selected students'
-                                : 'Message the class',
-                            visualDensity: VisualDensity.compact,
-                            onPressed: !agent.commandBusy && canUseTools
-                                ? sendClassMessage
+                        if (phase == 'sharing' && sourceId != null)
+                          IconButton.outlined(
+                            tooltip: Vi.backToTeacher,
+                            constraints: bigIcon,
+                            onPressed: canSwitch
+                                ? () => agent.command('switch_source')
                                 : null,
-                            icon: const Icon(Icons.chat_outlined, size: 18),
+                            icon: const Icon(Icons.screen_share_outlined),
                           ),
-                          IconButton(
-                            tooltip: selectionMode && onlineSelected.isNotEmpty
-                                ? 'Send file to selected students'
-                                : 'Send file to the class',
-                            visualDensity: VisualDensity.compact,
-                            onPressed: !agent.commandBusy && canUseTools
-                                ? sendClassFile
-                                : null,
-                            icon: const Icon(Icons.attach_file, size: 18),
-                          ),
-                          IconButton(
-                            tooltip: selectionMode && onlineSelected.isNotEmpty
-                                ? 'Launch an app on selected students'
-                                : 'Launch an app on the class',
-                            visualDensity: VisualDensity.compact,
-                            onPressed: !agent.commandBusy && canUseTools
-                                ? launchApps
-                                : null,
-                            icon: const Icon(
-                              Icons.rocket_launch_outlined,
-                              size: 18,
-                            ),
-                          ),
-                          IconButton(
+                        if (agent.connected &&
+                            phase == 'idle' &&
+                            selected.isNotEmpty)
+                          IconButton.outlined(
                             tooltip:
-                                'Screen recording • các máy đã chọn hoặc toàn bộ máy online',
-                            onPressed: agent.connected
-                                ? () => showRecordings(
-                                    context,
-                                    agent,
-                                    selectionMode && selected.isNotEmpty
-                                        ? onlineSelected.toList()
-                                        : agent.students
-                                              .where((r) => r['online'] == true)
-                                              .map((r) => '${r['id']}')
-                                              .toList(),
-                                  )
+                                '${Vi.shareSelected} (${onlineSelected.length})',
+                            constraints: bigIcon,
+                            onPressed: idle && onlineSelected.isNotEmpty
+                                ? () => shareSelected(onlineSelected.toList())
                                 : null,
-                            icon: const Icon(
-                              Icons.video_camera_back_outlined,
-                              size: 18,
+                            icon: Badge(
+                              label: Text('${onlineSelected.length}'),
+                              child: const Icon(Icons.screen_share_outlined),
                             ),
                           ),
-                          IconButton(
-                            tooltip: 'Hardware Control • toàn bộ phòng máy',
-                            onPressed: agent.connected && !agent.commandBusy
-                                ? () {
-                                    agent.pendingObserveFocus = 'hardware';
-                                    agent.command('hardware_window');
-                                  }
-                                : null,
-                            icon: const Icon(Icons.usb_outlined, size: 18),
-                          ),
-                          IconButton(
-                            tooltip:
-                                'Đang giám sát • mở để bật/tắt ${selectionMode && selected.isNotEmpty ? 'các máy đã chọn' : 'toàn bộ phòng máy'}',
-                            visualDensity: VisualDensity.compact,
+                        if (canPresentSelected)
+                          IconButton.outlined(
+                            tooltip: onlineSelected.isEmpty
+                                ? 'Máy học viên đã chọn đang offline'
+                                : Vi.presentStudent,
+                            constraints: bigIcon,
                             onPressed:
-                                agent.connected &&
-                                    !agent.commandBusy &&
-                                    agent.students.isNotEmpty
-                                ? () => showMonitoringBadge(
-                                    context,
-                                    agent,
-                                    selectionMode && selected.isNotEmpty
-                                        ? selected.toList()
-                                        : agent.students
-                                              .map((r) => '${r['id']}')
-                                              .toList(),
-                                  )
+                                canSwitch &&
+                                    onlineSelected.length == 1 &&
+                                    onlineSelected.single != sourceId
+                                ? () => presentStudent(onlineSelected)
                                 : null,
-                            icon: const Icon(Icons.badge_outlined, size: 18),
+                            icon: const Icon(Icons.present_to_all),
                           ),
-                          IconButton(
-                            tooltip: selectionMode && onlineSelected.isNotEmpty
-                                ? 'Open website on selected computers'
-                                : 'Open website on the class',
-                            visualDensity: VisualDensity.compact,
-                            onPressed: !agent.commandBusy && canUseTools
-                                ? openWebsite
-                                : null,
-                            icon: const Icon(Icons.language, size: 18),
-                          ),
-                          AnimatedBuilder(
-                            animation: agent,
-                            builder: (context, _) => IconButton(
-                              tooltip: activityMonitoringOn
-                                  ? 'Activity monitoring is on — Students collect open windows, browser tabs and downloads in the background. Tap to turn off.'
-                                  : 'Activity monitoring is off — Students are not collecting this. Tap to turn on for the whole class.',
-                              visualDensity: VisualDensity.compact,
-                              isSelected: activityMonitoringOn,
-                              onPressed: !agent.commandBusy
-                                  ? toggleActivityMonitoring
-                                  : null,
-                              icon: const Icon(
-                                Icons.visibility_outlined,
-                                size: 18,
-                              ),
-                              selectedIcon: const Icon(
-                                Icons.visibility,
-                                size: 18,
-                                color: Color(0xff156b79),
-                              ),
-                            ),
-                          ),
-                          AnimatedBuilder(
-                            animation: agent,
-                            builder: (context, _) => IconButton(
-                              tooltip: 'Internet access',
-                              visualDensity: VisualDensity.compact,
-                              onPressed: !agent.commandBusy && canUseTools
-                                  ? internetAccess
-                                  : null,
-                              icon: Badge(
-                                isLabelVisible: restrictedStudents(
-                                  agent,
-                                ).isNotEmpty,
-                                label: Text(
-                                  '${restrictedStudents(agent).length}',
-                                ),
-                                child: const Icon(
-                                  Icons.public_off_outlined,
-                                  size: 18,
-                                ),
-                              ),
-                            ),
-                          ),
-                          AnimatedBuilder(
-                            animation: agent,
-                            builder: (context, _) => IconButton(
-                              tooltip: 'VS Code extensions',
-                              visualDensity: VisualDensity.compact,
-                              onPressed: !agent.commandBusy && canUseTools
-                                  ? vscodeAccess
-                                  : null,
-                              icon: Badge(
-                                isLabelVisible: vscodeBlockedStudents(
-                                  agent,
-                                ).isNotEmpty,
-                                label: Text(
-                                  '${vscodeBlockedStudents(agent).length}',
-                                ),
-                                child: const Icon(
-                                  Icons.extension_outlined,
-                                  size: 18,
-                                ),
-                              ),
-                            ),
-                          ),
-                          AnimatedBuilder(
-                            animation: agent,
-                            builder: (context, _) => IconButton(
-                              tooltip: 'Application control',
-                              visualDensity: VisualDensity.compact,
-                              onPressed: !agent.commandBusy && canUseTools
-                                  ? appControl
-                                  : null,
-                              icon: Badge(
-                                isLabelVisible: appsBlockedStudents(
-                                  agent,
-                                ).isNotEmpty,
-                                label: Text(
-                                  '${appsBlockedStudents(agent).length}',
-                                ),
-                                child: const Icon(
-                                  Icons.block_outlined,
-                                  size: 18,
-                                ),
-                              ),
-                            ),
-                          ),
-                          AnimatedBuilder(
-                            animation: agent,
-                            builder: (context, _) => PopupMenuButton<String>(
-                              tooltip: 'Lock, log out, restart or shut down',
-                              enabled: !agent.commandBusy && canUseTools,
-                              padding: EdgeInsets.zero,
-                              icon: Badge(
-                                isLabelVisible:
-                                    lockedIds.isNotEmpty ||
-                                    clipboardBlockedIds.isNotEmpty,
-                                label: Text(
-                                  '${lockedIds.length + clipboardBlockedIds.length}',
-                                ),
-                                child: const Icon(
-                                  Icons.power_settings_new,
-                                  size: 18,
-                                ),
-                              ),
-                              onSelected: powerAction,
-                              itemBuilder: (_) => powerMenuItems(
-                                anyLocked: lockedIds.isNotEmpty,
-                                anyClipboardBlocked:
-                                    clipboardBlockedIds.isNotEmpty,
-                              ),
-                            ),
-                          ),
-                          AnimatedBuilder(
-                            animation: agent,
-                            builder: (context, _) => PopupMenuButton<String>(
-                              tooltip:
-                                  selectionMode && onlineSelected.isNotEmpty
-                                  ? 'Collect files from selected students'
-                                  : 'Collect files from the class',
-                              enabled: !agent.commandBusy && canUseTools,
-                              padding: EdgeInsets.zero,
-                              icon: Badge(
-                                isLabelVisible: agent.fileJobs.any(
-                                  (j) =>
-                                      j['kind'] == 'collect' &&
-                                      (j['targets'] as List).any(
-                                        (t) => jobTargetActive(
-                                          Map<String, dynamic>.from(t as Map),
-                                        ),
-                                      ),
-                                ),
-                                smallSize: 8,
-                                child: const Icon(
-                                  Icons.download_for_offline_outlined,
-                                  size: 18,
-                                ),
-                              ),
-                              onSelected: (action) {
-                                if (action == 'new') {
-                                  collectFiles();
-                                } else {
-                                  showCollectProgress(context, agent);
-                                }
-                              },
-                              itemBuilder: (_) => [
-                                const PopupMenuItem(
-                                  value: 'new',
-                                  child: Text('Collect files…'),
-                                ),
-                                PopupMenuItem(
-                                  value: 'progress',
-                                  enabled: agent.fileJobs.any(
-                                    (j) => j['kind'] == 'collect',
-                                  ),
-                                  child: const Text('Collection progress'),
-                                ),
-                              ],
-                            ),
-                          ),
-                          AnimatedBuilder(
-                            animation: toolActivity,
-                            builder: (context, _) => IconButton(
-                              visualDensity: VisualDensity.compact,
-                              tooltip: toolActivity.unread == 0
-                                  ? 'Student replies'
-                                  : '${toolActivity.unread} new replies',
-                              onPressed: () =>
-                                  showRepliesDialog(context, toolActivity),
-                              icon: Badge(
-                                isLabelVisible: toolActivity.unread > 0,
-                                label: Text('${toolActivity.unread}'),
-                                child: const Icon(
-                                  Icons.forum_outlined,
-                                  size: 18,
-                                ),
-                              ),
-                            ),
-                          ),
-                          AnimatedBuilder(
-                            animation: toolActivity,
-                            builder: (context, _) => IconButton(
-                              visualDensity: VisualDensity.compact,
-                              tooltip: toolActivity.disconnects.isEmpty
-                                  ? 'Disconnect alerts'
-                                  : '${toolActivity.disconnects.length} disconnect alert${toolActivity.disconnects.length == 1 ? '' : 's'}',
-                              onPressed: () =>
-                                  showDisconnectsDialog(context, toolActivity),
-                              icon: Badge(
-                                isLabelVisible:
-                                    toolActivity.unreadDisconnects > 0,
-                                backgroundColor: const Color(0xffb83b40),
-                                label: Text(
-                                  '${toolActivity.unreadDisconnects}',
-                                ),
-                                child: const Icon(Icons.link_off, size: 18),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ],
+                      ].expand((w) => [w, const SizedBox(width: 6)]).toList(),
                     );
-                    final rosterTools = Row(
-                      mainAxisSize: MainAxisSize.min,
+                    final toolsEnabled = !agent.commandBusy && canUseTools;
+                    final collectActive = agent.fileJobs.any(
+                      (j) =>
+                          j['kind'] == 'collect' &&
+                          (j['targets'] as List).any(
+                            (t) => jobTargetActive(
+                              Map<String, dynamic>.from(t as Map),
+                            ),
+                          ),
+                    );
+                    final recordIds = selectionMode && selected.isNotEmpty
+                        ? onlineSelected.toList()
+                        : agent.students
+                              .where((r) => r['online'] == true)
+                              .map((r) => '${r['id']}')
+                              .toList();
+                    final badgeIds = selectionMode && selected.isNotEmpty
+                        ? selected.toList()
+                        : agent.students.map((r) => '${r['id']}').toList();
+                    final ribbonTabs = <RibbonTab>[
+                      RibbonTab('Kiểm soát lớp', Icons.shield_outlined, [
+                        RibbonItem(
+                          icon: Icons.language,
+                          label: 'Mở website',
+                          tooltip: 'Mở một trang web trên máy học viên',
+                          onPressed: toolsEnabled ? openWebsite : null,
+                        ),
+                        RibbonItem(
+                          icon: Icons.rocket_launch_outlined,
+                          label: 'Chạy ứng dụng',
+                          tooltip: 'Khởi chạy ứng dụng trên máy học viên',
+                          onPressed: toolsEnabled ? launchApps : null,
+                        ),
+                        RibbonItem(
+                          icon: Icons.public_off_outlined,
+                          label: 'Internet',
+                          tooltip: 'Giới hạn truy cập Internet',
+                          badge: restrictedStudents(agent).length,
+                          onPressed: toolsEnabled ? internetAccess : null,
+                        ),
+                        RibbonItem(
+                          icon: Icons.block_outlined,
+                          label: 'Chặn ứng dụng',
+                          tooltip: 'Kiểm soát ứng dụng được phép chạy',
+                          badge: appsBlockedStudents(agent).length,
+                          onPressed: toolsEnabled ? appControl : null,
+                        ),
+                        RibbonItem(
+                          icon: Icons.extension_outlined,
+                          label: 'VS Code',
+                          tooltip: 'Kiểm soát tiện ích mở rộng của VS Code',
+                          badge: vscodeBlockedStudents(agent).length,
+                          onPressed: toolsEnabled ? vscodeAccess : null,
+                        ),
+                        RibbonItem(
+                          icon: Icons.power_settings_new,
+                          label: 'Khóa / Tắt máy',
+                          tooltip:
+                              'Khóa màn hình, đăng xuất, khởi động lại hoặc tắt máy',
+                          badge: lockedIds.length + clipboardBlockedIds.length,
+                          menu: () => powerMenuItems(
+                            anyLocked: lockedIds.isNotEmpty,
+                            anyClipboardBlocked: clipboardBlockedIds.isNotEmpty,
+                          ),
+                          onMenu: toolsEnabled ? powerAction : null,
+                        ),
+                      ]),
+                      RibbonTab('Tin nhắn & tệp', Icons.folder_shared_outlined, [
+                        RibbonItem(
+                          icon: Icons.download_for_offline_outlined,
+                          label: 'Thu bài / tệp',
+                          tooltip: 'Thu tệp từ máy học viên',
+                          dot: collectActive,
+                          menu: () => [
+                            const PopupMenuItem(
+                              value: 'new',
+                              child: Text('Thu tệp…'),
+                            ),
+                            PopupMenuItem(
+                              value: 'progress',
+                              enabled: agent.fileJobs.any(
+                                (j) => j['kind'] == 'collect',
+                              ),
+                              child: const Text('Tiến độ thu tệp'),
+                            ),
+                          ],
+                          onMenu: toolsEnabled
+                              ? (action) {
+                                  if (action == 'new') {
+                                    collectFiles();
+                                  } else {
+                                    showCollectProgress(context, agent);
+                                  }
+                                }
+                              : null,
+                        ),
+                        RibbonItem(
+                          icon: Icons.attach_file,
+                          label: 'Gửi tệp',
+                          tooltip:
+                              'Gửi tệp tới học viên (hoặc kéo thả lên thẻ máy)',
+                          onPressed: toolsEnabled ? sendClassFile : null,
+                        ),
+                        RibbonItem(
+                          icon: Icons.chat_outlined,
+                          label: 'Gửi tin nhắn',
+                          tooltip: 'Gửi tin nhắn tới học viên',
+                          onPressed: toolsEnabled ? sendClassMessage : null,
+                        ),
+                        RibbonItem(
+                          icon: Icons.forum_outlined,
+                          label: 'Phản hồi',
+                          tooltip: toolActivity.unread == 0
+                              ? 'Phản hồi từ học viên'
+                              : '${toolActivity.unread} phản hồi mới',
+                          badge: toolActivity.unread,
+                          onPressed: () =>
+                              showRepliesDialog(context, toolActivity),
+                        ),
+                      ]),
+                      RibbonTab('Giám sát', Icons.visibility_outlined, [
+                        RibbonItem(
+                          icon: Icons.visibility_outlined,
+                          label: 'Theo dõi hoạt động',
+                          tooltip: activityMonitoringOn
+                              ? 'Đang bật: học viên thu thập cửa sổ, tab trình duyệt và tệp tải về. Bấm để tắt.'
+                              : 'Đang tắt. Bấm để bật theo dõi hoạt động cho cả lớp.',
+                          active: activityMonitoringOn,
+                          onPressed: !agent.commandBusy
+                              ? toggleActivityMonitoring
+                              : null,
+                        ),
+                        RibbonItem(
+                          icon: Icons.badge_outlined,
+                          label: 'Huy hiệu giám sát',
+                          tooltip:
+                              'Bật/tắt huy hiệu "đang được giám sát" trên máy học viên',
+                          onPressed:
+                              agent.connected &&
+                                  !agent.commandBusy &&
+                                  agent.students.isNotEmpty
+                              ? () => showMonitoringBadge(
+                                  context,
+                                  agent,
+                                  badgeIds,
+                                )
+                              : null,
+                        ),
+                        RibbonItem(
+                          icon: Icons.video_camera_back_outlined,
+                          label: 'Ghi màn hình',
+                          tooltip:
+                              'Ghi màn hình các máy đã chọn hoặc toàn bộ máy online',
+                          onPressed: agent.connected
+                              ? () => showRecordings(context, agent, recordIds)
+                              : null,
+                        ),
+                        RibbonItem(
+                          icon: Icons.link_off,
+                          label: 'Mất kết nối',
+                          tooltip: toolActivity.disconnects.isEmpty
+                              ? 'Cảnh báo mất kết nối'
+                              : '${toolActivity.disconnects.length} cảnh báo mất kết nối',
+                          badge: toolActivity.unreadDisconnects,
+                          badgeColor: const Color(0xffb83b40),
+                          onPressed: () =>
+                              showDisconnectsDialog(context, toolActivity),
+                        ),
+                      ]),
+                      RibbonTab('Hệ thống', Icons.tune, [
+                        RibbonItem(
+                          icon: Icons.usb_outlined,
+                          label: 'Phần cứng',
+                          tooltip:
+                              'Điều khiển phần cứng (USB, Wi-Fi, Bluetooth…) cả phòng máy',
+                          onPressed: agent.connected && !agent.commandBusy
+                              ? () {
+                                  agent.pendingObserveFocus = 'hardware';
+                                  agent.command('hardware_window');
+                                }
+                              : null,
+                        ),
+                        RibbonItem(
+                          icon: Icons.bug_report_outlined,
+                          label: 'Chẩn đoán',
+                          tooltip: selected.isEmpty
+                              ? 'Thu thập chẩn đoán cả lớp'
+                              : 'Thu thập chẩn đoán các máy đã chọn',
+                          onPressed: agent.connected
+                              ? () => collectDiagnostics(
+                                  context,
+                                  agent,
+                                  selected.toList(),
+                                )
+                              : null,
+                        ),
+                      ]),
+                    ];
+                    final rosterTools = Wrap(
+                      spacing: 8,
+                      runSpacing: 6,
+                      crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
                         SizedBox(
                           width: constraints.maxWidth < 900 ? 170 : 220,
@@ -1444,7 +1363,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                             onChanged: (v) => setState(() => query = v),
                             style: const TextStyle(fontSize: 12),
                             decoration: InputDecoration(
-                              hintText: 'Find name or IP',
+                              hintText: Vi.search,
                               isDense: true,
                               contentPadding: const EdgeInsets.symmetric(
                                 horizontal: 10,
@@ -1463,71 +1382,60 @@ class _ConsoleState extends State<Console> with WindowListener {
                             ),
                           ),
                         ),
-                        const SizedBox(width: 8),
-                        SizedBox(
-                          width: 30,
-                          height: 32,
-                          child: IconButton(
-                            padding: EdgeInsets.zero,
-                            tooltip: 'Rescan connections',
-                            onPressed: agent.connected && !agent.commandBusy
-                                ? agent.rescan
+                        IconButton(
+                          visualDensity: VisualDensity.compact,
+                          tooltip: Vi.rescan,
+                          onPressed: agent.connected && !agent.commandBusy
+                              ? agent.rescan
+                              : null,
+                          icon: const Icon(Icons.refresh, size: 18),
+                        ),
+                        Tooltip(
+                          message: selectionMode
+                              ? Vi.donePicking
+                              : Vi.pickMachinesTip,
+                          child: selectionMode
+                              ? FilledButton.tonalIcon(
+                                  style: toolbarButton(),
+                                  onPressed: () => setState(() {
+                                    selectionMode = false;
+                                    selected.clear();
+                                  }),
+                                  icon: const Icon(Icons.check, size: 16),
+                                  label: Text(
+                                    selected.isEmpty
+                                        ? Vi.donePicking
+                                        : '${Vi.donePicking} (${selected.length})',
+                                  ),
+                                )
+                              : OutlinedButton.icon(
+                                  style: toolbarButton(),
+                                  onPressed: () =>
+                                      setState(() => selectionMode = true),
+                                  icon: const Icon(Icons.checklist, size: 16),
+                                  label: const Text(Vi.pickMachines),
+                                ),
+                        ),
+                        if (selectionMode) ...[
+                          TextButton(
+                            onPressed: rows.any((r) => r['online'] == true)
+                                ? () => setState(
+                                    () => selected.addAll(
+                                      rows
+                                          .where((r) => r['online'] == true)
+                                          .map((r) => r['id'] as String),
+                                    ),
+                                  )
                                 : null,
-                            icon: const Icon(Icons.refresh, size: 18),
+                            child: const Text(Vi.selectAllOnline),
                           ),
-                        ),
-                        SizedBox(
-                          width: 32,
-                          height: 32,
-                          child: IconButton(
-                            padding: EdgeInsets.zero,
-                            tooltip: selectionMode
-                                ? 'Finish selecting'
-                                : 'Select computers for presentation',
-                            onPressed: () => setState(() {
-                              selectionMode = !selectionMode;
-                              if (!selectionMode) selected.clear();
-                            }),
-                            icon: Icon(
-                              Icons.checklist,
-                              size: 18,
-                              color: selectionMode
-                                  ? const Color(0xff156b79)
-                                  : Colors.blueGrey,
-                            ),
+                          TextButton(
+                            onPressed: selected.isNotEmpty
+                                ? () => setState(selected.clear)
+                                : null,
+                            child: const Text(Vi.clearSelection),
                           ),
-                        ),
-                        if (selectionMode)
-                          PopupMenuButton<String>(
-                            tooltip: 'Selection',
-                            padding: EdgeInsets.zero,
-                            icon: const Icon(Icons.more_horiz, size: 18),
-                            constraints: const BoxConstraints(minWidth: 180),
-                            onSelected: (action) => setState(() {
-                              if (action == 'all') {
-                                selected.addAll(
-                                  rows
-                                      .where((r) => r['online'] == true)
-                                      .map((r) => r['id'] as String),
-                                );
-                              } else {
-                                selected.clear();
-                              }
-                            }),
-                            itemBuilder: (_) => [
-                              PopupMenuItem(
-                                value: 'all',
-                                enabled: rows.any((r) => r['online'] == true),
-                                child: const Text('Select visible online'),
-                              ),
-                              PopupMenuItem(
-                                value: 'clear',
-                                enabled: selected.isNotEmpty,
-                                child: const Text('Clear selection'),
-                              ),
-                            ],
-                          ),
-                        const SizedBox(width: 6),
+                        ],
                         ToggleButtons(
                           borderRadius: BorderRadius.circular(6),
                           constraints: const BoxConstraints(
@@ -1547,94 +1455,45 @@ class _ConsoleState extends State<Console> with WindowListener {
                           },
                           children: const [
                             Tooltip(
-                              message: 'Grid view',
+                              message: 'Dạng lưới',
                               child: Icon(Icons.grid_view, size: 16),
                             ),
                             Tooltip(
-                              message: 'List view',
+                              message: 'Dạng danh sách',
                               child: Icon(Icons.view_list_outlined, size: 17),
                             ),
                             Tooltip(
-                              message: 'Compact list',
+                              message: 'Danh sách gọn',
                               child: Icon(Icons.format_list_bulleted, size: 17),
                             ),
                           ],
                         ),
                       ],
                     );
-                    final tools = Row(
-                      children: [
-                        Expanded(
-                          child: SingleChildScrollView(
-                            scrollDirection: Axis.horizontal,
-                            child: businessTools,
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        rosterTools,
-                      ],
-                    );
-                    if (constraints.maxWidth < 1500) {
-                      return Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          SingleChildScrollView(
-                            scrollDirection: Axis.horizontal,
-                            child: actions,
-                          ),
-                          const SizedBox(height: 6),
-                          tools,
-                        ],
-                      );
-                    }
-                    return Row(
-                      children: [
-                        actions,
-                        const SizedBox(width: 12),
-                        Expanded(child: tools),
-                      ],
+                    if (!agent.connected) return rosterTools;
+                    return TeacherRibbon(
+                      tabs: ribbonTabs,
+                      index: ribbonTab,
+                      onTab: (i) => setState(() => ribbonTab = i),
+                      leading: actions,
+                      trailing: rosterTools,
                     );
                   },
                 ),
               ),
-              if (agent.error != null || showPermission)
+              if (shownError != null)
                 MaterialBanner(
-                  content: Text(
-                    showPermission
-                        ? 'Allow Classroom Console to record the screen, then restart the app.'
-                        : agent.error!,
-                  ),
+                  content: Text(shownError),
                   actions: [
-                    if (showPermission)
-                      FilledButton.icon(
-                        onPressed: () async {
-                          try {
-                            await showMacPermissions(context, agent);
-                          } catch (_) {
-                            if (context.mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text(
-                                    'Open System Settings → Privacy & Security → Screen Recording.',
-                                  ),
-                                ),
-                              );
-                            }
-                          }
-                        },
-                        icon: const Icon(Icons.settings_outlined, size: 16),
-                        label: const Text('Open Settings'),
-                      ),
                     TextButton(
                       onPressed: () {
-                        setState(() => screenPermissionNeeded = false);
                         if (agent.connected) {
                           agent.command('clear_error');
                         } else {
                           agent.start();
                         }
                       },
-                      child: Text(agent.connected ? 'Dismiss' : 'Reconnect'),
+                      child: Text(agent.connected ? 'Bỏ qua' : 'Kết nối lại'),
                     ),
                   ],
                 ),
@@ -1653,19 +1512,15 @@ class _ConsoleState extends State<Console> with WindowListener {
                             const SizedBox(height: 16),
                             Text(
                               agent.connected
-                                  ? (query.isEmpty
-                                        ? 'Waiting for students'
-                                        : 'No matching computers')
-                                  : 'Connecting to classroom…',
+                                  ? (query.isEmpty ? Vi.noStudents : Vi.noMatch)
+                                  : Vi.connecting,
                               style: const TextStyle(
                                 fontSize: 21,
                                 fontWeight: FontWeight.w600,
                               ),
                             ),
                             const SizedBox(height: 8),
-                            const Text(
-                              'Connected computers will appear here automatically.',
-                            ),
+                            const Text(Vi.waiting),
                           ],
                         ),
                       )
@@ -1697,7 +1552,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                 color: Colors.white,
                 padding: const EdgeInsets.symmetric(
                   horizontal: 24,
-                  vertical: 10,
+                  vertical: 2,
                 ),
                 child: Row(
                   children: [
@@ -1707,12 +1562,19 @@ class _ConsoleState extends State<Console> with WindowListener {
                       color: Colors.blueGrey,
                     ),
                     const SizedBox(width: 8),
-                    Text(
-                      agent.connected
-                          ? 'Teacher ${agent.state['teacher_ip']}'
-                          : 'Agent disconnected',
+                    Expanded(
+                      child: Text(
+                        [
+                          agent.connected
+                              ? 'Giảng viên ${agent.state['teacher_ip']}'
+                              : 'Mất kết nối với dịch vụ nền',
+                          ?agent.notice,
+                        ].join(' · '),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 12),
+                      ),
                     ),
-                    const Spacer(),
                     if (view == 'grid') ...[
                       const Icon(
                         Icons.photo_size_select_large,
@@ -1721,8 +1583,9 @@ class _ConsoleState extends State<Console> with WindowListener {
                       ),
                       SizedBox(
                         width: MediaQuery.sizeOf(context).width < 900
-                            ? 120
+                            ? 90
                             : 160,
+                        height: 26,
                         child: Slider(
                           value: gridSize,
                           min: 180,
@@ -1730,7 +1593,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                           divisions: 15,
                           label: '${gridSize.round()} px',
                           semanticFormatterCallback: (v) =>
-                              'Grid item size ${v.round()} pixels',
+                              'Kích thước ô ${v.round()} pixel',
                           onChanged: (value) => setState(() {
                             gridSize = value;
                             gridAuto = false;
@@ -1743,11 +1606,12 @@ class _ConsoleState extends State<Console> with WindowListener {
                       ),
                       FilterChip(
                         label: const Text(
-                          'Auto',
+                          'Tự động',
                           style: TextStyle(fontSize: 11),
                         ),
                         selected: gridAuto,
                         visualDensity: VisualDensity.compact,
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                         onSelected: (value) {
                           setState(() => gridAuto = value);
                           agent.savePreferences({
@@ -1756,17 +1620,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                           });
                         },
                       ),
-                    ] else
-                      Flexible(
-                        child: Text(
-                          agent.notice ?? 'Classroom · Local network',
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Colors.blueGrey,
-                            fontSize: 11,
-                          ),
-                        ),
-                      ),
+                    ],
                     const SizedBox(width: 16),
                     Icon(
                       Icons.computer_outlined,
@@ -1777,7 +1631,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                     ),
                     const SizedBox(width: 6),
                     Text(
-                      '$online / ${agent.students.length} connected',
+                      '$online/${agent.students.length} kết nối',
                       style: TextStyle(
                         fontSize: 11.5,
                         fontWeight: FontWeight.w600,
@@ -1793,7 +1647,7 @@ class _ConsoleState extends State<Console> with WindowListener {
           ),
           Positioned(
             right: 20,
-            bottom: 58,
+            bottom: 36,
             child: ClassroomToolsOverlay(
               agent: agent,
               activity: toolActivity,
@@ -1857,22 +1711,22 @@ class _ConsoleState extends State<Console> with WindowListener {
   String status(Map<String, dynamic> r) {
     if (r['online'] != true) {
       return agent.seenOnlineIds.contains(r['id'])
-          ? 'Connection lost'
-          : 'Not connected in this session';
+          ? 'Mất kết nối'
+          : 'Chưa kết nối trong phiên này';
     }
     final health = mediaHealthLabel(r);
     if (health.isNotEmpty) return health;
     if (r['monitoring'] == 'observing') {
-      return 'Live Observe active';
+      return 'Đang quan sát trực tiếp';
     }
     if (r['monitoring'] == 'paused') {
-      return 'Viewing presentation';
+      return 'Đang xem bài chiếu';
     }
     if (r['monitoring'] == 'unavailable') {
-      return 'Screen snapshot unavailable';
+      return 'Chưa có ảnh màn hình';
     }
     if ((r['thumbnail_age_ms'] as num? ?? 0) > 10000) {
-      return 'Screen snapshot outdated';
+      return 'Ảnh màn hình đã cũ';
     }
     return 'Online';
   }
@@ -1915,12 +1769,12 @@ class _ConsoleState extends State<Console> with WindowListener {
           ),
         if (locked)
           const Tooltip(
-            message: 'Screen locked',
+            message: 'Màn hình đang khóa',
             child: Icon(Icons.lock, size: 15, color: Color(0xffdb8a22)),
           ),
         if (clipboardBlocked)
           const Tooltip(
-            message: 'Clipboard blocked',
+            message: 'Đã chặn clipboard',
             child: Icon(
               Icons.content_paste_off,
               size: 15,
@@ -2002,10 +1856,18 @@ class _ConsoleState extends State<Console> with WindowListener {
     );
   }
 
+  /// Offline computers get a clearly darker surface than the console
+  /// background (0xfff3f5f9) and online cards (white).
+  static const offlineSurface = Color(0xffd3dae1);
+
   Widget compact(Map<String, dynamic> r) {
     final id = r['id'] as String;
     return Material(
-      color: selected.contains(id) ? const Color(0xffe1f0f2) : Colors.white,
+      color: selected.contains(id)
+          ? const Color(0xffe1f0f2)
+          : r['online'] == true
+          ? Colors.white
+          : offlineSurface,
       borderRadius: BorderRadius.circular(6),
       child: InkWell(
         onTap: () => selectionMode ? toggle(id) : inspect(r),
@@ -2046,6 +1908,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                   style: const TextStyle(color: Colors.blueGrey),
                 ),
               ),
+              moreButton(r),
             ],
           ),
         ),
@@ -2058,17 +1921,22 @@ class _ConsoleState extends State<Console> with WindowListener {
   Widget image(
     Map<String, dynamic> r, {
     bool flushTop = false,
+    bool flat = false,
     bool crop = false,
   }) {
     final bytes = agent.images[r['id']];
     return ClipRRect(
-      borderRadius: flushTop
+      borderRadius: flat
+          ? BorderRadius.zero
+          : flushTop
           ? const BorderRadius.vertical(top: Radius.circular(13))
           : BorderRadius.circular(9),
       child: AspectRatio(
         aspectRatio: 16 / 9,
         child: ColoredBox(
-          color: const Color(0xffe8edf1),
+          color: r['online'] == true
+              ? const Color(0xffe8edf1)
+              : const Color(0xffc6cfd8),
           child: bytes == null
               ? const Center(
                   child: Icon(
@@ -2087,6 +1955,27 @@ class _ConsoleState extends State<Console> with WindowListener {
       ),
     );
   }
+
+  /// One discoverable entry point for the per-Student actions that are also
+  /// available from the right-click menu.
+  Widget moreButton(Map<String, dynamic> r) => Builder(
+    builder: (context) => IconButton(
+      tooltip: 'Thao tác với máy này (hoặc bấm chuột phải)',
+      visualDensity: VisualDensity.compact,
+      constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+      padding: const EdgeInsets.all(4),
+      icon: const Icon(Icons.more_vert, size: 18),
+      onPressed: r['online'] == true
+          ? () {
+              final box = context.findRenderObject() as RenderBox;
+              collectMenu(
+                r,
+                box.localToGlobal(box.size.bottomLeft(Offset.zero)),
+              );
+            }
+          : null,
+    ),
+  );
 
   Widget card(Map<String, dynamic> r, {bool list = false}) {
     final id = r['id'] as String;
@@ -2144,34 +2033,12 @@ class _ConsoleState extends State<Console> with WindowListener {
             ],
           ),
         ),
-        IconButton(
-          tooltip: 'Browse and collect files',
-          visualDensity: VisualDensity.compact,
-          constraints: const BoxConstraints(minWidth: 26, minHeight: 28),
-          padding: const EdgeInsets.all(4),
-          icon: const Icon(Icons.folder_copy_outlined, size: 17),
-          onPressed: r['online'] == true ? () => agent.openFiles(r) : null,
-        ),
-        IconButton(
-          tooltip: 'Open windows, browser tabs and downloads',
-          visualDensity: VisualDensity.compact,
-          constraints: const BoxConstraints(minWidth: 26, minHeight: 28),
-          padding: const EdgeInsets.all(4),
-          icon: const Icon(Icons.visibility_outlined, size: 17),
-          onPressed: r['online'] == true ? () => agent.openActivity(r) : null,
-        ),
-        IconButton(
-          tooltip: 'Inspect screen',
-          visualDensity: VisualDensity.compact,
-          constraints: const BoxConstraints(minWidth: 26, minHeight: 28),
-          padding: const EdgeInsets.all(4),
-          icon: const Icon(Icons.open_in_full, size: 17),
-          onPressed: () => inspect(r),
-        ),
+        moreButton(r),
         connectionDot(r),
       ],
     );
     return Card(
+      color: r['online'] == true ? null : offlineSurface,
       clipBehavior: Clip.antiAlias,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(14),
@@ -2185,15 +2052,19 @@ class _ConsoleState extends State<Console> with WindowListener {
         onTap: () => selectionMode ? toggle(id) : inspect(r),
         onSecondaryTapDown: (d) => collectMenu(r, d.globalPosition),
         child: list
-            ? Padding(
-                padding: const EdgeInsets.all(12),
-                child: Row(
-                  children: [
-                    SizedBox(width: 160, child: image(r)),
-                    const SizedBox(width: 20),
-                    Expanded(child: title),
-                  ],
-                ),
+            ? Row(
+                children: [
+                  // Thumbnail bleeds to the card's top/left/bottom edges; the
+                  // card's own clip rounds the corners.
+                  SizedBox(width: 176, child: image(r, flat: true)),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.only(right: 12),
+                      child: title,
+                    ),
+                  ),
+                ],
               )
             : Stack(
                 fit: StackFit.expand,
@@ -2204,7 +2075,9 @@ class _ConsoleState extends State<Console> with WindowListener {
                     right: 0,
                     bottom: 0,
                     child: ColoredBox(
-                      color: Colors.white.withValues(alpha: 0.84),
+                      color: r['online'] == true
+                          ? Colors.white.withValues(alpha: 0.84)
+                          : offlineSurface.withValues(alpha: 0.92),
                       child: Padding(
                         padding: const EdgeInsets.fromLTRB(6, 3, 6, 3),
                         child: SizedBox(height: 28, child: title),

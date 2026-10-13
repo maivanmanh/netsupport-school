@@ -4,6 +4,8 @@ import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'agent.dart';
+import 'app_dialog.dart';
+import 'window_shell.dart';
 import 'file_collection.dart';
 
 /// What a drag carries: the side it started on plus full source paths.
@@ -110,7 +112,7 @@ class _PanelModel extends ChangeNotifier {
         return Map<String, dynamic>.from(body);
       }
     }
-    return {'error': 'The computer did not answer in time.'};
+    return {'error': 'Máy không phản hồi kịp thời.'};
   }
 
   void setSort(String key) {
@@ -276,9 +278,9 @@ class _FilesWindowState extends State<FilesWindow> {
       final skipped = (t['skipped'] as num).toInt();
       if (status == 'complete') {
         message =
-            '${t['files_done']} file(s) · ${formatBytes(t['bytes_done'] as num)} transferred'
-            '${skipped > 0 ? ' · $skipped already up to date' : ''}'
-            '${failed > 0 ? ' · $failed could not be copied: ${(t['notes'] as List).take(2).join('; ')}' : ''}';
+            '${t['files_done']} tệp · đã truyền ${formatBytes(t['bytes_done'] as num)}'
+            '${skipped > 0 ? ' · $skipped tệp đã mới nhất' : ''}'
+            '${failed > 0 ? ' · $failed tệp không sao chép được: ${(t['notes'] as List).take(2).join('; ')}' : ''}';
         messageIsError = failed > 0;
         hideTimer?.cancel();
         if (failed == 0) {
@@ -287,7 +289,7 @@ class _FilesWindowState extends State<FilesWindow> {
           });
         }
       } else if (status == 'cancelled') {
-        message = 'Transfer cancelled';
+        message = 'Đã hủy truyền tệp';
         messageIsError = false;
       } else {
         message = '${t['error']}';
@@ -305,7 +307,7 @@ class _FilesWindowState extends State<FilesWindow> {
     if (paths.isEmpty || dest.isEmpty) return;
     if (!online) {
       setState(() {
-        message = 'The student is offline.';
+        message = 'Máy học viên đang offline.';
         messageIsError = true;
       });
       return;
@@ -344,98 +346,98 @@ class _FilesWindowState extends State<FilesWindow> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xfff3f5f9),
-      body: SafeArea(
-        child: Column(
-          children: [
-            if (!agent.connected || !online)
-              MaterialBanner(
-                content: Text(
-                  agent.connected
-                      ? '${widget.name} is offline. Browsing resumes when it reconnects.'
-                      : 'Reconnecting to the Teacher…',
-                ),
-                actions: const [SizedBox.shrink()],
-              ),
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(10, 10, 10, 6),
-                child: Row(
-                  children: [
-                    Expanded(
+    return WindowShell(
+      icon: Icons.folder_copy_outlined,
+      title: 'Tệp · ${widget.name}',
+      subtitle:
+          'Kéo thả hoặc dùng mũi tên để chuyển tệp giữa máy giảng viên và máy học viên.',
+      notice: !agent.connected || !online
+          ? InlineNotice(
+              agent.connected
+                  ? '${widget.name} đang offline. Duyệt tệp sẽ tiếp tục khi máy kết nối lại.'
+                  : 'Đang kết nối lại với giảng viên…',
+              tone: AppTone.warning,
+            )
+          : null,
+      child: Column(
+        children: [
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: _Panel(
+                      title: 'Máy này (giảng viên)',
+                      icon: Icons.laptop_mac,
+                      model: local,
+                      onDrop: dropOn,
+                    ),
+                  ),
+                  SizedBox(
+                    width: 64,
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        _MoveButton(
+                          tooltip:
+                              'Gửi các tệp đã chọn vào thư mục đang hiện ở bên phải',
+                          icon: Icons.arrow_forward,
+                          enabled: online && local.selected.isNotEmpty,
+                          onPressed: () => transfer(
+                            push: true,
+                            paths: local.selected.map(local.join).toList(),
+                            dest: remote.path,
+                          ),
+                          model: local,
+                        ),
+                        const SizedBox(height: 14),
+                        _MoveButton(
+                          tooltip:
+                              'Lấy các tệp đã chọn về thư mục đang hiện ở bên trái',
+                          icon: Icons.arrow_back,
+                          enabled: online && remote.selected.isNotEmpty,
+                          onPressed: () => transfer(
+                            push: false,
+                            paths: remote.selected.map(remote.join).toList(),
+                            dest: local.path,
+                          ),
+                          model: remote,
+                        ),
+                      ],
+                    ),
+                  ),
+                  Expanded(
+                    child: DropTarget(
+                      onDragDone: (details) => transfer(
+                        push: true,
+                        paths: details.files
+                            .map((f) => f.path)
+                            .where(
+                              (p) =>
+                                  FileSystemEntity.typeSync(p) ==
+                                  FileSystemEntityType.file,
+                            )
+                            .toList(),
+                        dest: remote.path,
+                      ),
                       child: _Panel(
-                        title: 'This computer (Teacher)',
-                        icon: Icons.laptop_mac,
-                        model: local,
+                        title: widget.name,
+                        icon: Icons.desktop_windows_outlined,
+                        model: remote,
                         onDrop: dropOn,
                       ),
                     ),
-                    SizedBox(
-                      width: 56,
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          _MoveButton(
-                            tooltip:
-                                'Send the selected files to the folder shown on the right',
-                            icon: Icons.arrow_forward,
-                            enabled: online && local.selected.isNotEmpty,
-                            onPressed: () => transfer(
-                              push: true,
-                              paths: local.selected.map(local.join).toList(),
-                              dest: remote.path,
-                            ),
-                            model: local,
-                          ),
-                          const SizedBox(height: 14),
-                          _MoveButton(
-                            tooltip:
-                                'Get the selected files into the folder shown on the left',
-                            icon: Icons.arrow_back,
-                            enabled: online && remote.selected.isNotEmpty,
-                            onPressed: () => transfer(
-                              push: false,
-                              paths: remote.selected.map(remote.join).toList(),
-                              dest: local.path,
-                            ),
-                            model: remote,
-                          ),
-                        ],
-                      ),
-                    ),
-                    Expanded(
-                      child: DropTarget(
-                        onDragDone: (details) => transfer(
-                          push: true,
-                          paths: details.files
-                              .map((f) => f.path)
-                              .where(
-                                (p) =>
-                                    FileSystemEntity.typeSync(p) ==
-                                    FileSystemEntityType.file,
-                              )
-                              .toList(),
-                          dest: remote.path,
-                        ),
-                        child: _Panel(
-                          title: widget.name,
-                          icon: Icons.desktop_windows_outlined,
-                          model: remote,
-                          onDrop: dropOn,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
+                  ),
+                ],
               ),
             ),
-            _ProgressStrip(
-              window: this,
-              onDismiss: () => setState(() => message = null),
-            ),
-          ],
-        ),
+          ),
+          _ProgressStrip(
+            window: this,
+            onDismiss: () => setState(() => message = null),
+          ),
+        ],
       ),
     );
   }
@@ -503,9 +505,9 @@ class _ProgressStrip extends StatelessWidget {
                 children: [
                   Text(
                     t['status'] == 'queued'
-                        ? (push ? 'Sending…' : 'Preparing download…')
-                        : '${push ? 'Sending' : 'Downloading'} ${t['files_done']}/${t['files_total']} files · '
-                              '${formatBytes(t['bytes_done'] as num)} of ${formatBytes(total)}',
+                        ? (push ? 'Đang gửi…' : 'Đang chuẩn bị tải về…')
+                        : '${push ? 'Đang gửi' : 'Đang tải về'} ${t['files_done']}/${t['files_total']} tệp · '
+                              '${formatBytes(t['bytes_done'] as num)} / ${formatBytes(total)}',
                     style: const TextStyle(fontSize: 12.5),
                   ),
                   if ('${t['current']}'.isNotEmpty)
@@ -529,7 +531,7 @@ class _ProgressStrip extends StatelessWidget {
             TextButton(
               onPressed: () =>
                   window.agent.request('fs_cancel', input: {'id': job['id']}),
-              child: const Text('Cancel'),
+              child: const Text('Hủy'),
             ),
           ],
         ),
@@ -816,7 +818,7 @@ class _PanelState extends State<_Panel> {
                     ),
                   ),
                   PopupMenuButton<String>(
-                    tooltip: 'Quick access',
+                    tooltip: 'Truy cập nhanh',
                     icon: const Icon(Icons.bookmarks_outlined, size: 18),
                     padding: EdgeInsets.zero,
                     onSelected: model.load,
@@ -829,9 +831,7 @@ class _PanelState extends State<_Panel> {
                     ],
                   ),
                   IconButton(
-                    tooltip: model.hidden
-                        ? 'Hide hidden files'
-                        : 'Show hidden files',
+                    tooltip: model.hidden ? 'Ẩn tệp ẩn' : 'Hiện tệp ẩn',
                     visualDensity: VisualDensity.compact,
                     icon: Icon(
                       model.hidden ? Icons.visibility : Icons.visibility_off,
@@ -843,7 +843,7 @@ class _PanelState extends State<_Panel> {
                     },
                   ),
                   IconButton(
-                    tooltip: 'Refresh',
+                    tooltip: 'Làm mới',
                     visualDensity: VisualDensity.compact,
                     icon: const Icon(Icons.refresh, size: 18),
                     onPressed: () => model.load(model.path),
@@ -856,7 +856,7 @@ class _PanelState extends State<_Panel> {
               child: Row(
                 children: [
                   IconButton(
-                    tooltip: 'Up one folder',
+                    tooltip: 'Lên thư mục cha',
                     visualDensity: VisualDensity.compact,
                     icon: const Icon(Icons.arrow_upward, size: 18),
                     onPressed: up.isEmpty ? null : () => model.load(up),
@@ -891,14 +891,14 @@ class _PanelState extends State<_Panel> {
               padding: const EdgeInsets.fromLTRB(16, 6, 16, 2),
               child: Row(
                 children: [
-                  header('Name', 'name'),
-                  header('Size', 'size', width: 70, align: TextAlign.right),
+                  header('Tên', 'name'),
                   header(
-                    'Modified',
-                    'date',
-                    width: 118,
+                    'Dung lượng',
+                    'size',
+                    width: 70,
                     align: TextAlign.right,
                   ),
+                  header('Sửa đổi', 'date', width: 118, align: TextAlign.right),
                 ],
               ),
             ),
@@ -919,7 +919,7 @@ class _PanelState extends State<_Panel> {
                             const SizedBox(height: 8),
                             OutlinedButton(
                               onPressed: () => model.load(model.path),
-                              child: const Text('Try again'),
+                              child: const Text('Thử lại'),
                             ),
                           ],
                         ),
@@ -930,7 +930,7 @@ class _PanelState extends State<_Panel> {
                         if (model.rows.isEmpty && !model.loading)
                           const Center(
                             child: Text(
-                              'This folder is empty',
+                              'Thư mục này trống',
                               style: TextStyle(color: Colors.blueGrey),
                             ),
                           )
@@ -954,7 +954,7 @@ class _PanelState extends State<_Panel> {
               const Padding(
                 padding: EdgeInsets.all(4),
                 child: Text(
-                  'Only the first 5000 items are shown.',
+                  'Chỉ hiển thị 5000 mục đầu tiên.',
                   style: TextStyle(fontSize: 11, color: Colors.orange),
                 ),
               ),

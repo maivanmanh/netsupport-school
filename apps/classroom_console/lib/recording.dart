@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'agent.dart';
+import 'app_dialog.dart';
 
 String recordingStatus(Map target) {
   final report = target['report'] as Map? ?? const {};
@@ -357,70 +358,59 @@ class _RecordingDialogState extends State<_RecordingDialog> {
           .join(', ');
       return DefaultTabController(
         length: 2,
-        child: AlertDialog(
-          title: const Text('Screen recording'),
-          content: SizedBox(
-            width: 760,
-            height: 540,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Ghi mới: ${targetNames.isEmpty ? '${widget.ids.length} máy được chọn' : targetNames}',
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                const SizedBox(height: 6),
-                const Text(
-                  '720p • Giữ tỉ lệ • Tối đa 30 FPS • MP4 mỗi 10 phút',
-                ),
-                const SizedBox(height: 4),
-                const Text(
-                  'Tự lưu về Desktop. Đóng cửa sổ này vẫn tiếp tục ghi.',
-                ),
-                if (error != null)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 8),
-                    child: Text(
-                      error!,
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.error,
-                      ),
-                    ),
-                  ),
-                const SizedBox(height: 12),
-                TabBar(
-                  tabs: [
-                    Tab(text: 'Đang ghi / chờ tải (${pending.length})'),
-                    Tab(text: 'Lịch sử (${history.length})'),
-                  ],
-                ),
-                Expanded(
-                  child: TabBarView(
-                    children: [
-                      sessionList(pending, false),
-                      sessionList(history, true),
-                    ],
-                  ),
-                ),
-              ],
+        child: AppDialog(
+          icon: Icons.video_camera_back_outlined,
+          title: 'Ghi màn hình',
+          subtitle:
+              'Ghi mới: ${targetNames.isEmpty ? '${widget.ids.length} máy được chọn' : targetNames}',
+          width: 780,
+          height: 470,
+          scrollable: false,
+          bodyPadding: const EdgeInsets.fromLTRB(24, 12, 24, 0),
+          footerLeading: const Text(
+            '720p • Giữ tỉ lệ • Tối đa 30 FPS • MP4 mỗi 10 phút • Tự lưu về Desktop. Đóng cửa sổ này vẫn tiếp tục ghi.',
+            style: TextStyle(
+              fontSize: 12,
+              color: AppDialog.muted,
+              height: 1.35,
             ),
           ),
           actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Đóng'),
-            ),
-            FilledButton.icon(
-              onPressed: busy || !widget.agent.connected || widget.ids.isEmpty
+            AppDialog.cancel(context, label: 'Đóng'),
+            AppDialog.primary(
+              onPressed: !widget.agent.connected || widget.ids.isEmpty
                   ? null
                   : () => run('recording_start'),
-              icon: const Icon(Icons.fiber_manual_record),
-              label: Text(
-                busy ? 'Đang xử lý…' : 'Ghi ${widget.ids.length} máy đã chọn',
-              ),
+              icon: Icons.fiber_manual_record,
+              busy: busy,
+              label: busy
+                  ? 'Đang xử lý…'
+                  : 'Ghi ${widget.ids.length} máy đã chọn',
             ),
           ],
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (error != null) ...[
+                InlineNotice(error!),
+                const SizedBox(height: 10),
+              ],
+              TabBar(
+                tabs: [
+                  Tab(text: 'Đang ghi / chờ tải (${pending.length})'),
+                  Tab(text: 'Lịch sử (${history.length})'),
+                ],
+              ),
+              Expanded(
+                child: TabBarView(
+                  children: [
+                    sessionList(pending, false),
+                    sessionList(history, true),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       );
     },

@@ -256,3 +256,9 @@ IP/port phòng có sẵn. Teacher bật/tắt popup Connecting/Connected (auto-h
 Windows Student tray không có Exit/Restart. Xem
 [hướng dẫn bootstrap LAN](docs/20_LAN_STUDENT_BOOTSTRAP.md) và các giới hạn cổng80,
 package/debug và process protection.
+
+## Ubuntu Student (development)
+
+Ubuntu Student nhận H.264 bằng backend Linux riêng, dùng Xorg hoặc XWayland.
+Xem [phạm vi, build, chạy và trạng thái kiểm chứng](docs/28_UBUNTU_STUDENT.md).
+Ubuntu Teacher và các backend điều khiển/capture Linux chưa được triển khai.

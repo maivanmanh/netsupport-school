@@ -9,6 +9,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/rendering.dart';
 import 'package:window_manager/window_manager.dart';
 import 'agent.dart';
+import 'app_dialog.dart';
 import 'observe_stats.dart';
 import 'observe_control_recovery.dart';
 import 'classroom_tools_ui.dart';
@@ -203,7 +204,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
         if (mounted && Platform.isMacOS) {
           setState(
             () => modeError =
-                'Allow Teacher Accessibility to forward macOS shortcuts',
+                'Hãy cấp quyền Accessibility cho Teacher để chuyển phím tắt macOS',
           );
         }
         unawaited(widget.agent.log('Native shortcut capture failed: $error'));
@@ -218,8 +219,8 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
       systemKeyCaptureFailed = true;
       if (mounted) {
         setState(
-          () =>
-              modeError = 'Shortcut capture stopped · Refocus Control to retry',
+          () => modeError =
+              'Đã dừng bắt phím tắt · Bấm lại vào cửa sổ để thử lại',
         );
       }
       return;
@@ -267,7 +268,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
       if (mounted && !closing) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text('Could not send: $e')));
+        ).showSnackBar(SnackBar(content: Text('Không gửi được: $e')));
       }
     } finally {
       if (mounted) setState(() => preparingFile = false);
@@ -298,7 +299,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
     final controlling = mode != 'observe' && view['phase'] == 'live';
     final address = widget.ip.isEmpty ? '' : ' · ${widget.ip}';
     final title =
-        '${controlling ? 'Control' : 'Observe'} · ${widget.name}$address';
+        '${controlling ? 'Điều khiển' : 'Quan sát'} · ${widget.name}$address';
     if (title == lastWindowTitle) return;
     lastWindowTitle = title;
     unawaited(windowManager.setTitle(title));
@@ -425,7 +426,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
         if (renderObject is! RenderRepaintBoundary) {
           throw PlatformException(
             code: 'screenshot_unavailable',
-            message: 'The student screen is not ready yet.',
+            message: 'Màn hình học viên chưa sẵn sàng.',
           );
         }
         final image = await renderObject.toImage(pixelRatio: 1);
@@ -434,7 +435,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
           if (png == null) {
             throw PlatformException(
               code: 'screenshot_encode',
-              message: 'Could not encode the screenshot.',
+              message: 'Không mã hóa được ảnh chụp.',
             );
           }
           path = await files.invokeMethod<String>('saveScreenshot', {
@@ -453,14 +454,14 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'Screenshot saved to Desktop · ${path.split(RegExp(r'[/\\]')).last}',
+            'Đã lưu ảnh chụp vào Desktop · ${path.split(RegExp(r'[/\\]')).last}',
           ),
         ),
       );
     } on PlatformException catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(e.message ?? 'Could not save screenshot')),
+          SnackBar(content: Text(e.message ?? 'Không lưu được ảnh chụp')),
         );
       }
     }
@@ -470,31 +471,29 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
     final controller = TextEditingController();
     final text = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Message ${widget.name}'),
-        content: SizedBox(
-          width: 400,
-          child: TextField(
-            controller: controller,
-            autofocus: true,
-            maxLines: 5,
-            maxLength: 2000,
-            decoration: const InputDecoration(
-              hintText: 'Write a message',
-              border: OutlineInputBorder(),
-            ),
-          ),
-        ),
+      builder: (context) => AppDialog(
+        icon: Icons.chat_outlined,
+        title: 'Nhắn tin cho ${widget.name}',
+        subtitle: 'Tin nhắn hiện trên màn hình của học viên này.',
+        width: 480,
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
+          AppDialog.cancel(context),
+          AppDialog.primary(
             onPressed: () => Navigator.pop(context, controller.text),
-            child: const Text('Send'),
+            icon: Icons.send_outlined,
+            label: 'Gửi',
           ),
         ],
+        child: TextField(
+          controller: controller,
+          autofocus: true,
+          minLines: 4,
+          maxLines: 8,
+          maxLength: 2000,
+          decoration: const InputDecoration(
+            hintText: 'Nhập nội dung tin nhắn…',
+          ),
+        ),
       ),
     );
     if (text != null && text.trim().isNotEmpty) {
@@ -522,7 +521,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
     } on PlatformException catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(e.message ?? 'Could not stage the file')),
+          SnackBar(content: Text(e.message ?? 'Không chuẩn bị được tệp')),
         );
       }
     } finally {
@@ -787,7 +786,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
           if (!mounted || requestedMode == null) return;
           setState(() {
             requestedMode = null;
-            modeError = 'No response from student · Try the mode change again';
+            modeError = 'Học viên không phản hồi · Hãy đổi chế độ lại';
           });
         });
       }
@@ -880,7 +879,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
       if (!mounted || requestedMode == null) return;
       setState(() {
         requestedMode = null;
-        modeError = 'No response from student · Try the mode change again';
+        modeError = 'Học viên không phản hồi · Hãy đổi chế độ lại';
       });
     });
     widget.agent.observeInput(widget.studentId, {'action': value});
@@ -1131,7 +1130,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                   ),
                   SizedBox(width: 12),
                   Text(
-                    'Connecting to student…',
+                    'Đang kết nối tới học viên…',
                     style: TextStyle(
                       color: Colors.white,
                       fontSize: 17,
@@ -1342,8 +1341,8 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                               const SizedBox(height: 12),
                               Text(
                                 reconnecting
-                                    ? 'Reconnecting to student…'
-                                    : 'Connecting to student…',
+                                    ? 'Đang kết nối lại tới học viên…'
+                                    : 'Đang kết nối tới học viên…',
                                 textAlign: TextAlign.center,
                                 style: const TextStyle(
                                   color: Colors.white,
@@ -1354,7 +1353,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                               if (interruptedAt != null && !classControl) ...[
                                 const SizedBox(height: 10),
                                 Text(
-                                  'Window closes in ${(recoveryTimeout.inSeconds - (recoveryClock.elapsed - interruptedAt!).inSeconds).clamp(0, recoveryTimeout.inSeconds)}s if the connection does not recover',
+                                  'Cửa sổ sẽ đóng sau ${(recoveryTimeout.inSeconds - (recoveryClock.elapsed - interruptedAt!).inSeconds).clamp(0, recoveryTimeout.inSeconds)}s nếu kết nối không phục hồi',
                                   textAlign: TextAlign.center,
                                   style: const TextStyle(
                                     color: Color(0xffffc857),
@@ -1529,12 +1528,12 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                           segments: const [
                             ButtonSegment(
                               value: 'observe',
-                              label: Text('Observe'),
+                              label: Text('Quan sát'),
                               icon: Icon(Icons.visibility_outlined, size: 18),
                             ),
                             ButtonSegment(
                               value: 'control',
-                              label: Text('Control'),
+                              label: Text('Điều khiển'),
                               icon: Icon(Icons.mouse_outlined, size: 18),
                             ),
                           ],
@@ -1547,7 +1546,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                               : null,
                         ),
                         PopupMenuButton<String>(
-                          tooltip: 'Student and control actions',
+                          tooltip: 'Thao tác với học viên và điều khiển',
                           enabled: widget.agent.connected,
                           onSelected: (action) {
                             if (action == 'screenshot') {
@@ -1566,14 +1565,14 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                               value: 'control',
                               enabled: canSwitchMode && requestedMode == null,
                               child: Text(
-                                'Both teacher and student can control',
+                                'Giảng viên và học viên cùng điều khiển',
                               ),
                             ),
                             PopupMenuItem(
                               value: 'exclusive',
                               enabled: canSwitchMode && requestedMode == null,
                               child: Text(
-                                'Teacher only · Lock student input (Windows)',
+                                'Chỉ giảng viên · Khóa nhập liệu của học viên (Windows)',
                               ),
                             ),
                             const PopupMenuDivider(),
@@ -1583,7 +1582,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                               child: const ListTile(
                                 dense: true,
                                 leading: Icon(Icons.photo_camera_outlined),
-                                title: Text('Save screenshot to Desktop'),
+                                title: Text('Lưu ảnh chụp vào Desktop'),
                               ),
                             ),
                             const PopupMenuItem(
@@ -1591,7 +1590,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                               child: ListTile(
                                 dense: true,
                                 leading: Icon(Icons.chat_outlined),
-                                title: Text('Send a message'),
+                                title: Text('Gửi tin nhắn'),
                               ),
                             ),
                             const PopupMenuItem(
@@ -1599,7 +1598,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                               child: ListTile(
                                 dense: true,
                                 leading: Icon(Icons.attach_file),
-                                title: Text('Send a file'),
+                                title: Text('Gửi tệp'),
                               ),
                             ),
                           ],
@@ -1613,21 +1612,20 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                           segments: const [
                             ButtonSegment(
                               value: 'fit',
-                              label: Text('Native'),
-                              tooltip:
-                                  'Keep aspect ratio without enlarging source pixels',
+                              label: Text('Gốc'),
+                              tooltip: 'Giữ tỉ lệ, không phóng to điểm ảnh gốc',
                               icon: Icon(Icons.aspect_ratio, size: 18),
                             ),
                             ButtonSegment(
                               value: 'stretch',
-                              label: Text('Stretch'),
-                              tooltip: 'Cover window and remove side bars',
+                              label: Text('Giãn'),
+                              tooltip: 'Phủ kín cửa sổ, bỏ dải đen hai bên',
                               icon: Icon(Icons.width_full, size: 18),
                             ),
                             ButtonSegment(
                               value: 'fill',
-                              label: Text('Fill'),
-                              tooltip: 'Fill window · Stretch image',
+                              label: Text('Lấp đầy'),
+                              tooltip: 'Lấp đầy cửa sổ · Kéo giãn ảnh',
                               icon: Icon(Icons.fit_screen, size: 18),
                             ),
                           ],
@@ -1647,8 +1645,8 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                           ),
                           tooltip: fullScreen
-                              ? 'Exit full screen'
-                              : 'Full screen',
+                              ? 'Thoát toàn màn hình'
+                              : 'Toàn màn hình',
                           icon: Icon(
                             fullScreen
                                 ? Icons.fullscreen_exit
@@ -1663,7 +1661,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                             padding: const EdgeInsets.all(4),
                             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                           ),
-                          tooltip: 'Browse and collect files',
+                          tooltip: 'Duyệt và thu tệp',
                           icon: const Icon(
                             Icons.folder_copy_outlined,
                             size: 19,
@@ -1682,7 +1680,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                             padding: const EdgeInsets.all(4),
                             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                           ),
-                          tooltip: 'Open windows, browser tabs and downloads',
+                          tooltip: 'Cửa sổ, tab trình duyệt và tệp tải xuống',
                           icon: const Icon(Icons.visibility_outlined, size: 19),
                           onPressed: () {
                             widget.agent.request(
@@ -1699,7 +1697,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                           ),
                           key: const ValueKey('observe-stats-toggle'),
-                          tooltip: showStats ? 'Hide stats' : 'Show stats',
+                          tooltip: showStats ? 'Ẩn thống kê' : 'Hiện thống kê',
                           isSelected: showStats,
                           icon: const Icon(Icons.speed_outlined, size: 19),
                           selectedIcon: const Icon(Icons.speed, size: 19),
@@ -1715,8 +1713,8 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                           ),
                           tooltip: autoHide
-                              ? 'Keep toolbar visible'
-                              : 'Auto-hide toolbar',
+                              ? 'Giữ thanh công cụ luôn hiện'
+                              : 'Tự ẩn thanh công cụ',
                           isSelected: !autoHide,
                           icon: const Icon(Icons.push_pin_outlined, size: 18),
                           selectedIcon: const Icon(Icons.push_pin, size: 18),
@@ -1749,7 +1747,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                           ),
                           if (Platform.isMacOS &&
                               modeError?.startsWith(
-                                    'Allow Teacher Accessibility',
+                                    'Hãy cấp quyền Accessibility',
                                   ) ==
                                   true)
                             TextButton.icon(
@@ -1761,7 +1759,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                                 Icons.accessibility_new,
                                 size: 15,
                               ),
-                              label: const Text('Request permission'),
+                              label: const Text('Yêu cầu quyền'),
                               style: TextButton.styleFrom(
                                 padding: const EdgeInsets.symmetric(
                                   horizontal: 6,
@@ -1793,14 +1791,14 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                           modeError != null
                               ? modeError!
                               : reconnecting
-                              ? 'Reconnecting to student…'
+                              ? 'Đang kết nối lại tới học viên…'
                               : requestedMode != null
-                              ? 'Changing input mode…'
+                              ? 'Đang đổi chế độ nhập…'
                               : mode == 'exclusive'
-                              ? 'Teacher control · Student input locked'
+                              ? 'Giảng viên điều khiển · Đã khóa nhập liệu của học viên'
                               : mode == 'control'
-                              ? 'Shared control · Student input stays enabled'
-                              : 'Observe · Read only',
+                              ? 'Điều khiển chung · Học viên vẫn nhập được'
+                              : 'Quan sát · Chỉ xem',
                           style: const TextStyle(fontSize: 12),
                         ),
                       ),
@@ -1879,7 +1877,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                       child: Padding(
                         padding: EdgeInsets.all(20),
                         child: Text(
-                          'Drop to send to Desktop\nFolders will be zipped',
+                          'Thả để gửi tới Desktop\nThư mục sẽ được nén ZIP',
                           textAlign: TextAlign.center,
                         ),
                       ),

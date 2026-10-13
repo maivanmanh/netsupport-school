@@ -1,12 +1,13 @@
-import 'dart:convert';
-import 'dart:io';
 import 'package:classroom_console/agent.dart';
 import 'package:classroom_console/app_access.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'support/fake_store.dart';
 
-class AppsAgent extends Agent {
-  AppsAgent() : super([]);
+class AppsAgent extends Agent with FakeStoreAgent {
+  AppsAgent(this.store) : super([]);
+  @override
+  final FakeStore store;
   @override
   bool get connected => true;
   @override
@@ -38,13 +39,9 @@ void main() {
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(1024, 768));
       addTearDown(() => tester.binding.setSurfaceSize(null));
-      final dir = (await tester.runAsync(
-        () => Directory.systemTemp.createTemp('classroom-apps-test'),
-      ))!;
-      addTearDown(() => dir.delete(recursive: true));
-      await tester.runAsync(
-        () => File('${dir.path}/app-inventory.json').writeAsString(
-          jsonEncode({
+      final store = FakeStore()
+        ..apply('inventory', {
+          'cache': {
             'apps': [
               {
                 'id': 'aaaaaaaaaaaa',
@@ -59,11 +56,10 @@ void main() {
                 'students': ['pc'],
               },
             ],
-          }),
-        ),
-      );
+          },
+        });
       for (var opening = 0; opening < 2; opening++) {
-        final agent = AppsAgent()..dataDirectory = dir;
+        final agent = AppsAgent(store);
         await tester.pumpWidget(
           MaterialApp(
             home: AppsWindow(

@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:xterm/xterm.dart';
 import 'agent.dart';
+import 'app_dialog.dart';
 
 class RemoteTerminalWindow extends StatefulWidget {
   const RemoteTerminalWindow({
@@ -31,7 +32,7 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
   Socket? stream;
   Timer? heartbeat, retry;
   String? session, error;
-  String status = 'Connecting to student…', os = 'windows';
+  String status = 'Đang kết nối tới học viên…', os = 'windows';
   bool connected = false, starting = false, closing = false, ended = false;
   bool everConnected = false;
   int lastSequence = 0, queuedInput = 0;
@@ -206,7 +207,7 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
           sequence = header.getUint64(1),
           length = header.getUint32(9);
       if (length > 16384 || kind < 1 || kind > 9) {
-        error = 'Invalid terminal frame';
+        error = 'Khung dữ liệu terminal không hợp lệ';
         ended = true;
         lost();
         return;
@@ -217,7 +218,7 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
       if (kind == 1) {
         if (sequence > lastSequence) {
           if (sequence != lastSequence + 1) {
-            error = 'Terminal output sequence gap';
+            error = 'Dữ liệu terminal bị đứt đoạn';
             ended = true;
             lost();
             return;
@@ -260,10 +261,10 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
             status = active
                 ? '${metadata['shell']} · ${metadata['cwd']}'
                 : ended
-                ? 'Session ended'
+                ? 'Phiên đã kết thúc'
                 : everConnected
-                ? 'Reconnecting to student…'
-                : 'Connecting to student…';
+                ? 'Đang kết nối lại tới học viên…'
+                : 'Đang kết nối tới học viên…';
           });
         }
       } else if (kind == 6) {
@@ -274,7 +275,7 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
         }
         if (mounted) {
           setState(() {
-            status = 'Shell exited';
+            status = 'Shell đã thoát';
           });
         }
       }
@@ -294,10 +295,10 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
     setState(() {
       connected = false;
       status = ended
-          ? 'Session ended'
+          ? 'Phiên đã kết thúc'
           : everConnected
-          ? 'Reconnecting to student…'
-          : 'Connecting to student…';
+          ? 'Đang kết nối lại tới học viên…'
+          : 'Đang kết nối tới học viên…';
     });
     if (!ended) {
       retry?.cancel();
@@ -325,7 +326,8 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
     final data = utf8.encode(text);
     if (queuedInput + data.length > 65536) {
       setState(() {
-        error = 'Input queue full. Wait and retry; large paste was not sent.';
+        error =
+            'Hàng đợi nhập đã đầy. Hãy chờ rồi thử lại; nội dung dán lớn chưa được gửi.';
       });
       return;
     }
@@ -364,67 +366,75 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
     final saved = await showDialog<bool>(
       context: context,
       builder: (context) => StatefulBuilder(
-        builder: (context, setLocal) => AlertDialog(
-          title: const Text('Terminal settings'),
-          content: SizedBox(
-            width: 420,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: font,
-                  decoration: InputDecoration(
-                    labelText: 'Font family',
-                    hintText: os == 'windows' ? 'Consolas' : 'Menlo',
-                  ),
-                ),
-                TextField(
-                  controller: fall,
-                  decoration: const InputDecoration(
-                    labelText: 'Fallback fonts (comma separated)',
-                  ),
-                ),
-                TextField(
-                  controller: size,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
-                    labelText: 'Font size (pt, 8–30)',
-                  ),
-                ),
-                TextField(
-                  controller: lines,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
-                    labelText: 'Scrollback lines (next session, 100–50000)',
-                  ),
-                ),
-                if (os == 'windows')
-                  SwitchListTile(
-                    value: nextCompatibility,
-                    onChanged: (v) => setLocal(() => nextCompatibility = v),
-                    title: const Text('Unix-like commands for CMD'),
-                    subtitle: const Text(
-                      'Applies to the next session. Existing Windows commands take priority.',
-                    ),
-                  ),
-                SwitchListTile(
-                  value: nextBlack,
-                  onChanged: (v) => setLocal(() => nextBlack = v),
-                  title: const Text('White on black'),
-                ),
-              ],
-            ),
-          ),
+        builder: (context, setLocal) => AppDialog(
+          icon: Icons.terminal,
+          title: 'Cài đặt Terminal',
+          subtitle: 'Áp dụng cho cửa sổ Terminal từ xa này.',
+          width: 480,
+          onClose: () => Navigator.pop(context, false),
           actions: [
-            TextButton(
+            AppDialog.cancel(
+              context,
               onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel'),
             ),
-            FilledButton(
+            AppDialog.primary(
               onPressed: () => Navigator.pop(context, true),
-              child: const Text('Save'),
+              icon: Icons.check,
+              label: 'Lưu',
             ),
           ],
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              TextField(
+                controller: font,
+                decoration: InputDecoration(
+                  labelText: 'Phông chữ',
+                  hintText: os == 'windows' ? 'Consolas' : 'Menlo',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: fall,
+                decoration: const InputDecoration(
+                  labelText: 'Phông chữ dự phòng (cách nhau bằng dấu phẩy)',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: size,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'Cỡ chữ (pt, 8–30)',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: lines,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'Số dòng cuộn lại (phiên sau, 100–50000)',
+                ),
+              ),
+              const SizedBox(height: 8),
+              if (os == 'windows')
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: nextCompatibility,
+                  onChanged: (v) => setLocal(() => nextCompatibility = v),
+                  title: const Text('Lệnh kiểu Unix cho CMD'),
+                  subtitle: const Text(
+                    'Áp dụng cho phiên sau. Lệnh Windows có sẵn được ưu tiên.',
+                  ),
+                ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                value: nextBlack,
+                onChanged: (v) => setLocal(() => nextBlack = v),
+                title: const Text('Chữ trắng nền đen'),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -509,12 +519,12 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
         PopupMenuItem(
           value: 'copy',
           enabled: terminalController.selection != null,
-          child: Text('Copy    ${Platform.isMacOS ? '⌘C' : 'Ctrl+C'}'),
+          child: Text('Sao chép    ${Platform.isMacOS ? '⌘C' : 'Ctrl+C'}'),
         ),
         PopupMenuItem(
           value: 'paste',
           enabled: connected,
-          child: Text('Paste    ${Platform.isMacOS ? '⌘V' : 'Ctrl+V'}'),
+          child: Text('Dán    ${Platform.isMacOS ? '⌘V' : 'Ctrl+V'}'),
         ),
       ],
     );
@@ -529,7 +539,7 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
     final text =
         terminal!.mainBuffer.getText() +
         (terminal!.isUsingAltBuffer
-            ? '\n\n--- Active screen ---\n${terminal!.altBuffer.getText()}'
+            ? '\n\n--- Màn hình đang hoạt động ---\n${terminal!.altBuffer.getText()}'
             : '');
     setState(() => exporting = true);
     try {
@@ -551,12 +561,13 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Saved to Desktop: ${file.uri.pathSegments.last}'),
+            content: Text('Đã lưu vào Desktop: ${file.uri.pathSegments.last}'),
           ),
         );
       }
     } catch (e) {
-      if (mounted) setState(() => error = 'Could not save terminal output: $e');
+      if (mounted)
+        setState(() => error = 'Không lưu được nội dung terminal: $e');
     } finally {
       if (mounted) setState(() => exporting = false);
     }
@@ -598,8 +609,11 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
     body: Column(
       children: [
         Container(
-          height: 36,
-          color: const Color(0xff26323c),
+          height: 40,
+          decoration: const BoxDecoration(
+            color: Color(0xff26323c),
+            border: Border(bottom: BorderSide(color: Color(0xff34444f))),
+          ),
           padding: const EdgeInsets.only(left: 10, right: 4),
           child: Row(
             children: [
@@ -614,12 +628,12 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
                   status,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: Colors.white70, fontSize: 11),
+                  style: const TextStyle(color: Colors.white70, fontSize: 12),
                 ),
               ),
               IconButton(
                 onPressed: settings,
-                tooltip: 'Terminal settings',
+                tooltip: 'Cài đặt Terminal',
                 iconSize: 18,
                 visualDensity: VisualDensity.compact,
                 icon: const Icon(Icons.tune),
@@ -628,14 +642,14 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
                 onPressed: terminal != null && !exporting
                     ? downloadOutput
                     : null,
-                tooltip: 'Save all available output to Desktop',
+                tooltip: 'Lưu toàn bộ nội dung hiện có vào Desktop',
                 iconSize: 18,
                 visualDensity: VisualDensity.compact,
                 icon: const Icon(Icons.download_outlined),
               ),
               IconButton(
                 onPressed: connected ? () => sendInput('\x03') : null,
-                tooltip: 'Send Ctrl+C',
+                tooltip: 'Gửi Ctrl+C',
                 iconSize: 18,
                 visualDensity: VisualDensity.compact,
                 icon: const Icon(Icons.stop_circle_outlined),
@@ -656,11 +670,11 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
                     });
                     ready();
                   },
-                  child: const Text('Retry'),
+                  child: const Text('Thử lại'),
                 ),
               TextButton(
                 onPressed: () => setState(() => error = null),
-                child: const Text('Dismiss'),
+                child: const Text('Bỏ qua'),
               ),
             ],
           ),

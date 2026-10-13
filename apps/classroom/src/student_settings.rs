@@ -12,15 +12,12 @@ const WIDTH: usize = 820;
 const HEIGHT: usize = 600;
 const PAGES: [&str; 3] = ["Connection", "Presentation", "Diagnostics"];
 
-fn settings_path(profile: &Path) -> std::path::PathBuf {
-    profile.with_file_name("student-settings.toml")
-}
 pub fn apply_saved(config: &mut Config, profile: &Path) -> Result<()> {
-    let path = settings_path(profile);
-    if path.exists() {
+    if let Some(saved) = super::startup::profile_doc(profile, "settings")?.read::<serde_json::Value>()? {
+        let table = super::json_to_toml(&saved).context("saved Student settings are empty")?;
         config
-            .apply_saved(&std::fs::read_to_string(&path)?)
-            .with_context(|| format!("invalid Student settings: {}", path.display()))?;
+            .apply_saved(&toml::to_string(&table)?)
+            .context("invalid saved Student settings")?;
     }
     Ok(())
 }
@@ -31,10 +28,8 @@ fn overlay(config: &Config) -> String {
         config.app.log_level)
 }
 pub fn save(config: &Config, profile: &Path) -> Result<()> {
-    if let Some(parent) = profile.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(settings_path(profile), overlay(config))?;
+    let table: toml::Value = toml::from_str(&overlay(config))?;
+    super::startup::profile_doc(profile, "settings")?.write(&serde_json::to_value(table)?)?;
     Ok(())
 }
 

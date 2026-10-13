@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'agent.dart';
+import 'app_dialog.dart';
 
 /// One entry of the class-wide "Power & screen" menu.
 class PowerAction {
@@ -11,45 +12,45 @@ class PowerAction {
 
 const lockAction = PowerAction(
   'lock',
-  'Lock screens',
+  'Khóa màn hình',
   Icons.lock_outline,
-  'Locked',
+  'Đã khóa',
 );
 const unlockAction = PowerAction(
   'unlock',
-  'Unlock screens',
+  'Mở khóa màn hình',
   Icons.lock_open_outlined,
-  'Unlocked',
+  'Đã mở khóa',
 );
 const logoutAction = PowerAction(
   'logout',
-  'Log out users',
+  'Đăng xuất người dùng',
   Icons.logout,
-  'Logging out',
+  'Đang đăng xuất',
 );
 const rebootAction = PowerAction(
   'reboot',
-  'Restart computers',
+  'Khởi động lại máy',
   Icons.restart_alt,
-  'Restarting',
+  'Đang khởi động lại',
 );
 const shutdownAction = PowerAction(
   'shutdown',
-  'Shut down computers',
+  'Tắt máy',
   Icons.power_settings_new,
-  'Shutting down',
+  'Đang tắt máy',
 );
 const clipboardBlockAction = PowerAction(
   'clipboard_block',
-  'Block clipboard (exam mode)',
+  'Chặn clipboard (chế độ thi)',
   Icons.content_paste_off,
-  'Clipboard blocked',
+  'Đã chặn clipboard',
 );
 const clipboardAllowAction = PowerAction(
   'clipboard_allow',
-  'Allow clipboard',
+  'Cho phép clipboard',
   Icons.content_paste,
-  'Clipboard allowed',
+  'Đã cho phép clipboard',
 );
 
 /// Menu entries, grouped: screen lock first, then the disruptive actions.
@@ -62,7 +63,7 @@ List<PopupMenuEntry<String>> powerMenuItems({
     child: ListTile(
       dense: true,
       leading: Icon(Icons.lock_outline),
-      title: Text('Lock screens…'),
+      title: Text('Khóa màn hình…'),
     ),
   ),
   PopupMenuItem(
@@ -70,8 +71,8 @@ List<PopupMenuEntry<String>> powerMenuItems({
     child: ListTile(
       dense: true,
       leading: const Icon(Icons.lock_open_outlined),
-      title: const Text('Unlock screens'),
-      subtitle: anyLocked ? null : const Text('None locked right now'),
+      title: const Text('Mở khóa màn hình'),
+      subtitle: anyLocked ? null : const Text('Hiện không máy nào bị khóa'),
     ),
   ),
   PopupMenuItem(
@@ -82,12 +83,14 @@ List<PopupMenuEntry<String>> powerMenuItems({
         anyClipboardBlocked ? Icons.content_paste : Icons.content_paste_off,
       ),
       title: Text(
-        anyClipboardBlocked ? 'Allow clipboard' : 'Block clipboard (exam mode)',
+        anyClipboardBlocked
+            ? 'Cho phép clipboard'
+            : 'Chặn clipboard (chế độ thi)',
       ),
       subtitle: Text(
         anyClipboardBlocked
-            ? 'Clipboard is blocked right now'
-            : 'Clears anything copied, on every app — stops answer sharing',
+            ? 'Clipboard đang bị chặn'
+            : 'Xóa nội dung đã sao chép trên mọi ứng dụng — ngăn chép bài',
       ),
     ),
   ),
@@ -97,7 +100,7 @@ List<PopupMenuEntry<String>> powerMenuItems({
     child: ListTile(
       dense: true,
       leading: Icon(Icons.logout),
-      title: Text('Log out users…'),
+      title: Text('Đăng xuất người dùng…'),
     ),
   ),
   const PopupMenuItem(
@@ -105,7 +108,7 @@ List<PopupMenuEntry<String>> powerMenuItems({
     child: ListTile(
       dense: true,
       leading: Icon(Icons.restart_alt),
-      title: Text('Restart…'),
+      title: Text('Khởi động lại…'),
     ),
   ),
   const PopupMenuItem(
@@ -113,7 +116,7 @@ List<PopupMenuEntry<String>> powerMenuItems({
     child: ListTile(
       dense: true,
       leading: Icon(Icons.power_settings_new, color: Color(0xffb83b40)),
-      title: Text('Shut down…'),
+      title: Text('Tắt máy…'),
     ),
   ),
 ];
@@ -142,37 +145,36 @@ Future<void> runPower(
   final action = actionFor(op);
   var message = '';
   if (op == 'lock') {
-    final controller = TextEditingController(
-      text: 'Please look at the teacher.',
-    );
+    final controller = TextEditingController(text: 'Hãy chú ý lên giảng viên.');
     final ok = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Lock $audience'),
-        content: SizedBox(
-          width: 400,
-          child: TextField(
-            controller: controller,
-            autofocus: true,
-            maxLength: 200,
-            maxLines: 2,
-            decoration: const InputDecoration(
-              labelText: 'Message shown on the locked screen',
-              border: OutlineInputBorder(),
-            ),
-          ),
-        ),
+      builder: (context) => AppDialog(
+        icon: Icons.lock_outline,
+        tone: AppTone.warning,
+        title: 'Khóa $audience',
+        subtitle: 'Màn hình bị khóa cho tới khi bạn mở khóa.',
+        width: 480,
+        onClose: () => Navigator.pop(context, false),
         actions: [
-          TextButton(
+          AppDialog.cancel(
+            context,
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
           ),
-          FilledButton.icon(
+          AppDialog.primary(
             onPressed: () => Navigator.pop(context, true),
-            icon: const Icon(Icons.lock_outline, size: 18),
-            label: const Text('Lock'),
+            icon: Icons.lock_outline,
+            label: 'Khóa',
           ),
         ],
+        child: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLength: 200,
+          maxLines: 2,
+          decoration: const InputDecoration(
+            labelText: 'Thông báo hiện trên màn hình bị khóa',
+          ),
+        ),
       ),
     );
     message = controller.text.trim();
@@ -183,36 +185,26 @@ Future<void> runPower(
       op != 'clipboard_allow') {
     final detail = switch (op) {
       'logout' =>
-        'Students are signed out immediately. Unsaved work may be lost.',
+        'Học viên bị đăng xuất ngay lập tức. Công việc chưa lưu có thể bị mất.',
       'reboot' =>
-        'Students get a 15 second warning, then the computers restart. Unsaved work may be lost.',
+        'Học viên nhận cảnh báo 15 giây rồi máy khởi động lại. Công việc chưa lưu có thể bị mất.',
       _ =>
-        'Students get a 15 second warning, then the computers shut down. They must be switched on by hand afterwards.',
+        'Học viên nhận cảnh báo 15 giây rồi máy tắt. Sau đó phải bật máy bằng tay.',
     };
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        icon: Icon(action.icon, color: const Color(0xffb83b40)),
-        title: Text('${action.label.split(' ').first} $audience?'),
-        content: Text(detail),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: const Color(0xffb83b40),
-            ),
-            onPressed: () => Navigator.pop(context, true),
-            child: Text(
-              op == 'logout' ? 'Log out' : action.label.split(' ').first,
-            ),
-          ),
-        ],
-      ),
+    final name = switch (op) {
+      'logout' => 'Đăng xuất',
+      'reboot' => 'Khởi động lại',
+      _ => 'Tắt máy',
+    };
+    final ok = await confirmDialog(
+      context,
+      title: '$name $audience?',
+      message: detail,
+      confirmLabel: name,
+      icon: action.icon,
+      destructive: true,
     );
-    if (ok != true) return;
+    if (!ok) return;
   }
   if (!context.mounted) return;
   final messenger = ScaffoldMessenger.maybeOf(context);
@@ -248,8 +240,8 @@ Future<void> runPower(
       SnackBar(
         content: Text(
           failed.isEmpty
-              ? '${action.verb} ${targets.length} computer${targets.length == 1 ? '' : 's'}'
-              : '${action.verb}: ${targets.length - failed.length} done · failed ${failed.map((t) => names['${t['id']}'] ?? '').take(3).join(', ')}: ${failed.first['error']}',
+              ? '${action.verb} ${targets.length} máy'
+              : '${action.verb}: ${targets.length - failed.length} máy xong · lỗi ${failed.map((t) => names['${t['id']}'] ?? '').take(3).join(', ')}: ${failed.first['error']}',
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
         ),

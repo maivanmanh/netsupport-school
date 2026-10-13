@@ -1,13 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'agent.dart';
+import 'app_dialog.dart';
+import 'window_shell.dart';
 
-const _teal = Color(0xff156b79);
-const _bg = Color(0xfff3f5f9);
-const _danger = Color(0xffb83b40);
 const _line = Color(0xffe6eaee);
 const _modeBlock = 'block';
 const _modeAllowOnly = 'allow_only';
@@ -104,11 +102,6 @@ class _AppsWindowState extends State<AppsWindow> {
         id,
   ];
 
-  File? get cacheFile {
-    final dir = agent.dataDirectory;
-    return dir == null ? null : File('${dir.path}/app-inventory.json');
-  }
-
   @override
   void initState() {
     super.initState();
@@ -178,9 +171,7 @@ class _AppsWindowState extends State<AppsWindow> {
   /// only adds what is new.
   Future<void> loadCache() async {
     try {
-      final file = cacheFile;
-      if (file == null || !await file.exists()) return;
-      final data = jsonDecode(await file.readAsString());
+      final data = (await agent.storeList('inventory'))['cache'];
       if (data is! Map) return;
       for (final raw in (data['apps'] as List? ?? const [])) {
         if (raw is! Map) continue;
@@ -195,14 +186,12 @@ class _AppsWindowState extends State<AppsWindow> {
 
   Future<void> saveCache() async {
     try {
-      final file = cacheFile;
-      if (file == null) return;
-      await file.writeAsString(
-        jsonEncode({
+      await agent.storeApply('inventory', {
+        'cache': {
           'saved_ms': DateTime.now().millisecondsSinceEpoch,
           'apps': [for (final e in inventory.values) e.toJson()],
-        }),
-      );
+        },
+      });
     } catch (_) {}
   }
 
@@ -247,7 +236,7 @@ class _AppsWindowState extends State<AppsWindow> {
     if (ids.isEmpty) {
       setState(
         () => notice = inventory.isEmpty
-            ? 'No connected computer supports application control (Windows, updated Student, run as administrator).'
+            ? 'Chưa có máy nào đang kết nối hỗ trợ kiểm soát ứng dụng (cần Windows, Student bản mới, chạy bằng quyền quản trị).'
             : null,
       );
       return;
@@ -403,7 +392,7 @@ class _AppsWindowState extends State<AppsWindow> {
       }
       await Future<void>.delayed(const Duration(milliseconds: 200));
     }
-    return 'No completion confirmation received. Check the computers and retry.';
+    return 'Chưa nhận được xác nhận hoàn tất. Hãy kiểm tra các máy rồi thử lại.';
   }
 
   Future<void> apply({bool turnOff = false}) async {
@@ -412,8 +401,8 @@ class _AppsWindowState extends State<AppsWindow> {
     if (!turnOff && enabled && selected.isEmpty) {
       setState(
         () => error = mode == _modeAllowOnly
-            ? 'Tick at least one application to allow, or turn restrictions off.'
-            : 'Tick at least one application to block, or turn restrictions off.',
+            ? 'Hãy đánh dấu ít nhất một ứng dụng được phép, hoặc gỡ hạn chế.'
+            : 'Hãy đánh dấu ít nhất một ứng dụng cần chặn, hoặc gỡ hạn chế.',
       );
       return;
     }
@@ -421,32 +410,19 @@ class _AppsWindowState extends State<AppsWindow> {
       for (final id in selected)
         if (inventory[id] != null) inventory[id]!.name,
     ]..sort();
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(
-          turnOff ? 'Remove application restrictions?' : 'Apply restrictions?',
-        ),
-        content: Text(
-          turnOff
-              ? 'Every application block on the selected computers is lifted.'
-              : mode == _modeAllowOnly
-              ? 'On the selected computers only ${names.length} ticked application${names.length == 1 ? '' : 's'} can start; every other installed application is blocked and closed now. Ask students to save their work first.'
-              : '${names.length} ticked application${names.length == 1 ? '' : 's'} can no longer start on the selected computers and any copy running is closed now. Ask students to save their work first.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: Text(turnOff ? 'Remove' : 'Apply'),
-          ),
-        ],
-      ),
+    final ok = await confirmDialog(
+      context,
+      title: turnOff ? 'Gỡ hạn chế ứng dụng?' : 'Áp dụng hạn chế ứng dụng?',
+      icon: Icons.block_outlined,
+      destructive: !turnOff,
+      confirmLabel: turnOff ? 'Gỡ hạn chế' : 'Áp dụng',
+      message: turnOff
+          ? 'Mọi hạn chế ứng dụng trên các máy đã chọn sẽ được gỡ.'
+          : mode == _modeAllowOnly
+          ? 'Trên các máy đã chọn chỉ ${names.length} ứng dụng được đánh dấu mới chạy được; mọi ứng dụng khác đã cài đều bị chặn và đóng ngay. Hãy nhắc học viên lưu bài trước.'
+          : '${names.length} ứng dụng được đánh dấu sẽ không chạy được trên các máy đã chọn và bản đang chạy bị đóng ngay. Hãy nhắc học viên lưu bài trước.',
     );
-    if (!mounted || ok != true) return;
+    if (!mounted || !ok) return;
     setState(() {
       busy = true;
       error = null;
@@ -481,7 +457,7 @@ class _AppsWindowState extends State<AppsWindow> {
       });
     } catch (e) {
       if (mounted) {
-        setState(() => error = 'Could not save application selection: $e');
+        setState(() => error = 'Không lưu được lựa chọn ứng dụng: $e');
       }
     }
     if (!mounted) return;
@@ -536,147 +512,107 @@ class _AppsWindowState extends State<AppsWindow> {
         .where(appsBlockedStudents(agent).contains)
         .length;
     final canApply = eligible.isNotEmpty && !busy;
-    return Scaffold(
-      backgroundColor: _bg,
-      body: SafeArea(
-        child: Column(
-          children: [
-            _header(blocked),
-            if (scanning || fetchingIcons)
-              LinearProgressIndicator(
-                value: scanning && scanTotal > 0 ? scanDone / scanTotal : null,
-                minHeight: 2,
-              ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: SizedBox(
-                      height: 38,
-                      child: TextField(
-                        controller: search,
-                        onChanged: (_) => setState(() {}),
-                        style: const TextStyle(fontSize: 13),
-                        decoration: InputDecoration(
-                          hintText: 'Search applications',
-                          prefixIcon: const Icon(Icons.search, size: 18),
-                          filled: true,
-                          fillColor: Colors.white,
-                          contentPadding: EdgeInsets.zero,
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(10),
-                            borderSide: const BorderSide(color: _line),
-                          ),
-                          enabledBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(10),
-                            borderSide: const BorderSide(color: _line),
-                          ),
+    return WindowShell(
+      icon: Icons.block_outlined,
+      tone: AppTone.danger,
+      title: 'Kiểm soát ứng dụng',
+      subtitle: scanning
+          ? 'Đang quét $scanDone/$scanTotal máy…'
+          : '${widget.audience} · $blocked máy đang bị hạn chế',
+      actions: [
+        IconButton(
+          tooltip: 'Quét lại các máy',
+          onPressed: scanning ? null : scan,
+          icon: scanning
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.refresh, size: 20),
+        ),
+      ],
+      footer: _footer(canApply),
+      child: Column(
+        children: [
+          if (scanning || fetchingIcons)
+            LinearProgressIndicator(
+              value: scanning && scanTotal > 0 ? scanDone / scanTotal : null,
+              minHeight: 2,
+            ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 14, 24, 10),
+            child: Row(
+              children: [
+                Expanded(
+                  child: SizedBox(
+                    height: 38,
+                    child: TextField(
+                      controller: search,
+                      onChanged: (_) => setState(() {}),
+                      style: const TextStyle(fontSize: 13),
+                      decoration: InputDecoration(
+                        hintText: 'Tìm ứng dụng',
+                        prefixIcon: const Icon(Icons.search, size: 18),
+                        filled: true,
+                        fillColor: Colors.white,
+                        contentPadding: EdgeInsets.zero,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                          borderSide: const BorderSide(color: _line),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                          borderSide: const BorderSide(color: _line),
                         ),
                       ),
                     ),
                   ),
-                  const SizedBox(width: 12),
-                  Text(
-                    '${selected.length} ticked · ${inventory.length} applications',
-                    style: const TextStyle(
-                      fontSize: 12,
-                      color: Colors.blueGrey,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            if (notice != null)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                child: Text(notice!, style: const TextStyle(color: _danger)),
-              ),
-            Expanded(
-              child: inventory.isEmpty && scanning
-                  ? const Center(child: CircularProgressIndicator())
-                  : Container(
-                      margin: const EdgeInsets.symmetric(horizontal: 16),
-                      clipBehavior: Clip.antiAlias,
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: _line),
-                      ),
-                      child: list.isEmpty
-                          ? const Center(
-                              child: Text(
-                                'No applications to show.',
-                                style: TextStyle(color: Colors.blueGrey),
-                              ),
-                            )
-                          : ListView.separated(
-                              itemCount: list.length,
-                              separatorBuilder: (_, _) =>
-                                  const Divider(height: 1, color: _line),
-                              itemBuilder: (_, i) => _row(list[i]),
-                            ),
-                    ),
-            ),
-            _footer(canApply),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _header(int blocked) => Material(
-    color: Colors.white,
-    child: Padding(
-      padding: const EdgeInsets.fromLTRB(18, 12, 10, 10),
-      child: Row(
-        children: [
-          Container(
-            width: 34,
-            height: 34,
-            decoration: BoxDecoration(
-              color: _teal.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: const Icon(Icons.apps_outlined, color: _teal, size: 20),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Application control',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
                 ),
+                const SizedBox(width: 14),
                 Text(
-                  scanning
-                      ? 'Scanning $scanDone of $scanTotal computers…'
-                      : '${widget.audience} · restrictions active on $blocked',
+                  'Đã chọn ${selected.length} · ${inventory.length} ứng dụng',
                   style: const TextStyle(
-                    fontSize: 11.5,
-                    color: Colors.blueGrey,
+                    fontSize: 12.5,
+                    color: AppDialog.muted,
                   ),
                 ),
               ],
             ),
           ),
-          IconButton(
-            tooltip: 'Scan the computers again',
-            visualDensity: VisualDensity.compact,
-            onPressed: scanning ? null : scan,
-            icon: scanning
-                ? const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.refresh, size: 19),
+          if (notice != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 0, 24, 10),
+              child: InlineNotice(notice!, tone: AppTone.warning),
+            ),
+          Expanded(
+            child: inventory.isEmpty && scanning
+                ? const Center(child: CircularProgressIndicator())
+                : Container(
+                    margin: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+                    clipBehavior: Clip.antiAlias,
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: _line),
+                    ),
+                    child: list.isEmpty
+                        ? const DialogEmpty(
+                            icon: Icons.apps_outlined,
+                            title: 'Không có ứng dụng nào để hiển thị',
+                          )
+                        : ListView.separated(
+                            itemCount: list.length,
+                            separatorBuilder: (_, _) =>
+                                const Divider(height: 1, color: _line),
+                            itemBuilder: (_, i) => _row(list[i]),
+                          ),
+                  ),
           ),
         ],
       ),
-    ),
-  );
+    );
+  }
 
   Widget _row(AppEntry e) {
     final checked = selected.contains(e.id);
@@ -689,7 +625,7 @@ class _AppsWindowState extends State<AppsWindow> {
     final detail = [
       if (e.publisher.isNotEmpty) e.publisher,
       if (e.version.isNotEmpty) 'v${e.version}',
-      'on ${e.students.length} computer${e.students.length == 1 ? '' : 's'}',
+      'trên ${e.students.length} máy',
     ].join(' · ');
     return InkWell(
       onTap: controllable
@@ -745,12 +681,12 @@ class _AppsWindowState extends State<AppsWindow> {
                 ],
               ),
             ),
-            if (isNew) _pill('NEW', const Color(0xff1f7a4d)),
+            if (isNew) _pill('MỚI', const Color(0xff1f7a4d)),
             if (!controllable)
               Tooltip(
                 message:
-                    'No program file was found for this application, so it cannot be blocked.',
-                child: _pill('not controllable', Colors.blueGrey),
+                    'Không tìm thấy tệp chương trình của ứng dụng này nên không thể chặn.',
+                child: _pill('không điều khiển được', Colors.blueGrey),
               ),
           ],
         ),
@@ -799,94 +735,80 @@ class _AppsWindowState extends State<AppsWindow> {
     child: const Icon(Icons.apps, size: 18, color: Colors.blueGrey),
   );
 
-  Widget _footer(bool canApply) => Material(
-    color: Colors.white,
-    elevation: 6,
-    child: Padding(
-      padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _footer(bool canApply) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      if (error != null)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: InlineNotice(error!),
+        ),
+      if (skipped.isNotEmpty)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: InlineNotice(
+            'Chưa áp dụng cho: ${skipped.map((s) => s['name']!.isEmpty ? s['ip'] : s['name']).join(', ')} '
+            '(cần Student bản mới chạy bằng quyền quản trị trên Windows).',
+            tone: AppTone.warning,
+          ),
+        ),
+      Wrap(
+        spacing: 14,
+        runSpacing: 8,
+        crossAxisAlignment: WrapCrossAlignment.center,
         children: [
-          if (error != null)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Text(error!, style: const TextStyle(color: _danger)),
-            ),
-          if (skipped.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Text(
-                'Not applied to: ${skipped.map((s) => s['name']!.isEmpty ? s['ip'] : s['name']).join(', ')} '
-                '(need the updated Student running as administrator on Windows).',
-                style: const TextStyle(fontSize: 12, color: Colors.orange),
+          SegmentedButton<String>(
+            showSelectedIcon: false,
+            segments: const [
+              ButtonSegment(
+                value: _modeBlock,
+                icon: Icon(Icons.block, size: 16),
+                label: Text('Chặn ứng dụng đã chọn'),
               ),
-            ),
-          Wrap(
-            spacing: 12,
-            runSpacing: 8,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: [
-              SegmentedButton<String>(
-                showSelectedIcon: false,
-                segments: const [
-                  ButtonSegment(
-                    value: _modeBlock,
-                    icon: Icon(Icons.block, size: 16),
-                    label: Text('Block ticked'),
-                  ),
-                  ButtonSegment(
-                    value: _modeAllowOnly,
-                    icon: Icon(Icons.verified_outlined, size: 16),
-                    label: Text('Allow only ticked'),
-                  ),
-                ],
-                selected: {mode},
-                onSelectionChanged: (v) => setState(() {
-                  mode = v.first;
-                  enabled = true;
-                }),
-              ),
-              const SizedBox(width: 12),
-              SizedBox(
-                width: 180,
-                child: Text(
-                  mode == _modeBlock
-                      ? 'Ticked applications cannot be opened.'
-                      : 'Only ticked applications can be opened; all other installed applications are blocked.',
-                  style: const TextStyle(fontSize: 12, color: Colors.blueGrey),
-                ),
-              ),
-              if (baselineEnabled)
-                Padding(
-                  padding: const EdgeInsets.only(right: 8),
-                  child: OutlinedButton(
-                    onPressed: busy ? null : () => apply(turnOff: true),
-                    child: const Text('Remove restrictions'),
-                  ),
-                ),
-              FilledButton.icon(
-                onPressed: canApply && (changed || !baselineEnabled)
-                    ? () {
-                        enabled = true;
-                        apply();
-                      }
-                    : null,
-                icon: busy
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: Colors.white,
-                        ),
-                      )
-                    : const Icon(Icons.lock_outline, size: 18),
-                label: Text(busy ? 'Applying…' : 'Apply'),
+              ButtonSegment(
+                value: _modeAllowOnly,
+                icon: Icon(Icons.verified_outlined, size: 16),
+                label: Text('Chỉ cho phép ứng dụng đã chọn'),
               ),
             ],
+            selected: {mode},
+            onSelectionChanged: (v) => setState(() {
+              mode = v.first;
+              enabled = true;
+            }),
+          ),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 300),
+            child: Text(
+              mode == _modeBlock
+                  ? 'Các ứng dụng được chọn không thể mở.'
+                  : 'Chỉ các ứng dụng được chọn mới mở được; mọi ứng dụng đã cài khác bị chặn.',
+              style: const TextStyle(
+                fontSize: 12,
+                height: 1.35,
+                color: AppDialog.muted,
+              ),
+            ),
+          ),
+          if (baselineEnabled)
+            AppDialog.secondary(
+              onPressed: busy ? null : () => apply(turnOff: true),
+              label: 'Gỡ hạn chế',
+            ),
+          AppDialog.primary(
+            onPressed: canApply && (changed || !baselineEnabled)
+                ? () {
+                    enabled = true;
+                    apply();
+                  }
+                : null,
+            icon: Icons.lock_outline,
+            busy: busy,
+            label: busy ? 'Đang áp dụng…' : 'Áp dụng',
           ),
         ],
       ),
-    ),
+    ],
   );
 }

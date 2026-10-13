@@ -1,10 +1,15 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:classroom_console/agent.dart';
 import 'package:classroom_console/monitoring_badge.dart';
+
 void main() {
   test('badge reflects acknowledgement, offline retention and errors', () {
     final agent = Agent([]);
-    void state(Map value) => agent.state = {'tools': {'monitoring_badges': {'pc': value}}};
+    void state(Map value) => agent.state = {
+      'tools': {
+        'monitoring_badges': {'pc': value},
+      },
+    };
     expect(badgeLabel(agent, 'pc'), 'Đã tắt');
     state({'enabled': true, 'status': 'pending'});
     expect(badgeLabel(agent, 'pc'), 'Đang bật…');

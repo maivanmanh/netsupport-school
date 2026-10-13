@@ -4886,3 +4886,250 @@ Windows Students, including shell identity, input/output, close and reconnect.
 ### 2026-10-12 — chốt nhanh và dọn bàn giao phòng máy
 
 Bản đồng bộ Teacher/Student `room-fixes-input-20261012` đã build; 709-17 và 709-18 xác nhận cập nhật. Terminal keyboard regression pass, App Control Apply cả hai complete và rule test đã hoàn nguyên. Các sửa badge/native sizing chưa được runtime xác minh; Ctrl+Alt+Del chưa hoàn tất vì Keyboard Filter disabled và không được reboot. Bản chạy/logs lưu ngoài repo trên Desktop. Code/test/report được stage, giữ .git, dọn build/cache theo yêu cầu owner; không commit. Chi tiết, giới hạn và bước tiếp theo: [room final handoff](diagnostics/2026-10-12-room-final-handoff.md).
+
+### 2026-10-12 — Làm lại UI Teacher: ribbon có nhãn chữ, tiếng Việt
+
+Thay thanh ~17 icon không nhãn trên màn hình chính Teacher bằng ribbon 4 tab có nhãn chữ (Kiểm soát lớp / Tin nhắn & tệp / Giám sát / Hệ thống) trong `lib/teacher_ribbon.dart`; chip phạm vi luôn nói rõ thao tác áp dụng cho "Cả lớp" hay "N máy đã chọn"; nút "Chọn máy" thay icon checklist ẩn, kèm "Chọn tất cả máy online/Bỏ chọn" ngay trên thanh; thẻ Student gom 3 icon thành một nút "⋯" mở cùng menu chuột phải; ribbon tự thu gọn khi cửa sổ cao <640px. Chuỗi màn hình chính chuyển sang tiếng Việt (bảng `Vi` trong `teacher_ribbon.dart`). Logic agent, lệnh và cửa sổ con không đổi.
+Đã xác minh: `flutter analyze lib` không thêm cảnh báo; `flutter test` — test mới `test/ribbon_test.dart` (4) pass, test cũ cập nhật chuỗi pass. Còn 9 test lỗi sẵn có từ trước thay đổi (8 trong observe_test, 1 trong class_control_test), không do lượt này. Chưa runtime-verified trên Windows/macOS thật; chưa build/deploy.
+Rủi ro/chưa làm: cửa sổ con (Observe, Files, Activity, Internet, App control, Settings…) vẫn tiếng Anh; test widget dùng font Ahem nên chỉ kiểm tra cấu trúc, chưa kiểm tra thẩm mỹ thật; số cột lưới ở 740×520 nay là ≥2 (toolbar cao hơn).
+Next: build cặp Teacher+Student theo PROJECT_NOTES, chạy thử trên máy thật, chỉnh theo phản hồi; sau đó Việt hóa các cửa sổ con.
+
+### 2026-10-12 — Teacher: mọi cài đặt lưu tập trung trong một SQLite (`classroom.db`)
+
+Chủ dự án yêu cầu chuẩn hóa: tất cả thông tin Teacher nhớ lại phải nằm ở một nơi duy nhất là local database. Quyết định: **SQLite (`rusqlite` bundled) do agent Rust sở hữu**, một bảng `documents(namespace, key, value JSON, updated_at)` với namespace cố định (`prefs`, `config`, `roster`, `inventory`, `activity`, `rules`, `badges`, `recordings`, `hardware`, `ui`); crate mới `crates/classroom-store` (migrate theo `user_version`, WAL + synchronous=FULL, file hỏng thì đổi tên `.corrupt-<ts>` rồi tạo mới, schema mới hơn thì từ chối chứ không hạ cấp). Mọi cửa sổ Flutter (kể cả cửa sổ phụ) đọc/ghi qua IPC `store_list`/`store_apply` — một writer duy nhất, không thêm phụ thuộc native cho Flutter. Console chỉ ghi được `prefs/config/roster/inventory/ui/activity`; `rules/badges/recordings/hardware` chỉ agent ghi qua lệnh đã kiểm tra.
+Đã chuyển vào DB: `console-settings.json`, `teacher-settings.toml` (overlay cấu hình, agent tự đọc khi khởi động; Flutter không còn truyền `--config`/`--bind-ip`/cổng), `known-students.json`, `app-inventory.json`, `monitoring-badges.json`, `recording-sessions.json`, `hardware-policy.json`, `class-rules.json`, cache báo cáo Activity theo Student (trước là thư mục `activity-cache/`), và cờ onboarding macOS (trước là NSUserDefaults). Lần chạy đầu tự nhập các tập tin cũ đúng một lần (đánh dấu trong `meta`, cùng transaction với dữ liệu) rồi đổi tên `.migrated` — dữ liệu cũ được giữ, không bao giờ đọc lại làm nguồn sự thật.
+Cố ý KHÔNG chuyển (cần chủ dự án quyết định): (1) Student: `student-settings.toml`, trạng thái guard/VS Code/App control/`activity-monitoring.json` — đây là máy Student, ngoài phạm vi "phía giảng viên"; (2) bookmark quyền Desktop (security-scoped, do macOS cấp, gắn với chữ ký app, không phải cài đặt); (3) `terminal-identity.json` (khóa riêng TLS của Teacher, quyền 0600) và `remote-terminal-audit.jsonl` (nhật ký append-only) — là danh tính/nhật ký, không phải cài đặt; (4) log, diagnostics ZIP, student-downloads, outbox, `teacher-endpoint.json` (bắt tay IPC lúc chạy). `class-rules` vẫn hết hiệu lực khi sang ngày mới (thiết kế cũ, khớp Student).
+Đã xác minh: `cargo test --workspace` pass (263 test agent, trước đó 246; crate store 8 test; thêm test IPC/namespace/overlay); `flutter test` chỉ còn 9 lỗi nền có sẵn; build cặp Teacher+Student (gồm cross-compile Windows x64 với SQLite bundled) thành công; **chạy thật trên Mac**: dữ liệu thật của owner được nhập (prefs 12 khóa, config, inventory, roster 3, recordings) và đối chiếu giống hệt bản sao lưu; khởi động lại lần hai đọc từ DB, không lỗi, hai Student (.2, .166) kết nối lại. Bản sao lưu trước khi migrate: `scratchpad/legacy-backup`.
+Chưa xác minh: chạy Windows Teacher thật với DB (chỉ cross-compile Student/guard); ghi từ cửa sổ phụ (Internet/VS Code/Apps) và cài đặt `Settings → Save & reconnect` trên runtime thật (có test đơn vị, chưa bấm tay); migrate trên Windows.
+Next: owner thử Settings/Internet/VS Code/Apps trên Mac rồi Windows, xác nhận đóng-mở lại vẫn còn; quyết định các mục "không chuyển" ở trên.
+
+### 2026-10-12 — Student cũng lưu cài đặt vào SQLite (`classroom.db` trong thư mục profile)
+
+Theo yêu cầu "chuẩn hóa cả phía Student": mỗi thư mục profile (Student: `%APPDATA%\Classroom` / `~/Library/Application Support/Classroom`) có `classroom.db`, namespace `profile`, mở qua `classroom_store::open_shared` (một kết nối dùng chung mỗi tiến trình). Đã chuyển: `profile.toml` (role + Teacher IP), `device-id.txt` (tạo bằng `insert_if_absent` để hai tiến trình chung một ID), `teacher-ip.txt`, `student-settings.toml`, `ui-preferences.toml`, `connection-popup.txt`, `monitoring-badge.json`, `activity-monitoring.json`, `guard-policy.json`. Khác Teacher, **tập tin gốc của Student được giữ nguyên** (không đổi tên): updater có thể rollback về bản chưa có DB và bản đó vẫn phải đọc được Teacher IP/cài đặt để kết nối lại; DB mới là nguồn sự thật, tập tin cũ chỉ còn là bản tạm cho rollback và sẽ không bị nhập lại.
+Cố ý giữ ngoài DB (trạng thái thực thi ở mức hệ điều hành, phải nằm đúng chỗ OS/service đọc): HKLM registry của App Control + IFEO + stub ProgramData, WFP/DNS/hosts của Guard, cài đặt VS Code của người dùng; lock instance `student-<port>.lock`; thư mục việc đang chạy `recordings/`, `terminal-workers/`; `classroom-bootstrap.toml` do bộ cài cấp; khóa TLS + audit của Remote Terminal; bookmark Desktop macOS; log/diagnostics/downloads.
+Đã xác minh: `cargo test --workspace` pass (263 test agent, 12 test store); `cargo check` target Windows pass (phát hiện và sửa import `PathBuf` chỉ lộ ở bản Windows); build cặp Teacher+Student pass; **chạy thật trên Windows Student 192.168.50.166** (cập nhật qua Classroom updater, không SSH binary): DB được tạo, nhập đủ 6 tập tin (launch, device_id giữ nguyên `1790990215799937300-6188`, teacher_ip, settings, badge, connection_popup), Student khởi động lại và Teacher xác nhận bản mới; tập tin gốc còn nguyên. Sao lưu trước đó: `scratchpad/win-backup`. Mac Student (.2) chưa cập nhật (cần owner cấp lại quyền thủ công).
+Chưa xác minh: bật/tắt Internet/Guard (cần admin) và ghi `guard_policy`/`activity_monitoring` trên Windows thật chỉ có test đơn vị; rollback updater thực tế sang bản cũ chưa thử.
+
+### 2026-10-12 — Đại tu dialog Teacher: khung `AppDialog` chung + Việt hóa
+
+Thêm `lib/app_dialog.dart`: `AppDialog` (header icon/tiêu đề/mô tả/đóng, thân cuộn, footer nút), nút `primary/secondary/cancel`, `DialogSection`, `InlineNotice`, `DialogEmpty`, `DialogPanel`, `confirmDialog`; `classroomTheme()` dùng chung cho cửa sổ chính và cửa sổ phụ. Đã chuyển sang khung này và Việt hóa: Nhắn tin, Chạy ứng dụng (danh sách, sửa, xác nhận xóa), Mở website, Thu tệp (+ tiến độ), Ghi màn hình, Phản hồi, Mất kết nối, Chẩn đoán, Huy hiệu giám sát, Khóa/Tắt máy/Khởi động lại/Đăng xuất, Cài đặt giảng viên (sidebar có icon, 7 trang), quyền macOS, xác nhận Chặn ứng dụng/VS Code/Xóa lịch sử Activity, nội dung clipboard, tên danh sách & trình duyệt quét (Internet), Cài đặt Terminal, Nhắn tin trong Quan sát; thẻ thông báo nổi (tiến độ gửi tệp, kết quả, phản hồi); tiêu đề các cửa sổ phụ. Chưa chuyển: nội dung bên trong các cửa sổ phụ (Internet, Chặn ứng dụng, VS Code, Activity, Files, Hardware, Observe, Terminal) vẫn là giao diện/ngôn ngữ cũ.
+Đã xác minh: `flutter analyze` sạch lỗi/warning mới; `flutter test` — thêm `app_dialog_test` (3), cập nhật chuỗi của các test cũ (diagnostics, tools_activity, settings, permissions, recording, roster…), chỉ còn 9 lỗi nền có sẵn; kiểm tra bằng mắt ảnh chụp từng dialog (phông Arial Unicode + Material Icons trong test tạm, đã xóa) — không tràn, tiếng Việt có dấu hiển thị đúng; ảnh chụp cửa sổ Teacher thật (bản trước đó) khớp thiết kế.
+Chưa xác minh: dialog trên Windows thật; macOS dialog quyền khi chưa cấp quyền; các cửa sổ phụ chưa Việt hóa/đại tu.
+
+### 2026-10-12 — Đại tu các cửa sổ phụ lớn của Teacher
+
+Thêm `lib/window_shell.dart` (`WindowShell` header icon/tiêu đề/mô tả/nút + dải thông báo + thân + footer; `WindowCard`, `StatusChip`) cùng phong cách với `AppDialog`. Đã làm: **Hardware Control** (thẻ nhóm thiết bị, chip trạng thái màu, công tắc Chặn/Cho phép), **Kiểm soát ứng dụng**, **Tiện ích VS Code**, **Truy cập Internet** (4 chế độ, danh sách, nhóm website; sửa lỗi assert `Autocomplete` thiếu `focusNode` ở chế độ cho phép danh sách), **Hoạt động** (Việt hóa toàn bộ, định dạng ngày d/m), **Tệp** (WindowShell + Việt hóa), **Quan sát** và **Terminal từ xa** (Việt hóa nhãn/tooltip/menu; giữ nguyên logic và giao diện terminal tối). Ghi chú quét website, lỗi trình duyệt ẩn cũng đã Việt hóa. Footer `WindowShell` đã sửa để rộng hết cửa sổ (lỗi lộ ra khi xem ảnh chụp).
+Đã xác minh: `flutter analyze` sạch; `flutter test` chỉ còn 9 lỗi nền có sẵn — danh sách 8 test `observe_test` lỗi **giống hệt** trước/sau đổi chuỗi; kiểm tra bằng ảnh chụp dựng sẵn (phông thật) cho Hardware, Ứng dụng, VS Code, Internet, Hoạt động.
+Chưa xác minh: chạy thật với Student (hai Student đang tắt theo owner 2026-10-12 nên chưa deploy/thử); Observe/Terminal/Files chỉ Việt hóa, chưa có ảnh chụp trực quan; Windows Teacher.
+
+
+## 2026-10-13 — Ubuntu Student receiving milestone
+
+Owner authorized Ubuntu Student implementation and task prioritization. The
+owner's target is Ubuntu 22.04 ARM64 in Parallels at 10.211.55.5; it uses a slow
+disk. Owner explicitly requested functional validation only, not performance.
+Windows Phase 1 acceptance and existing paired release-build rules remain intact.
+
+### Implemented
+
+- `codec-linux`: bundled OpenH264 0.9.8 software H.264 decode, immediate output for
+  the no-B-frame profile, packed BGRA, source timestamps and bounded stage metrics.
+  Rejects H.265, malformed/oversized AUs and decoded geometry beyond 1920×1080.
+  Linux backend effective MSRV is 1.89; no hardware/runtime codec dependency.
+- `renderer-linux`: native X11/XWayland, aspect-preserving minifb scaling, black
+  bars, local pointer overlay, latest retained surface, dirty-only pointer redraw
+  and resize repaint. EWMH fullscreen/above requests are compositor policy, not
+  privileged enforcement. Native Wayland is not implemented.
+- Linux selects those backends in the existing bounded UDP/jitter/depacketize/
+  decode/render receiver. No wire protocol, Teacher encoder/fan-out, media queue
+  size or recovery timeout changed. Linux Teacher is explicitly rejected.
+- Linux capture/monitoring endpoint is not registered. Unsupported capture,
+  terminal, power/launch, updater, badge and connection-popup capabilities are
+  not advertised. Portable file/diagnostic plumbing remains existing code.
+- Vendored minifb X11 now honors `visible:false` and real show/hide. The hidden
+  Student host initializes before control registration and keeps XWayland warm
+  across sessions. Patch provenance is in `vendor/minifb/CLASSROOM_PATCH.md`.
+- Native Linux development packaging script, source SHA-256 fingerprint/compiler/
+  nullable Git metadata, ELF x86_64/ARM64 package identification and four tests.
+  Usage, scope and subsequent tasks: `docs/28_UBUNTU_STUDENT.md`.
+
+### Verification
+
+Host checks (toolchain explicitly selected where necessary):
+
+```text
+cargo test --workspace --exclude codec-macos-vt --offline
+cargo test -p codec-macos-vt --offline  # outside sandbox for VideoToolbox
+cargo check -p classroom-app --bin Classroom --bin ClassroomStudent
+cargo check -p classroom-app --bin Classroom --bin ClassroomStudent --target x86_64-pc-windows-gnu
+cargo check -p classroom-app --tests --target x86_64-unknown-linux-gnu  # Zig C/C++ cross tools
+cargo clippy -p codec-linux -p renderer-linux --tests -- -D warnings
+cargo clippy -p renderer-linux --tests --target x86_64-unknown-linux-gnu -- -D warnings
+cargo clippy -p classroom-app --bin ClassroomStudent --target x86_64-unknown-linux-gnu
+python3 scripts/test-student-linux-package.py
+bash -n scripts/build-student-linux.sh
+```
+
+409 workspace tests passed in the portable and macOS-codec runs; five manual
+checks remained ignored. Four packaging tests passed. Windows/macOS role checks
+and Linux x64 compile checks passed. Strict new-crate Clippy passed; broad app/
+vendor checks retain existing warnings. New Rust files pass rustfmt and the diff
+passes whitespace checks; full-file formatting of existing app files is already
+inconsistent and was not broadly rewritten.
+
+Native Ubuntu ARM64 (Rust 1.99.0, isolated `/tmp/classroom-ubuntu-validation`):
+
+```text
+cargo +stable test --locked -p codec-linux -p renderer-linux
+xvfb-run -a cargo +stable test --locked -p renderer-linux hidden_host -- --ignored --nocapture
+xvfb-run -a cargo +stable test --locked -p classroom-app --bin Classroom linux_student_smoke -- --ignored --nocapture
+# Same built smoke executable run as parallels with the existing GNOME
+# DISPLAY=:0 and session XAUTHORITY (path only; no grants changed).
+cargo +stable build --locked --bin ClassroomStudent
+ClassroomStudent --version
+ClassroomStudent --diagnose --loopback --launch-profile <isolated profile> --log-file <isolated log>
+ldd ClassroomStudent
+```
+
+Five decoder + three surface tests passed. Native X11 attributes proved the 1×1
+background host remains unmapped after event pumping. Both Xvfb and normal-user
+GNOME/XWayland receiver smoke tests passed active late join, real UDP receive,
+depacketization, decode, native window rendering, Stop/Start on one TCP connection
+and disconnect teardown. Assertions require nonzero receive/decode/render reports
+for each stream; diagnostic headless mode was not used. The two desktop streams
+reported 60 decoded frames each, with nonzero actual rendered frames. These are
+64×48 synthetic loopback H.264 fixtures, not real screen capture/LAN acceptance.
+The actual ARM64 executable built and its version/diagnostics/library checks
+passed. No performance conclusion is drawn from any VM timings or cadence.
+
+### Findings, corrections and limits
+
+- Initial sandbox-wide tests hit two VideoToolbox initialization errors (-12903).
+  The same existing codec tests passed 7/7 with VideoToolbox access outside sandbox.
+- Parallels Tools updated/restarted during setup; transient guest-channel errors
+  interrupted setup before recovering. The VM source/toolchain/test area is
+  isolated; no existing Classroom deployment was replaced.
+- The first fixed-three-second fake Teacher closed stream 102 before Xvfb's next
+  window was ready. The harness now waits for an actual rendered report, sends
+  another second, and retains bounded 12/15-second test deadlines/assertions.
+- A normal-user XWayland cold start consumed about 25 seconds before registration
+  warmup was restored, causing control liveness expiry. Hidden host initialization
+  now occurs before TCP registration and persists across cycles. The final tests
+  passed without changing production liveness deadlines or enlarging media queues.
+- Native build/runtime was ARM64 only; Linux x64 is compile-checked only. No actual
+  Windows/macOS Teacher LAN session, full-agent automatic reconnect, long soak,
+  visual cursor/text/aspect QA, induced network-loss acceptance, native Wayland,
+  Ubuntu 24.04 or physical-classroom benchmark is claimed.
+- Release tar.gz creation has not been executed; script/package source checks do
+  not constitute a shipped release. No Teacher release was built/replaced and no
+  v1 assets, settings/profiles/device IDs or privacy grants changed. The temporary
+  debug executable is a validation artifact, not an installed Student package.
+- Existing unrelated working-tree edits were preserved. No checkpoint commit was
+  made: this session's Git metadata is read-only and the checkout was already dirty.
+
+Logs: `target/ubuntu-validation/{native-final,desktop-final,native-executable-final,
+linux-renderer-final-clippy,linux-app-clippy,macos-final-check,windows-final-check,
+portable-tests,macos-codec-tests,package-tests}.log`. Earlier failed runs are retained
+in the same folder rather than relabeled as passes.
+
+Exact next step: run the complete Ubuntu Student agent against a real current
+Windows/macOS Teacher over LAN, using paired packages when a Teacher build is
+requested. Verify full-agent reconnect, actual screen/cursor/aspect behavior and a
+longer functional session on this slow VM. Then tackle launcher/autostart and
+Ubuntu bootstrap/updater as separate tasks; capture/Observe and OS controls need
+separate Linux backends. Performance measurement is deferred per owner request.
+
+
+## 2026-10-13 — Ubuntu Student: real Teacher LAN functional validation
+
+Status: **complete for the receiving/lifecycle functional gate**, performance
+explicitly deferred by owner because the Parallels VM is on a slow disk.
+Detailed evidence and limits:
+`checkpoints/diagnostics/2026-10-13-ubuntu-student-lan.md`.
+
+New reproducible tools: `scripts/test-ubuntu-student-lan.py`,
+`ubuntu-student-lan-worker.py`, `ubuntu-lan-workload.swift`. They run an isolated
+room with the existing permitted macOS Teacher package and the complete native
+Ubuntu Student executable; no fixture receiver substitutes for the Student agent.
+The Student has its own temporary profile/SQLite and binary directory. All process
+signals are restricted to children or exact run-owned binary/process-group paths.
+No SSH credential is embedded, printed or saved. No product Rust/Flutter code,
+privacy grant, deployment/package or production default changed in this step.
+
+Verification:
+
+```text
+python3 -m py_compile scripts/test-ubuntu-student-lan.py scripts/ubuntu-student-lan-worker.py
+python3 scripts/test-ubuntu-student-lan.py --soak-seconds 180
+# Workload is compiled with swiftc by the harness.
+git diff --check
+```
+
+Final run `target/ubuntu-lan-validation/20261013-114418/results.json` has
+`passed:true`. Passed: idle registration/Start and real screen decode/render;
+Stop with Student still alive; active late join after Student restart with the
+same identity; Teacher crash/restart automatic reconnect without restarting
+Student; silent Teacher liveness expiry/release/recovery; 180-second functional
+session with 18 status samples. Final owned Student status was `alive:false`.
+
+Teacher capture was **1512×982**, protocol 8, using ScreenCaptureKit/VideoToolbox.
+The test profile retained resolution and capped cadence at 5 FPS, target 2 Mbps;
+no FPS/CPU/latency requirement was assessed. Teacher and VM communicated through
+Parallels virtual LAN at 10.211.55.2/10.211.55.5, isolated ports 49000–49011.
+Foreground audit: 239/239 workload samples. Final Student session logged 905
+successful decodes and 903 renders, zero decode/depacketizer errors, valid cursor
+image/state reception and zero malformed pointer packets. These are functional
+progress counters, not physical-LAN/performance acceptance or manual visual QA.
+
+The Teacher binary was reused from the existing paired-20261012-212529 package;
+this is compatibility validation, not a new paired release. Manifest records
+both executable hashes and paths. The framework retains earlier failed runs:
+113727 had a transient Parallels job-handle error; 114022 received/rendered but a
+raw Teacher restart refused the killed process's stale IPC endpoint. Bounded
+retries for the specific guest-tool error are safe because setup/start are
+journaled/idempotent. A restarted Teacher now uses a fresh test IPC file, retaining
+same room ports/profile directory and preserving the stale file as evidence.
+No product crash-recovery or media timeout/buffer behavior was changed.
+
+Rust/Flutter suites were not rerun for these test-tool/documentation-only changes;
+previous receiving-backend regression results remain separately recorded above.
+No checkpoint commit: Git metadata is read-only and unrelated working-tree edits
+were already present and preserved.
+
+Exact next step: implement a per-user Ubuntu launcher/install package and graphical
+session autostart while retaining SQLite profiles outside the executable directory.
+Then add Ubuntu bootstrap/updater integration and fresh Student package bundling
+according to the paired-build rule. Manual cursor/text/aspect/display-change QA,
+Linux x64/24.04, native Wayland and capture/Observe/OS-control backends remain open.
+
+
+## 2026-10-13 — Owner-confirmed Ubuntu screen sharing and handoff
+
+Owner manually confirmed that the macOS Teacher screen is visible on Ubuntu
+Student and requested pausing implementation here, saving history, and committing
+the current work to main/GitHub. This confirms the basic screen-sharing function,
+not performance acceptance. Performance remains deferred on the slow-disk VM.
+
+Manual session was launched from existing Mac Classroom Console/Agent under
+`target/Classroom Console.app` and the isolated Ubuntu Student test binary.
+Teacher 10.211.55.2 / Student 10.211.55.5, control 49000, media 49010, feedback
+49011; profile capped at 5 FPS and 2 Mbps. Host session artifacts:
+`target/ubuntu-lan-validation/manual-20261013-122601/`. Both applications were
+left running for owner testing; this is a transient development session, not an
+installed/autostart deployment. Ubuntu worker uses a 1200-second session limit.
+Do not assume either process or temporary VM paths survive until the next task.
+
+Resume from `docs/28_UBUNTU_STUDENT.md` and
+`checkpoints/diagnostics/2026-10-13-ubuntu-student-lan.md`. Next implementation:
+per-user Ubuntu launcher/install and graphical-session autostart with persistent
+profiles separate from binaries, followed by Ubuntu bootstrap/updater and paired
+Student bundling. Native Wayland, Linux x64/24.04, Linux capture/Observe and OS
+controls remain unverified or unimplemented as documented. Ubuntu is actually
+22.04 ARM64 (owner initially described 22.05), VM `Ubuntu 22.04 ARM64`; use
+Parallels guest tools without persisting SSH credentials.
+
+Publication checkpoint includes the existing UI/store work and Ubuntu additions.
+No new release build requested or produced; the permitted existing Teacher was
+reused. This publication step runs whitespace/package checks; prior runtime and
+Rust/Flutter validation remains recorded separately, rather than claiming a new
+full test run.

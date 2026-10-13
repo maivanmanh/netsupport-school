@@ -30,34 +30,42 @@ void main() {
       );
       await tester.tap(find.text('Settings'));
       await tester.pumpAndSettle();
-      expect(find.text('Teacher settings'), findsOneWidget);
+      expect(find.text('Cài đặt giảng viên'), findsOneWidget);
       expect(find.text('Student'), findsNothing);
       for (final section in [
-        'Broadcast',
-        'Observe',
-        'File transfer',
-        'Diagnostics',
-        'Student setup',
-        'Connection',
+        'Phát màn hình',
+        'Quan sát',
+        'Truyền tệp',
+        'Chẩn đoán',
+        'Cài đặt máy học viên',
+        'Kết nối',
       ]) {
         await tester.scrollUntilVisible(
-          find.widgetWithText(ListTile, section),
-          section == 'Connection' ? -80 : 80,
+          find.descendant(
+            of: find.byKey(const ValueKey('teacher-settings-sections')),
+            matching: find.text(section),
+          ),
+          section == 'Kết nối' ? -80 : 80,
           scrollable: find.descendant(
             of: find.byKey(const ValueKey('teacher-settings-sections')),
             matching: find.byType(Scrollable),
           ),
         );
-        await tester.ensureVisible(find.widgetWithText(ListTile, section));
+        await tester.ensureVisible(
+          find.descendant(
+            of: find.byKey(const ValueKey('teacher-settings-sections')),
+            matching: find.text(section),
+          ),
+        );
         await tester.pumpAndSettle();
         await tester.tap(find.text(section));
         await tester.pumpAndSettle();
         expect(tester.takeException(), isNull);
       }
       await tester.enterText(find.byType(TextField).first, 'bad-ip');
-      await tester.tap(find.text('Save & reconnect'));
+      await tester.tap(find.text('Lưu & kết nối lại'));
       await tester.pumpAndSettle();
-      expect(find.textContaining('Enter an IPv4 address'), findsOneWidget);
+      expect(find.textContaining('Nhập địa chỉ IPv4'), findsOneWidget);
       expect(find.byType(TeacherSettingsDialog), findsOneWidget);
       agent.dispose();
     },

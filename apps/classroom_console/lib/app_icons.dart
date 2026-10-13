@@ -432,5 +432,5 @@ String formatClock(int unixMs) {
       t.year == today.year && t.month == today.month && t.day == today.day;
   return sameDay
       ? '${two(t.hour)}:${two(t.minute)}'
-      : '${t.month}/${t.day} ${two(t.hour)}:${two(t.minute)}';
+      : '${t.day}/${t.month} ${two(t.hour)}:${two(t.minute)}';
 }

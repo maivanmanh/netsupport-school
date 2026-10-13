@@ -13,7 +13,6 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::path::Path;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -50,17 +49,15 @@ pub type Fix = (&'static str, Value);
 
 impl ClassRules {
     /// Rules from disk, or none if they are from another day or unreadable.
-    pub fn load(path: &Path) -> Self {
+    pub fn load(doc: &classroom_store::Doc) -> Self {
         let today = crate::local_day::today();
-        match std::fs::read(path).ok().and_then(|b| serde_json::from_slice::<Self>(&b).ok()) {
+        match doc.read::<Self>().ok().flatten() {
             Some(rules) if rules.day == today => rules,
             _ => Self { day: today, ..Self::default() },
         }
     }
-    pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        let temporary = path.with_extension("json.tmp");
-        std::fs::write(&temporary, serde_json::to_vec(self)?)?;
-        std::fs::rename(&temporary, path)?;
+    pub fn save(&self, doc: &classroom_store::Doc) -> anyhow::Result<()> {
+        doc.write(self)?;
         Ok(())
     }
     /// Starts a new day: every rule is dropped. Returns whether anything changed.
@@ -188,9 +185,9 @@ mod tests {
 
     #[test]
     fn rules_from_another_day_are_dropped() {
-        let dir = std::env::temp_dir().join(format!("rules-{}", media_core::unix_us()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("class-rules.json");
+        let store: classroom_store::Shared =
+            std::sync::Arc::new(classroom_store::Store::open_in_memory().unwrap());
+        let path = store.doc(classroom_store::ns::RULES, "today");
         let mut old = rules();
         old.day -= 1;
         old.save(&path).unwrap();
@@ -201,6 +198,5 @@ mod tests {
         let mut rolled = old;
         assert!(rolled.roll_over());
         assert!(rolled.internet.is_none() && !rolled.activity);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 }

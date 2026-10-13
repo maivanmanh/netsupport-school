@@ -79,8 +79,11 @@ void main() {
       agent.state['phase'] = 'sharing';
       agent.notifyListeners();
       await tester.pumpAndSettle();
-      expect(find.text('Stop sharing'), findsOneWidget);
-      expect(find.text('Control Student + present to class'), findsNothing);
+      expect(find.byTooltip('Dừng chiếu'), findsOneWidget);
+      expect(
+        find.byTooltip('Điều khiển & chiếu màn hình học viên'),
+        findsNothing,
+      );
       agent.state['phase'] = 'idle';
       agent.notifyListeners();
       await tester.pumpAndSettle();
@@ -88,45 +91,49 @@ void main() {
       // Context-menu target works without enabling checkbox selection.
       await tester.tap(find.text('Student B'), buttons: kSecondaryMouseButton);
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Control Student + present to class'));
+      await tester.tap(find.text('Điều khiển & chiếu màn hình học viên'));
       await tester.pumpAndSettle();
       expect(agent.commands.last.$1, 'switch_source');
       expect(agent.commands.last.$2, ['B']);
-      await tester.tap(find.byTooltip('Select computers for presentation'));
+      await tester.tap(find.byTooltip('Chọn nhiều máy để thao tác'));
       await tester.pumpAndSettle();
       await tester.tap(find.byType(Checkbox).first);
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Control Student + present to class'));
+      await tester.tap(find.byTooltip('Điều khiển & chiếu màn hình học viên'));
       await tester.pumpAndSettle();
       expect(agent.commands.last.$1, 'switch_source');
       expect(agent.commands.last.$2, ['A']);
       agent.rejection =
           'Close Observe/Control windows before presenting a Student';
-      await tester.tap(find.text('Control Student + present to class'));
+      await tester.tap(find.byTooltip('Điều khiển & chiếu màn hình học viên'));
       await tester.pump();
       // Even an immediate authoritative state update cannot erase the feedback.
       agent.error = null;
       agent.notifyListeners();
       await tester.pump();
-      expect(find.textContaining('Cannot present Student:'), findsOneWidget);
+      expect(
+        find.textContaining('Không chiếu được màn hình học viên:'),
+        findsOneWidget,
+      );
       agent.rejection = null;
       agent.state.addAll({'phase': 'switching', 'next_source': 'A'});
       agent.notifyListeners();
       await tester.pumpAndSettle();
-      expect(find.text('Switching source…'), findsOneWidget);
-      await tester.tap(find.text('Stop sharing'));
+      expect(find.text('Đang đổi nguồn chiếu…'), findsOneWidget);
+      await tester.tap(find.byTooltip('Dừng chiếu'));
       expect(agent.commands.last.$1, 'stop');
       agent.state.addAll({'phase': 'sharing', 'source_id': 'A'});
       agent.notifyListeners();
       await tester.pumpAndSettle();
-      expect(find.text('Presenting: Student A'), findsOneWidget);
+      expect(find.text('Đang chiếu: Student A'), findsOneWidget);
       expect(windowCalls.where((c) => c == 'minimize'), isEmpty);
       expect(
         tester
-            .widget<OutlinedButton>(
-              find.widgetWithText(
-                OutlinedButton,
-                'Control Student + present to class',
+            .widget<IconButton>(
+              find.byWidgetPredicate(
+                (w) =>
+                    w is IconButton &&
+                    w.tooltip == 'Điều khiển & chiếu màn hình học viên',
               ),
             )
             .onPressed,
@@ -135,22 +142,26 @@ void main() {
       await tester.tap(find.byType(Checkbox).first);
       await tester.tap(find.byType(Checkbox).at(1));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Control Student + present to class'));
+      await tester.tap(find.byTooltip('Điều khiển & chiếu màn hình học viên'));
       expect(agent.commands.last.$1, 'switch_source');
       expect(agent.commands.last.$2, ['B']);
-      await tester.tap(find.text('Back to Teacher screen'));
+      await tester.tap(find.byTooltip('Quay lại màn hình giảng viên'));
       expect(agent.commands.last.$1, 'switch_source');
       expect(agent.commands.last.$2, isEmpty);
       (agent.state['students'] as List)[1]['online'] = false;
       agent.notifyListeners();
       await tester.pumpAndSettle();
-      expect(find.byTooltip('Selected Student is offline'), findsOneWidget);
+      expect(
+        find.byTooltip('Máy học viên đã chọn đang offline'),
+        findsOneWidget,
+      );
       expect(
         tester
-            .widget<OutlinedButton>(
-              find.widgetWithText(
-                OutlinedButton,
-                'Control Student + present to class',
+            .widget<IconButton>(
+              find.byWidgetPredicate(
+                (w) =>
+                    w is IconButton &&
+                    w.tooltip == 'Máy học viên đã chọn đang offline',
               ),
             )
             .onPressed,

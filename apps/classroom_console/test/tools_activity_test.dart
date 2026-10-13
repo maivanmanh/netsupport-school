@@ -162,11 +162,11 @@ void main() {
       message('q1', {'mac': 'done', 'win': 'need help'}),
     ]);
     await tester.pump();
-    expect(find.text('2 new replies'), findsOneWidget);
+    expect(find.text('2 phản hồi mới'), findsOneWidget);
     expect(find.textContaining('WIN11 (192.168.50.94)'), findsOneWidget);
-    await tester.tap(find.text('View all replies'));
+    await tester.tap(find.text('Xem tất cả phản hồi'));
     await tester.pumpAndSettle();
-    expect(find.text('Student replies (2)'), findsOneWidget);
+    expect(find.text('Phản hồi từ học viên (2)'), findsOneWidget);
     expect(find.text('MacStudio · 192.168.50.2'), findsOneWidget);
     expect(activity.unread, 0);
     activity.dispose();

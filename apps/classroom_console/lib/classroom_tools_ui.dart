@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'agent.dart';
+import 'app_dialog.dart';
 
 const _terminal = {
   'complete',
@@ -346,7 +347,7 @@ class _PreparingCard extends StatelessWidget {
   Widget build(BuildContext context) => const _Card(
     children: [
       Text(
-        'Preparing file…',
+        'Đang chuẩn bị tệp…',
         style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
       ),
       SizedBox(height: 10),
@@ -394,8 +395,8 @@ class _FileProgressCard extends StatelessWidget {
       children: [
         _header(
           Icons.upload_file,
-          '${job['kind'] == 'update' ? 'Updating' : 'Sending'} ${job['name'] ?? 'file'}',
-          tooltip: 'Cancel transfer',
+          '${job['kind'] == 'update' ? 'Đang cập nhật' : 'Đang gửi'} ${job['name'] ?? 'tệp'}',
+          tooltip: 'Hủy truyền tệp',
           onClose: () =>
               agent.command('tool_cancel', const [], {'id': job['id']}),
         ),
@@ -413,14 +414,14 @@ class _FileProgressCard extends StatelessWidget {
         ),
         _line(
           preparing
-              ? 'Checking file…'
-              : '${_size(done)} / ${_size(maximum)} · $finished/${targets.length} students',
+              ? 'Đang kiểm tra tệp…'
+              : '${_size(done)} / ${_size(maximum)} · $finished/${targets.length} máy',
         ),
         for (final t in busy)
           _line('${_who(activity, '${t['id']}')} · ${_status(t)}'),
         if (targets.length - finished > busy.length)
-          _line('+ ${targets.length - finished - busy.length} more'),
-        if (more > 0) _line('$more more file(s) queued'),
+          _line('+ ${targets.length - finished - busy.length} máy nữa'),
+        if (more > 0) _line('$more tệp nữa đang chờ'),
       ],
     );
   }
@@ -448,22 +449,22 @@ class _FinishedCard extends StatelessWidget {
     final ok = targets.length - failed.length;
     final title = job['kind'] == 'update'
         ? (failed.isEmpty
-              ? 'Students updated and reconnected'
-              : 'Student update failed')
+              ? 'Học viên đã cập nhật và kết nối lại'
+              : 'Cập nhật học viên thất bại')
         : isFile
         ? (failed.isEmpty
-              ? 'Sent ${job['name'] ?? 'file'}'
-              : 'Could not send ${job['name'] ?? 'file'}')
+              ? 'Đã gửi ${job['name'] ?? 'tệp'}'
+              : 'Không gửi được ${job['name'] ?? 'tệp'}')
         : job['kind'] == 'launch'
-        ? 'Could not launch ${job['name'] ?? 'program'}'
-        : 'Message not delivered';
+        ? 'Không chạy được ${job['name'] ?? 'chương trình'}'
+        : 'Tin nhắn chưa được chuyển';
     return _Card(
       children: [
         _header(
           failed.isEmpty ? Icons.check_circle_outline : Icons.error_outline,
           title,
           color: failed.isEmpty ? _accent : _warn,
-          tooltip: 'Dismiss',
+          tooltip: 'Ẩn',
           onClose: () => activity.hide(id),
         ),
         if (isFile)
@@ -479,7 +480,7 @@ class _FinishedCard extends StatelessWidget {
             maxLines: 2,
           ),
         if (failed.length > 3)
-          _line('+ ${failed.length - 3} more', color: _warn),
+          _line('+ ${failed.length - 3} máy nữa', color: _warn),
         if (isFile && failed.isNotEmpty)
           Align(
             alignment: Alignment.centerRight,
@@ -489,7 +490,7 @@ class _FinishedCard extends StatelessWidget {
                 agent.command('tool_retry', const [], {'id': id});
               },
               icon: const Icon(Icons.refresh, size: 15),
-              label: Text('Retry ${failed.length}'),
+              label: Text('Thử lại ${failed.length} máy'),
               style: TextButton.styleFrom(
                 foregroundColor: const Color(0xff91e1e7),
                 visualDensity: VisualDensity.compact,
@@ -514,9 +515,9 @@ class _ReplyToast extends StatelessWidget {
         _header(
           Icons.mark_chat_unread_outlined,
           items.length == 1
-              ? 'Reply from ${items.first.name}'
-              : '${items.length} new replies',
-          tooltip: 'Dismiss',
+              ? 'Phản hồi từ ${items.first.name}'
+              : '${items.length} phản hồi mới',
+          tooltip: 'Ẩn',
           onClose: activity.dismissToast,
         ),
         for (final r in items.take(3))
@@ -551,7 +552,7 @@ class _ReplyToast extends StatelessWidget {
               foregroundColor: const Color(0xff91e1e7),
               visualDensity: VisualDensity.compact,
             ),
-            child: const Text('View all replies'),
+            child: const Text('Xem tất cả phản hồi'),
           ),
         ),
       ],
@@ -575,77 +576,79 @@ Future<void> showRepliesDialog(BuildContext context, ToolActivity activity) {
         if (activity.unread > 0) {
           scheduleMicrotask(activity.markRead);
         }
-        return AlertDialog(
-          title: Text('Student replies (${activity.replies.length})'),
-          contentPadding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-          content: SizedBox(
-            width: 520,
-            height: 420,
-            child: activity.replies.isEmpty
-                ? const Center(
-                    child: Text(
-                      'No replies yet in this session.',
-                      style: TextStyle(color: Colors.blueGrey),
-                    ),
-                  )
-                : ListView(
-                    children: [
-                      for (final entry in groups.entries) ...[
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(4, 10, 4, 4),
-                          child: Text(
-                            entry.value.first.message.isEmpty
-                                ? 'Message · ${entry.value.length} replies'
-                                : '“${entry.value.first.message}” · '
-                                      '${entry.value.length} '
-                                      '${entry.value.length == 1 ? 'reply' : 'replies'}',
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                              color: Colors.blueGrey,
-                            ),
-                          ),
-                        ),
-                        for (final r in entry.value)
-                          ListTile(
-                            dense: true,
-                            leading: const Icon(Icons.computer, size: 20),
-                            title: Text(
-                              r.ip.isEmpty || r.ip == r.name
-                                  ? r.name
-                                  : '${r.name} · ${r.ip}',
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            subtitle: SelectableText(r.text),
-                            trailing: Text(
-                              _time(r.received),
-                              style: const TextStyle(
-                                fontSize: 11,
-                                color: Colors.blueGrey,
-                              ),
-                            ),
-                          ),
-                        const Divider(height: 8),
-                      ],
-                    ],
-                  ),
-          ),
-          actions: [
-            TextButton(
+        return AppDialog(
+          icon: Icons.forum_outlined,
+          title: 'Phản hồi từ học viên (${activity.replies.length})',
+          subtitle: 'Trả lời cho các tin nhắn bạn đã gửi trong phiên này.',
+          width: 580,
+          height: 400,
+          scrollable: false,
+          bodyPadding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+          footerLeading: Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
               onPressed: activity.replies.isEmpty
                   ? null
                   : activity.clearReplies,
-              child: const Text('Clear'),
+              icon: const Icon(Icons.delete_sweep_outlined, size: 18),
+              label: const Text('Xóa tất cả'),
             ),
-            FilledButton(
+          ),
+          actions: [
+            AppDialog.primary(
               onPressed: () => Navigator.pop(context),
-              child: const Text('Close'),
+              icon: Icons.check,
+              label: 'Đóng',
             ),
           ],
+          child: activity.replies.isEmpty
+              ? const DialogEmpty(
+                  icon: Icons.mark_chat_unread_outlined,
+                  title: 'Chưa có phản hồi nào',
+                  message: 'Phản hồi của học viên sẽ hiện ở đây.',
+                )
+              : ListView(
+                  children: [
+                    for (final entry in groups.entries) ...[
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+                        child: Text(
+                          entry.value.first.message.isEmpty
+                              ? 'Tin nhắn · ${entry.value.length} phản hồi'
+                              : '“${entry.value.first.message}” · '
+                                    '${entry.value.length} phản hồi',
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: AppDialog.muted,
+                          ),
+                        ),
+                      ),
+                      for (final r in entry.value)
+                        ListTile(
+                          dense: true,
+                          leading: const Icon(Icons.computer, size: 20),
+                          title: Text(
+                            r.ip.isEmpty || r.ip == r.name
+                                ? r.name
+                                : '${r.name} · ${r.ip}',
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                          subtitle: SelectableText(r.text),
+                          trailing: Text(
+                            _time(r.received),
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: AppDialog.muted,
+                            ),
+                          ),
+                        ),
+                      const Divider(height: 8),
+                    ],
+                  ],
+                ),
         );
       },
     ),
@@ -666,63 +669,69 @@ Future<void> showDisconnectsDialog(
         if (activity.unreadDisconnects > 0) {
           scheduleMicrotask(activity.markDisconnectsRead);
         }
-        return AlertDialog(
-          title: Text('Disconnect alerts (${activity.disconnects.length})'),
-          contentPadding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-          content: SizedBox(
-            width: 460,
-            height: 360,
-            child: activity.disconnects.isEmpty
-                ? const Center(
-                    child: Text(
-                      'No disconnects recorded while monitoring was on.',
-                      style: TextStyle(color: Colors.blueGrey),
-                    ),
-                  )
-                : ListView.separated(
-                    itemCount: activity.disconnects.length,
-                    separatorBuilder: (_, _) => const Divider(height: 1),
-                    itemBuilder: (_, i) {
-                      final a = activity.disconnects[i];
-                      final id = '${a['student']}';
-                      final ms = (a['unix_ms'] as num?)?.toInt() ?? 0;
-                      return ListTile(
-                        dense: true,
-                        leading: const Icon(
-                          Icons.link_off,
-                          size: 20,
-                          color: Color(0xffb83b40),
-                        ),
-                        title: Text(
-                          activity.nameOf(id),
-                          style: const TextStyle(fontWeight: FontWeight.w600),
-                        ),
-                        subtitle: Text(activity.ipOf(id)),
-                        trailing: Text(
-                          ms == 0
-                              ? ''
-                              : _time(DateTime.fromMillisecondsSinceEpoch(ms)),
-                          style: const TextStyle(
-                            fontSize: 11,
-                            color: Colors.blueGrey,
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-          ),
-          actions: [
-            TextButton(
+        return AppDialog(
+          icon: Icons.link_off,
+          tone: AppTone.danger,
+          title: 'Cảnh báo mất kết nối (${activity.disconnects.length})',
+          subtitle: 'Các máy bị mất kết nối khi đang bật theo dõi hoạt động.',
+          width: 520,
+          height: 340,
+          scrollable: false,
+          bodyPadding: EdgeInsets.zero,
+          footerLeading: Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
               onPressed: activity.disconnects.isEmpty
                   ? null
                   : activity.clearDisconnects,
-              child: const Text('Clear'),
+              icon: const Icon(Icons.delete_sweep_outlined, size: 18),
+              label: const Text('Xóa tất cả'),
             ),
-            FilledButton(
+          ),
+          actions: [
+            AppDialog.primary(
               onPressed: () => Navigator.pop(context),
-              child: const Text('Close'),
+              icon: Icons.check,
+              label: 'Đóng',
             ),
           ],
+          child: activity.disconnects.isEmpty
+              ? const DialogEmpty(
+                  icon: Icons.wifi_tethering,
+                  title: 'Không có máy nào mất kết nối',
+                  message: 'Chỉ ghi nhận khi theo dõi hoạt động đang bật.',
+                )
+              : ListView.separated(
+                  itemCount: activity.disconnects.length,
+                  separatorBuilder: (_, _) => const Divider(height: 1),
+                  itemBuilder: (_, i) {
+                    final a = activity.disconnects[i];
+                    final id = '${a['student']}';
+                    final ms = (a['unix_ms'] as num?)?.toInt() ?? 0;
+                    return ListTile(
+                      dense: true,
+                      leading: const Icon(
+                        Icons.link_off,
+                        size: 20,
+                        color: Color(0xffb83b40),
+                      ),
+                      title: Text(
+                        activity.nameOf(id),
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      subtitle: Text(activity.ipOf(id)),
+                      trailing: Text(
+                        ms == 0
+                            ? ''
+                            : _time(DateTime.fromMillisecondsSinceEpoch(ms)),
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: AppDialog.muted,
+                        ),
+                      ),
+                    );
+                  },
+                ),
         );
       },
     ),
@@ -733,10 +742,10 @@ String _time(DateTime t) =>
     '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
 
 String _status(Map<String, dynamic> t) => switch ('${t['status']}') {
-  'preparing' => 'preparing',
-  'queued' => 'queued',
-  'waiting' => 'waiting',
-  'receiving' => 'receiving ${_size((t['done'] as num? ?? 0).toInt())}',
+  'preparing' => 'đang chuẩn bị',
+  'queued' => 'đang chờ',
+  'waiting' => 'đang đợi',
+  'receiving' => 'đang nhận ${_size((t['done'] as num? ?? 0).toInt())}',
   final other => other,
 };
 

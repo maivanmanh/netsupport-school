@@ -15,7 +15,6 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    path::PathBuf,
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -139,7 +138,7 @@ struct State {
 }
 pub struct Guard {
     state: Mutex<State>,
-    file: PathBuf,
+    doc: Option<classroom_store::Doc>,
     supported: bool,
 }
 impl Guard {
@@ -156,7 +155,10 @@ impl Guard {
                 last_seen: std::time::Instant::now(),
                 last_saved: 0,
             }),
-            file: state_dir.join("guard-policy.json"),
+            doc: classroom_store::open_shared(state_dir)
+                .map_err(|error| warn!(%error, "Guard policy storage unavailable"))
+                .ok()
+                .map(|store| store.doc(classroom_store::ns::PROFILE, "guard_policy")),
             supported,
         }
     }
@@ -174,8 +176,9 @@ impl Guard {
             .map_or("open", |p| p.internet.mode.name())
     }
     fn save(&self, state: &mut State) {
+        let Some(doc) = &self.doc else { return };
         let Some(policy) = &state.applied else {
-            let _ = std::fs::remove_file(&self.file);
+            let _ = doc.clear();
             return;
         };
         let saved = Saved {
@@ -183,14 +186,8 @@ impl Guard {
             last_seen_unix: unix_secs(),
             day: state.applied_day,
         };
-        if let Ok(bytes) = serde_json::to_vec(&saved) {
-            let temporary = self.file.with_extension("tmp");
-            if std::fs::write(&temporary, bytes)
-                .and_then(|()| std::fs::rename(&temporary, &self.file))
-                .is_ok()
-            {
-                state.last_saved = saved.last_seen_unix;
-            }
+        if doc.write(&saved).is_ok() {
+            state.last_saved = saved.last_seen_unix;
         }
     }
     pub fn apply(&self, policy: Policy) -> Result<()> {
@@ -290,9 +287,7 @@ impl Guard {
         if !self.supported {
             return;
         }
-        let saved: Option<Saved> = std::fs::read(&self.file)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok());
+        let saved: Option<Saved> = self.doc.as_ref().and_then(|doc| doc.read().ok().flatten());
         // Valid for the rest of the local day it was applied — whether or not
         // the Teacher has been reachable since. Files from before day stamps
         // fall back to the old lease once, and are stamped when resumed.
@@ -397,6 +392,7 @@ pub fn for_student(state_dir: &std::path::Path, _teacher_ip: std::net::Ipv4Addr)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     pub struct Recorder(pub std::sync::Arc<Mutex<Vec<String>>>);
     impl Enforcer for Recorder {
@@ -413,6 +409,17 @@ mod tests {
         fn clear(&mut self) {
             self.0.lock().unwrap().push("clear".into());
         }
+    }
+    fn policy_doc(dir: &std::path::Path) -> classroom_store::Doc {
+        classroom_store::open_shared(dir)
+            .unwrap()
+            .doc(classroom_store::ns::PROFILE, "guard_policy")
+    }
+    fn saved_policy(dir: &std::path::Path) -> Option<Saved> {
+        policy_doc(dir).read().unwrap()
+    }
+    fn write_saved(dir: &std::path::Path, saved: &Saved) {
+        policy_doc(dir).write(saved).unwrap();
     }
     fn temp() -> PathBuf {
         let p = std::env::temp_dir().join(format!(
@@ -471,7 +478,7 @@ mod tests {
         let guard = Guard::new(&dir, vec![Box::new(Recorder(log.clone()))], true);
         guard.apply(policy(Mode::BlockAll, &[], 60)).unwrap();
         assert_eq!(guard.mode(), "block_all");
-        assert!(dir.join("guard-policy.json").exists());
+        assert!(saved_policy(&dir).is_some());
         // A new process within the lease resumes it...
         let again = Guard::new(&dir, vec![Box::new(Recorder(log.clone()))], true);
         again.restore();
@@ -479,7 +486,7 @@ mod tests {
         // ...Unblock all removes it and the saved copy.
         again.apply(Policy::default()).unwrap();
         assert_eq!(again.mode(), "open");
-        assert!(!dir.join("guard-policy.json").exists());
+        assert!(saved_policy(&dir).is_none());
         assert!(log.lock().unwrap().contains(&"apply block_all".to_string()));
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -495,7 +502,7 @@ mod tests {
             last_seen_unix: unix_secs() - 7 * 24 * 3600,
             day: today,
         };
-        std::fs::write(dir.join("guard-policy.json"), serde_json::to_vec(&saved).unwrap()).unwrap();
+        write_saved(&dir, &saved);
         let guard = Guard::new(&dir, vec![Box::new(Recorder(log.clone()))], true);
         guard.restore();
         assert_eq!(guard.mode(), "block_all");
@@ -503,7 +510,7 @@ mod tests {
         assert_eq!(guard.mode(), "block_all");
         // The same file stamped with another day is void.
         let stale = Saved { day: today - 1, ..saved };
-        std::fs::write(dir.join("guard-policy.json"), serde_json::to_vec(&stale).unwrap()).unwrap();
+        write_saved(&dir, &stale);
         let next = Guard::new(&dir, vec![Box::new(Recorder(log.clone()))], true);
         next.restore();
         assert_eq!(next.mode(), "open");
@@ -531,11 +538,7 @@ mod tests {
             last_seen_unix: unix_secs() - 3600,
             day: 0,
         };
-        std::fs::write(
-            dir.join("guard-policy.json"),
-            serde_json::to_vec(&saved).unwrap(),
-        )
-        .unwrap();
+        write_saved(&dir, &saved);
         let log = std::sync::Arc::new(Mutex::new(Vec::new()));
         let guard = Guard::new(&dir, vec![Box::new(Recorder(log.clone()))], true);
         guard.restore();

@@ -189,21 +189,25 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
 
     expect(
-      find.text('Allow Teacher Accessibility to forward macOS shortcuts'),
+      find.text(
+        'Hãy cấp quyền Accessibility cho Teacher để chuyển phím tắt macOS',
+      ),
       findsOneWidget,
     );
     final request = find.byKey(
       const ValueKey('request-accessibility-permission'),
     );
     expect(request, findsOneWidget);
-    expect(find.text('Request permission'), findsOneWidget);
+    expect(find.text('Yêu cầu quyền'), findsOneWidget);
     await tester.tap(request);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
     expect(permissionRequests, 1);
     expect(captureAttempts, 2);
     expect(
-      find.text('Allow Teacher Accessibility to forward macOS shortcuts'),
+      find.text(
+        'Hãy cấp quyền Accessibility cho Teacher để chuyển phím tắt macOS',
+      ),
       findsNothing,
     );
 

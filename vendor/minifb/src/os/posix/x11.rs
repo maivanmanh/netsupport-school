@@ -272,6 +272,7 @@ pub struct Window {
     buttons: [u8; 3],
     prev_cursor: CursorStyle,
     active: bool,
+    visible: bool,
 
     should_close: bool, // received delete window message from X server
 
@@ -394,7 +395,9 @@ impl Window {
                 ));
             }
 
-            (d.lib.XSetICFocus)(xic);
+            if opts.visible {
+                (d.lib.XSetICFocus)(xic);
+            }
             (d.lib.XSelectInput)(d.display, handle, KeyPressMask | KeyReleaseMask);
 
             d.gc = (d.lib.XCreateGC)(d.display, handle, 0, std::ptr::null_mut());
@@ -455,7 +458,9 @@ impl Window {
             }
 
             (d.lib.XClearWindow)(d.display, handle);
-            (d.lib.XMapRaised)(d.display, handle);
+            if opts.visible {
+                (d.lib.XMapRaised)(d.display, handle);
+            }
             (d.lib.XSetWMProtocols)(d.display, handle, &mut d.wm_delete_window, 1);
             (d.lib.XFlush)(d.display);
 
@@ -491,12 +496,37 @@ impl Window {
                 prev_cursor: CursorStyle::Arrow,
                 should_close: false,
                 active: false,
+                visible: opts.visible,
                 key_handler: KeyHandler::new(),
                 update_rate: UpdateRate::new(),
                 menu_counter: MenuHandle(0),
                 menus: Vec::new(),
             })
         }
+    }
+
+    pub fn set_visible(&mut self, visible: bool) {
+        if self.visible == visible {
+            return;
+        }
+        // SAFETY: this window owns the live Display/XID and input context.
+        // Mapping does not explicitly raise the window or take keyboard focus.
+        unsafe {
+            if visible {
+                (self.d.lib.XMapWindow)(self.d.display, self.handle);
+                (self.d.lib.XSetICFocus)(self.xic);
+            } else {
+                (self.d.lib.XUnsetICFocus)(self.xic);
+                (self.d.lib.XUnmapWindow)(self.d.display, self.handle);
+                self.active = false;
+            }
+            (self.d.lib.XFlush)(self.d.display);
+        }
+        self.visible = visible;
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.visible
     }
 
     unsafe fn alloc_image(

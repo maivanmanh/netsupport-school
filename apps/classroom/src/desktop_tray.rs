@@ -115,6 +115,21 @@ mod native {
 #[cfg(any(windows, target_os = "macos"))]
 pub use native::DesktopTray;
 
+// Linux receive-only milestone has no tray dependency (GTK/AppIndicator).
+// CLI configuration remains available and the Student host owns its event pump.
+#[cfg(not(any(windows, target_os = "macos")))]
+pub struct DesktopTray;
+#[cfg(not(any(windows, target_os = "macos")))]
+impl DesktopTray {
+    pub fn new(_teacher: bool) -> Result<Self> {
+        anyhow::bail!("tray integration is not available on this platform")
+    }
+    pub fn poll(&self) -> Option<Command> {
+        None
+    }
+    pub fn update(&mut self, _status: &str, _settings_enabled: bool) {}
+}
+
 #[cfg(windows)]
 #[allow(unsafe_code)] // Small Win32 boundary: cancel only this worker's windows.
 mod windows_teacher {

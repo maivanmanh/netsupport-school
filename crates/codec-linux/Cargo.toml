@@ -1,0 +1,14 @@
+[package]
+name = "codec-linux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+# OpenH264's SIMD dependency requires Rust 1.89; other platforms keep their MSRV.
+rust-version = "1.89"
+
+[dependencies]
+media-core = { path = "../media-core" }
+openh264 = { version = "=0.9.8", default-features = false, features = ["source"] }
+
+[lints]
+workspace = true

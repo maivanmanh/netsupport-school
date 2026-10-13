@@ -22,6 +22,7 @@ Future<Directory> existingMacConsoleDirectory(
     '$actualHome$suffix/Library/Application Support/com.classroom.classroomConsole',
   );
   for (final name in [
+    'classroom.db',
     'teacher-profile.toml',
     'teacher-settings.toml',
     'console-settings.json',
@@ -57,6 +58,12 @@ class Agent extends ChangeNotifier {
   final seenOnlineIds = <String>{};
   String roomKey = '';
   Future<void> writes = Future.value();
+
+  /// The agent owns the single settings database; until the console has read
+  /// it (right after attaching) it is not considered connected, so windows
+  /// never read empty defaults.
+  bool _storeLoaded = false;
+  Map<String, dynamic> _unsavedPreferences = {};
   bool commandBusy = false;
   String? notice;
   final Map<String, Map<String, dynamic>> pendingObserveMoves = {};
@@ -168,23 +175,7 @@ class Agent extends ChangeNotifier {
     while (known.length > 256) {
       known.remove(known.keys.first);
     }
-    if (dirty && dataDirectory != null) {
-      final data = jsonEncode({
-        'room': roomKey,
-        'students': known.values.toList(),
-      });
-      writes = writes
-          .then((_) async {
-            final f = File('${dataDirectory!.path}/known-students.json');
-            final temp = File('${f.path}.tmp');
-            await temp.writeAsString(data, flush: true);
-            if (Platform.isWindows && await f.exists()) await f.delete();
-            await temp.rename(f.path);
-          })
-          .catchError((Object e) {
-            log('roster save failed: $e');
-          });
-    }
+    if (dirty) persistKnown();
   }
 
   void thumbnailSize(double itemWidth) {
@@ -232,7 +223,7 @@ class Agent extends ChangeNotifier {
     }
   }
 
-  bool get connected => socket != null;
+  bool get connected => socket != null && _storeLoaded;
   List<Map<String, dynamic>> get students {
     final current = <String, Map<String, dynamic>>{};
     for (final r in (state['students'] as List? ?? [])) {
@@ -284,23 +275,79 @@ class Agent extends ChangeNotifier {
     return i >= 0 && i + 1 < args.length ? args[i + 1] : null;
   }
 
-  Future<void> loadKnown() async {
-    if (known.isEmpty) {
-      final cache = File('${dataDirectory!.path}/known-students.json');
-      try {
-        if (await cache.exists()) {
-          final v =
-              jsonDecode(await cache.readAsString()) as Map<String, dynamic>;
-          roomKey = v['room'] as String;
-          for (final row in (v['students'] as List).take(256)) {
-            final r = Map<String, dynamic>.from(row as Map);
-            known[r['id'] as String] = r;
-          }
+  // ------------------------------------------------------------ settings
+
+  /// Every document of one namespace of the Teacher's settings database.
+  Future<Map<String, dynamic>> storeList(String namespace) async {
+    final response = await request('store_list', input: {'ns': namespace});
+    if (response['ok'] != true) throw StateError(failure(response));
+    return Map<String, dynamic>.from(
+      ((response['result'] as Map?)?['documents'] as Map?) ?? const {},
+    );
+  }
+
+  /// Writes documents (a `null` value removes the key). With [replace] the
+  /// namespace becomes exactly [changes].
+  Future<void> storeApply(
+    String namespace,
+    Map<String, dynamic> changes, {
+    bool replace = false,
+  }) async {
+    final response = await request(
+      'store_apply',
+      input: {
+        'ns': namespace,
+        'changes': changes,
+        'replace': ?(replace ? true : null),
+      },
+    );
+    if (response['ok'] != true) throw StateError(failure(response));
+  }
+
+  void persistKnown() {
+    if (!_storeLoaded) return;
+    final changes = <String, dynamic>{
+      '__room': roomKey,
+      for (final entry in known.entries) entry.key: entry.value,
+    };
+    writes = writes
+        .then((_) => storeApply('roster', changes, replace: true))
+        .catchError((Object e) {
+          log('roster save failed: $e');
+        });
+  }
+
+  /// Reads preferences and the remembered roster once per attach.
+  Future<void> loadStore() async {
+    _storeLoaded = false;
+    try {
+      final prefs = await storeList('prefs');
+      preferences = {...prefs, ..._unsavedPreferences}
+        ..removeWhere((_, v) => v == null);
+      final roster = await storeList('roster');
+      final room = roster['__room'];
+      if (room is String && (roomKey.isEmpty || room == roomKey)) {
+        if (roomKey.isEmpty) roomKey = room;
+        for (final entry in roster.entries.take(257)) {
+          if (entry.key == '__room' || entry.value is! Map) continue;
+          known.putIfAbsent(
+            entry.key,
+            () => Map<String, dynamic>.from(entry.value as Map),
+          );
         }
-      } catch (_) {
-        await log('ignored invalid roster cache');
       }
+      if (_unsavedPreferences.isNotEmpty) {
+        final pending = _unsavedPreferences;
+        _unsavedPreferences = {};
+        await storeApply('prefs', pending);
+      }
+    } catch (e) {
+      await log('settings load failed: $e');
     }
+    _storeLoaded = true;
+    if (!dependent) await expireDailyRules();
+    persistKnown();
+    if (!disposed) notifyListeners();
   }
 
   Future<void> start() async {
@@ -320,15 +367,8 @@ class Agent extends ChangeNotifier {
         }
       }
       dataDirectory = dir;
-      await loadKnown();
       if (!disposed) notifyListeners();
       await log('console startup');
-      final saved = File('${dir.path}/console-settings.json');
-      if (await saved.exists()) {
-        preferences =
-            jsonDecode(await saved.readAsString()) as Map<String, dynamic>;
-      }
-      await expireDailyRules();
       endpoint = File(
         option('--ipc-file') ?? '${dir.path}/teacher-endpoint.json',
       );
@@ -386,10 +426,6 @@ class Agent extends ChangeNotifier {
           throw StateError('Rust agent not found: $helper');
         }
         await Process.start(helper, [
-          if (await File('${dir.path}/teacher-settings.toml').exists()) ...[
-            '--config',
-            '${dir.path}/teacher-settings.toml',
-          ],
           '--role',
           'teacher',
           '--teacher-agent',
@@ -401,14 +437,20 @@ class Agent extends ChangeNotifier {
           option('--log-file') ?? '${dir.path}/teacher-log.txt',
           '--launch-profile',
           '${dir.path}/teacher-profile.toml',
-          '--bind-ip',
-          option('--bind-ip') ?? preferences['bind_ip'] as String? ?? 'auto',
-          '--control-port',
-          option('--control-port') ?? '${preferences['port'] ?? 47800}',
-          '--media-port',
-          '${int.parse(option('--control-port') ?? '${preferences['port'] ?? 47800}') + 10}',
-          '--feedback-port',
-          '${int.parse(option('--control-port') ?? '${preferences['port'] ?? 47800}') + 11}',
+          // Adapter and ports come from the settings database the agent
+          // opens itself; the options below are explicit overrides only.
+          if (option('--bind-ip') != null) ...[
+            '--bind-ip',
+            option('--bind-ip')!,
+          ],
+          if (option('--control-port') != null) ...[
+            '--control-port',
+            option('--control-port')!,
+            '--media-port',
+            '${int.parse(option('--control-port')!) + 10}',
+            '--feedback-port',
+            '${int.parse(option('--control-port')!) + 11}',
+          ],
         ], mode: ProcessStartMode.detached);
         for (var i = 0; i < 100; i++) {
           if (await endpoint.exists()) {
@@ -538,6 +580,7 @@ class Agent extends ChangeNotifier {
       'ui_role': !dependent ? 'console' : 'observe',
     });
     await ready.future.timeout(const Duration(seconds: 3));
+    await loadStore();
     await log('IPC attached');
     notifyListeners();
   }
@@ -802,35 +845,21 @@ class Agent extends ChangeNotifier {
     }
   }
 
+  /// Remembers console preferences in the settings database. Changes made
+  /// while the agent is unreachable are kept and written on the next attach.
   Future<void> savePreferences(Map<String, dynamic> changes) async {
-    preferences.addAll(changes);
-    if (dataDirectory == null) {
+    preferences = {...preferences, ...changes}
+      ..removeWhere((_, v) => v == null);
+    if (!_storeLoaded) {
+      _unsavedPreferences = {..._unsavedPreferences, ...changes};
       return;
     }
-    final f = File('${dataDirectory!.path}/console-settings.json');
-    // The main console and every dependent window (Observe/Files/Activity/
-    // Internet/VS Code) are separate processes sharing this one file with
-    // no lock; each only loads it once, at its own startup. Serializing
-    // this process's own in-memory `preferences` would silently erase
-    // whatever any other window wrote afterward — confirmed: a long-running
-    // console's stale copy was overwriting a dependent window's save within
-    // seconds. Re-read the file fresh and merge `changes` onto *that*.
-    Map<String, dynamic> onDisk = {};
-    if (await f.exists()) {
-      try {
-        onDisk = jsonDecode(await f.readAsString()) as Map<String, dynamic>;
-      } catch (_) {
-        onDisk = {};
-      }
+    try {
+      await storeApply('prefs', changes);
+    } catch (e) {
+      _unsavedPreferences = {..._unsavedPreferences, ...changes};
+      await log('preference save failed: $e');
     }
-    onDisk.addAll(changes);
-    preferences = onDisk;
-    final temp = File('${f.path}.tmp');
-    await temp.writeAsString(jsonEncode(preferences), flush: true);
-    if (Platform.isWindows && await f.exists()) {
-      await f.delete();
-    }
-    await temp.rename(f.path);
   }
 
   Future<void> configure(
@@ -842,26 +871,20 @@ class Agent extends ChangeNotifier {
       return;
     }
     await savePreferences({'bind_ip': ip, 'port': port});
-    if (settings != null && dataDirectory != null) {
-      final content = StringBuffer();
-      for (final section in [
-        'app',
-        'network',
-        'video',
-        'monitoring',
-        'diagnostics',
-        'observe',
-        'tools',
-      ]) {
-        final values = settings[section] as Map?;
-        if (values == null) continue;
-        content.writeln('[$section]');
-        for (final entry in values.entries) {
-          content.writeln('${entry.key} = ${jsonEncode(entry.value)}');
-        }
-      }
-      final file = File('${dataDirectory!.path}/teacher-settings.toml');
-      await file.writeAsString(content.toString(), flush: true);
+    if (settings != null && connected) {
+      final overlay = <String, dynamic>{
+        for (final section in [
+          'app',
+          'network',
+          'video',
+          'monitoring',
+          'diagnostics',
+          'observe',
+          'tools',
+        ])
+          if (settings[section] is Map) section: settings[section],
+      };
+      await storeApply('config', {'overlay': overlay});
     }
     reconfiguring = true;
     exiting = true;

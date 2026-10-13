@@ -4,7 +4,9 @@ members = [
     "crates/app-core",
     "crates/capture-macos-sck",
     "crates/classroom-config",
+    "crates/classroom-store",
     "crates/codec-macos-vt",
+    "crates/codec-linux",
     "crates/codec-windows-mf",
     "crates/capture-windows-dxgi",
     "crates/control-transport",
@@ -13,6 +15,7 @@ members = [
     "crates/platform",
     "crates/protocol",
     "crates/renderer-macos",
+    "crates/renderer-linux",
     "crates/renderer-windows",
 ]
 resolver = "2"

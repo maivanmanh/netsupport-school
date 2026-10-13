@@ -501,7 +501,7 @@ impl Window {
     }
     /// Show/hide an existing native window without ending its event loop.
     pub fn set_visible(&mut self, visible: bool) {
-        #[cfg(any(windows, target_os = "macos"))]
+        #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
         self.0.set_visible(visible);
     }
     /// Outer frame `[x, y, width, height]` in top-left-origin screen units
@@ -586,11 +586,11 @@ impl Window {
         #[cfg(target_os = "macos")]
         { self.0.topmost(true); self.0.show_inactive(); }
     }
-    /// Native visibility (Windows/macOS).
+    /// Native visibility (Windows/macOS); requested mapping state on Linux X11.
     pub fn is_visible(&self) -> bool {
-        #[cfg(any(windows, target_os = "macos"))]
+        #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
         { self.0.is_visible() }
-        #[cfg(not(any(windows, target_os = "macos")))]
+        #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
         { true }
     }
     /// Opt in to hiding on the OS close button; normal windows still close.

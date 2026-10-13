@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'agent.dart';
+import 'app_dialog.dart';
 
 String formatBytes(num bytes) {
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -24,10 +25,10 @@ String collectionLabel([DateTime? now]) {
 }
 
 const _typePresets = <String, String>{
-  'Documents': 'doc, docx, pdf, txt, rtf, odt, pages',
-  'Spreadsheets & slides': 'xls, xlsx, csv, ppt, pptx, key, numbers',
-  'Images': 'png, jpg, jpeg, gif, bmp, heic',
-  'Code': 'py, java, c, cpp, h, cs, js, html, css, sql, ipynb',
+  'Tài liệu': 'doc, docx, pdf, txt, rtf, odt, pages',
+  'Bảng tính & trình chiếu': 'xls, xlsx, csv, ppt, pptx, key, numbers',
+  'Hình ảnh': 'png, jpg, jpeg, gif, bmp, heic',
+  'Mã nguồn': 'py, java, c, cpp, h, cs, js, html, css, sql, ipynb',
 };
 
 /// Asks what to collect, starts the job, then shows its progress.
@@ -82,7 +83,7 @@ class _CollectDialogState extends State<_CollectDialog> {
   Future<void> start() async {
     final path = place == 'custom' ? custom.text.trim() : place;
     if (path.isEmpty) {
-      setState(() => error = 'Enter the folder path on the student computers.');
+      setState(() => error = 'Hãy nhập đường dẫn thư mục trên máy học viên.');
       return;
     }
     setState(() {
@@ -115,141 +116,156 @@ class _CollectDialogState extends State<_CollectDialog> {
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: Text('Collect files from ${widget.audience}'),
-      content: SizedBox(
-        width: 480,
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              DropdownButtonFormField<String>(
-                initialValue: place,
-                decoration: const InputDecoration(
-                  labelText: 'Folder on the student computer',
-                  border: OutlineInputBorder(),
-                  isDense: true,
-                ),
-                items: const [
-                  DropdownMenuItem(value: '~desktop', child: Text('Desktop')),
-                  DropdownMenuItem(
-                    value: '~documents',
-                    child: Text('Documents'),
-                  ),
-                  DropdownMenuItem(
-                    value: '~downloads',
-                    child: Text('Downloads'),
-                  ),
-                  DropdownMenuItem(
-                    value: 'custom',
-                    child: Text('Other folder…'),
-                  ),
-                ],
-                onChanged: busy ? null : (v) => setState(() => place = v!),
-              ),
-              if (place == 'custom') ...[
-                const SizedBox(height: 8),
-                TextField(
-                  controller: custom,
-                  enabled: !busy,
-                  decoration: const InputDecoration(
-                    hintText: r'C:\Users\Public\Work   or   /Users/Shared/Work',
-                    helperText:
-                        'Full path as it appears on the student computer',
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                ),
-              ],
-              const SizedBox(height: 12),
-              TextField(
-                controller: types,
-                enabled: !busy,
-                decoration: const InputDecoration(
-                  labelText: 'File types (optional)',
-                  hintText: 'docx, pdf, py — leave empty for every file',
-                  border: OutlineInputBorder(),
-                  isDense: true,
-                ),
-              ),
-              const SizedBox(height: 6),
-              Wrap(
-                spacing: 6,
-                runSpacing: 0,
-                children: [
-                  for (final preset in _typePresets.entries)
-                    ActionChip(
-                      visualDensity: VisualDensity.compact,
-                      label: Text(
-                        preset.key,
-                        style: const TextStyle(fontSize: 12),
-                      ),
-                      onPressed: busy
-                          ? null
-                          : () => setState(() => types.text = preset.value),
-                    ),
-                ],
-              ),
-              CheckboxListTile(
-                dense: true,
-                contentPadding: EdgeInsets.zero,
-                controlAffinity: ListTileControlAffinity.leading,
-                value: subfolders,
-                onChanged: busy ? null : (v) => setState(() => subfolders = v!),
-                title: const Text('Include subfolders'),
-              ),
-              CheckboxListTile(
-                dense: true,
-                contentPadding: EdgeInsets.zero,
-                controlAffinity: ListTileControlAffinity.leading,
-                value: flat,
-                onChanged: busy ? null : (v) => setState(() => flat = v!),
-                title: const Text('Put all files in one folder per student'),
-                subtitle: const Text(
-                  'Off: keep each student\'s own folder structure. Duplicate names are numbered.',
-                  style: TextStyle(fontSize: 11),
-                ),
-              ),
-              Row(
-                children: [
-                  const Text('Skip files larger than'),
-                  const SizedBox(width: 10),
-                  DropdownButton<int>(
-                    value: maxMb,
-                    isDense: true,
-                    items: [
-                      for (final mb in [10, 50, 200, 1000, 4000])
-                        DropdownMenuItem(value: mb, child: Text('$mb MB')),
-                    ],
-                    onChanged: busy ? null : (v) => setState(() => maxMb = v!),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 6),
-              Text(
-                'Saved on this Desktop in “$label”, one folder per student.',
-                style: const TextStyle(fontSize: 12, color: Colors.blueGrey),
-              ),
-              if (error != null) ...[
-                const SizedBox(height: 8),
-                Text(error!, style: const TextStyle(color: Color(0xffb83b40))),
-              ],
-            ],
-          ),
-        ),
-      ),
+    return AppDialog(
+      icon: Icons.download_for_offline_outlined,
+      title: 'Thu tệp từ ${widget.audience}',
+      subtitle:
+          'Tệp được lưu trên Desktop trong thư mục “$label”, mỗi học viên một thư mục con.',
+      width: 560,
       actions: [
-        TextButton(
-          onPressed: busy ? null : () => Navigator.pop(context),
-          child: const Text('Cancel'),
-        ),
-        FilledButton.icon(
-          onPressed: busy ? null : start,
-          icon: const Icon(Icons.download_outlined, size: 18),
-          label: Text(busy ? 'Starting…' : 'Collect'),
+        AppDialog.cancel(context, enabled: !busy),
+        AppDialog.primary(
+          label: busy ? 'Đang bắt đầu…' : 'Bắt đầu thu',
+          icon: Icons.download_outlined,
+          busy: busy,
+          onPressed: start,
         ),
       ],
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          DialogSection(
+            title: 'Thư mục trên máy học viên',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                DropdownButtonFormField<String>(
+                  initialValue: place,
+                  decoration: const InputDecoration(isDense: true),
+                  items: const [
+                    DropdownMenuItem(value: '~desktop', child: Text('Desktop')),
+                    DropdownMenuItem(
+                      value: '~documents',
+                      child: Text('Documents (Tài liệu)'),
+                    ),
+                    DropdownMenuItem(
+                      value: '~downloads',
+                      child: Text('Downloads (Tải xuống)'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'custom',
+                      child: Text('Thư mục khác…'),
+                    ),
+                  ],
+                  onChanged: busy ? null : (v) => setState(() => place = v!),
+                ),
+                if (place == 'custom') ...[
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: custom,
+                    enabled: !busy,
+                    decoration: const InputDecoration(
+                      hintText:
+                          r'C:\Users\Public\Work   hoặc   /Users/Shared/Work',
+                      helperText: 'Đường dẫn đầy đủ như trên máy học viên',
+                      isDense: true,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          DialogSection(
+            title: 'Loại tệp',
+            hint: 'Để trống để thu mọi tệp.',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: types,
+                  enabled: !busy,
+                  decoration: const InputDecoration(
+                    hintText: 'docx, pdf, py …',
+                    isDense: true,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    for (final preset in _typePresets.entries)
+                      ActionChip(
+                        visualDensity: VisualDensity.compact,
+                        label: Text(
+                          preset.key,
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                        onPressed: busy
+                            ? null
+                            : () => setState(() => types.text = preset.value),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          DialogSection(
+            title: 'Tùy chọn',
+            padBottom: 4,
+            child: Column(
+              children: [
+                CheckboxListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  controlAffinity: ListTileControlAffinity.leading,
+                  value: subfolders,
+                  onChanged: busy
+                      ? null
+                      : (v) => setState(() => subfolders = v!),
+                  title: const Text('Gồm cả thư mục con'),
+                ),
+                CheckboxListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  controlAffinity: ListTileControlAffinity.leading,
+                  value: flat,
+                  onChanged: busy ? null : (v) => setState(() => flat = v!),
+                  title: const Text(
+                    'Gom mọi tệp vào một thư mục cho mỗi học viên',
+                  ),
+                  subtitle: const Text(
+                    'Tắt: giữ nguyên cấu trúc thư mục của từng học viên. Tên trùng được đánh số.',
+                    style: TextStyle(fontSize: 11.5),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Row(
+                  children: [
+                    const Text('Bỏ qua tệp lớn hơn'),
+                    const SizedBox(width: 10),
+                    DropdownButton<int>(
+                      value: maxMb,
+                      isDense: true,
+                      items: [
+                        for (final mb in [10, 50, 200, 1000, 4000])
+                          DropdownMenuItem(value: mb, child: Text('$mb MB')),
+                      ],
+                      onChanged: busy
+                          ? null
+                          : (v) => setState(() => maxMb = v!),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          if (error != null) ...[
+            const SizedBox(height: 12),
+            InlineNotice(error!),
+          ],
+        ],
+      ),
     );
   }
 }
@@ -281,24 +297,24 @@ class _CollectProgress extends StatelessWidget {
   }
 
   String describe(Map<String, dynamic> t) {
-    final files = '${t['files_done']}/${t['files_total']} files';
+    final files = '${t['files_done']}/${t['files_total']} tệp';
     switch (t['status']) {
       case 'queued':
-        return 'Waiting for the student…';
+        return 'Đang chờ máy học viên…';
       case 'transferring':
         final current = '${t['current']}';
         return current.isEmpty ? files : '$files · $current';
       case 'complete':
         final extra = <String>[
-          if ((t['skipped'] as num) > 0) '${t['skipped']} skipped',
-          if ((t['failed'] as num) > 0) '${t['failed']} failed',
+          if ((t['skipped'] as num) > 0) 'bỏ qua ${t['skipped']}',
+          if ((t['failed'] as num) > 0) 'lỗi ${t['failed']}',
         ];
         final size = formatBytes(t['bytes_done'] as num);
         return (t['files_total'] as num) == 0
-            ? 'No matching files'
-            : '${t['files_done']} files · $size${extra.isEmpty ? '' : ' · ${extra.join(', ')}'}';
+            ? 'Không có tệp phù hợp'
+            : '${t['files_done']} tệp · $size${extra.isEmpty ? '' : ' · ${extra.join(', ')}'}';
       case 'cancelled':
-        return 'Cancelled';
+        return 'Đã hủy';
       default:
         return '${t['error']}';
     }
@@ -311,15 +327,16 @@ class _CollectProgress extends StatelessWidget {
       builder: (context, _) {
         final j = job();
         if (j == null) {
-          return AlertDialog(
-            title: const Text('File collection'),
-            content: const Text('No collection has been started.'),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Close'),
-              ),
-            ],
+          return AppDialog(
+            icon: Icons.download_for_offline_outlined,
+            title: 'Thu tệp',
+            width: 440,
+            actions: [AppDialog.cancel(context, label: 'Đóng')],
+            child: const DialogEmpty(
+              icon: Icons.inbox_outlined,
+              title: 'Chưa có đợt thu tệp nào',
+              message: 'Chọn “Thu bài / tệp” để bắt đầu một đợt thu mới.',
+            ),
           );
         }
         final targets =
@@ -337,110 +354,111 @@ class _CollectProgress extends StatelessWidget {
           0,
           (sum, t) => sum + (t['bytes_done'] as num),
         );
-        return AlertDialog(
-          title: Text(
-            active > 0
-                ? 'Collecting files… ($done/${targets.length} students)'
-                : 'Collection finished',
-          ),
-          content: SizedBox(
-            width: 520,
-            height: 380,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  '$files files · ${formatBytes(bytes)} → ${j['dest']}',
-                  style: const TextStyle(fontSize: 12, color: Colors.blueGrey),
-                ),
-                const SizedBox(height: 8),
-                Expanded(
-                  child: ListView.separated(
-                    itemCount: targets.length,
-                    separatorBuilder: (_, _) => const Divider(height: 1),
-                    itemBuilder: (_, i) {
-                      final t = targets[i];
-                      final total = (t['bytes_total'] as num).toDouble();
-                      final ratio = total > 0
-                          ? ((t['bytes_done'] as num) / total).clamp(0.0, 1.0)
-                          : (t['status'] == 'complete' ? 1.0 : null);
-                      final failed = t['status'] == 'error';
-                      return Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 6),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                Icon(
-                                  failed
-                                      ? Icons.error_outline
-                                      : t['status'] == 'complete'
-                                      ? Icons.check_circle_outline
-                                      : Icons.computer,
-                                  size: 16,
-                                  color: failed
-                                      ? const Color(0xffb83b40)
-                                      : Colors.blueGrey,
-                                ),
-                                const SizedBox(width: 6),
-                                Expanded(
-                                  child: Text(
-                                    '${t['name']}',
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 3),
-                            if (jobTargetActive(t))
-                              LinearProgressIndicator(
-                                value: t['status'] == 'queued' ? null : ratio,
-                                minHeight: 4,
-                              ),
-                            Tooltip(
-                              message: (t['notes'] as List).join('\n'),
-                              child: Text(
-                                describe(t),
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  color: failed
-                                      ? const Color(0xffb83b40)
-                                      : Colors.blueGrey,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      );
-                    },
-                  ),
-                ),
-              ],
-            ),
-          ),
+        return AppDialog(
+          icon: active > 0
+              ? Icons.downloading_outlined
+              : Icons.check_circle_outline,
+          tone: active > 0 ? AppTone.brand : AppTone.success,
+          title: active > 0
+              ? 'Đang thu tệp… ($done/${targets.length} học viên)'
+              : 'Đã thu xong',
+          subtitle: '$files tệp · ${formatBytes(bytes)} → ${j['dest']}',
+          width: 580,
+          height: 380,
+          scrollable: false,
+          bodyPadding: EdgeInsets.zero,
+          footerLeading: active > 0
+              ? AppDialog.cancel(
+                  context,
+                  label: 'Hủy đợt thu',
+                  onPressed: () =>
+                      agent.request('fs_cancel', input: {'id': j['id']}),
+                )
+              : null,
           actions: [
-            if (active > 0)
-              TextButton(
-                onPressed: () =>
-                    agent.request('fs_cancel', input: {'id': j['id']}),
-                child: const Text('Cancel collection'),
-              ),
-            TextButton.icon(
+            AppDialog.secondary(
               onPressed: () =>
                   agent.request('fs_open', input: {'path': j['dest']}),
-              icon: const Icon(Icons.folder_open, size: 18),
-              label: const Text('Open folder'),
+              icon: Icons.folder_open,
+              label: 'Mở thư mục',
             ),
-            FilledButton(
+            AppDialog.primary(
               onPressed: () => Navigator.pop(context),
-              child: Text(active > 0 ? 'Hide' : 'Close'),
+              icon: Icons.check,
+              label: active > 0 ? 'Ẩn' : 'Đóng',
             ),
           ],
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: ListView.separated(
+                  itemCount: targets.length,
+                  separatorBuilder: (_, _) => const Divider(height: 1),
+                  itemBuilder: (_, i) {
+                    final t = targets[i];
+                    final total = (t['bytes_total'] as num).toDouble();
+                    final ratio = total > 0
+                        ? ((t['bytes_done'] as num) / total).clamp(0.0, 1.0)
+                        : (t['status'] == 'complete' ? 1.0 : null);
+                    final failed = t['status'] == 'error';
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 6),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Icon(
+                                failed
+                                    ? Icons.error_outline
+                                    : t['status'] == 'complete'
+                                    ? Icons.check_circle_outline
+                                    : Icons.computer,
+                                size: 16,
+                                color: failed
+                                    ? const Color(0xffb83b40)
+                                    : Colors.blueGrey,
+                              ),
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: Text(
+                                  '${t['name']}',
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 3),
+                          if (jobTargetActive(t))
+                            LinearProgressIndicator(
+                              value: t['status'] == 'queued' ? null : ratio,
+                              minHeight: 4,
+                            ),
+                          Tooltip(
+                            message: (t['notes'] as List).join('\n'),
+                            child: Text(
+                              describe(t),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: failed
+                                    ? const Color(0xffb83b40)
+                                    : Colors.blueGrey,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
         );
       },
     );

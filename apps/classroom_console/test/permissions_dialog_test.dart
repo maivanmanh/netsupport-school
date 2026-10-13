@@ -3,15 +3,19 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:classroom_console/agent.dart';
 import 'package:classroom_console/permissions_dialog.dart';
+import 'support/fake_store.dart';
 
-class PermissionAgent extends Agent {
-  PermissionAgent()
-    : super([
+class PermissionAgent extends Agent with FakeStoreAgent {
+  PermissionAgent([FakeStore? shared])
+    : store = shared ?? FakeStore(),
+      super([
         '--ipc-file',
         '/fixture/test-endpoint.json',
         '--control-port',
         '48900',
       ]);
+  @override
+  final FakeStore store;
   @override
   bool get connected => true;
   String? requested;
@@ -92,13 +96,18 @@ void main() {
   }
 
   Future<void> close(WidgetTester tester, PermissionAgent agent) async {
-    await tester.tap(find.text('Continue'));
+    await tester.tap(find.text('Tiếp tục'));
     await tester.pumpAndSettle();
     agent.dispose();
   }
 
-  Future<PermissionAgent> autoOpen(WidgetTester tester) async {
-    final agent = PermissionAgent()..state = {'phase': 'idle'};
+  bool seen(PermissionAgent agent) =>
+      agent.store.data['ui']?['mac_permissions_onboarding_seen'] == true;
+  Future<PermissionAgent> autoOpen(
+    WidgetTester tester, [
+    FakeStore? shared,
+  ]) async {
+    final agent = PermissionAgent(shared)..state = {'phase': 'idle'};
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
@@ -120,13 +129,14 @@ void main() {
     tester,
   ) async {
     final agent = await autoOpen(tester);
-    expect(find.text('Set up macOS permissions'), findsOneWidget);
-    expect(calls.where((c) => c == 'markOnboardingSeen'), hasLength(1));
-    await tester.tap(find.text('Continue'));
+    expect(find.text('Thiết lập quyền macOS'), findsOneWidget);
+    expect(seen(agent), isTrue);
+    expect(calls, isNot(contains('markOnboardingSeen')));
+    await tester.tap(find.text('Tiếp tục'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Auto'));
     await tester.pumpAndSettle();
-    expect(find.text('Set up macOS permissions'), findsNothing);
+    expect(find.text('Thiết lập quyền macOS'), findsNothing);
     agent.dispose();
   });
   testWidgets('partial grant skips startup checklist and remembers it', (
@@ -134,8 +144,8 @@ void main() {
   ) async {
     status = {...status, 'screen': true};
     final agent = await autoOpen(tester);
-    expect(find.text('Set up macOS permissions'), findsNothing);
-    expect(calls, contains('markOnboardingSeen'));
+    expect(find.text('Thiết lập quyền macOS'), findsNothing);
+    expect(seen(agent), isTrue);
     agent.dispose();
   });
   testWidgets('unknown helper does not show or remember automatic checklist', (
@@ -143,8 +153,8 @@ void main() {
   ) async {
     status = {...status, 'helperScreen': null};
     final agent = await autoOpen(tester);
-    expect(find.text('Set up macOS permissions'), findsNothing);
-    expect(calls, isNot(contains('markOnboardingSeen')));
+    expect(find.text('Thiết lập quyền macOS'), findsNothing);
+    expect(seen(agent), isFalse);
     agent.dispose();
   });
   testWidgets('revoked grants do not reopen a previously seen checklist', (
@@ -152,20 +162,31 @@ void main() {
   ) async {
     status = {...status, 'onboardingSeen': true};
     final agent = await autoOpen(tester);
-    expect(find.text('Set up macOS permissions'), findsNothing);
+    expect(find.text('Thiết lập quyền macOS'), findsNothing);
+    // The marker kept by older builds in macOS preferences moves to the database.
+    expect(seen(agent), isTrue);
     expect(calls, isNot(contains('markOnboardingSeen')));
+    agent.dispose();
+  });
+  testWidgets('seen marker in the database suppresses the checklist', (
+    tester,
+  ) async {
+    final shared = FakeStore()
+      ..apply('ui', {'mac_permissions_onboarding_seen': true});
+    final agent = await autoOpen(tester, shared);
+    expect(find.text('Thiết lập quyền macOS'), findsNothing);
     agent.dispose();
   });
   testWidgets('polls grants without requesting or resetting privacy', (
     tester,
   ) async {
     final agent = await open(tester);
-    expect(find.text('Not granted'), findsNWidgets(2));
+    expect(find.text('Chưa cấp'), findsNWidgets(2));
     status = {...status, 'screen': true, 'helperScreen': true};
     await tester.pump(const Duration(seconds: 2));
     await tester.pump();
-    expect(find.text('Granted'), findsNWidgets(2));
-    expect(find.textContaining('New Screen Recording grant'), findsOneWidget);
+    expect(find.text('Đã cấp'), findsNWidgets(2));
+    expect(find.textContaining('quyền Screen Recording mới'), findsOneWidget);
     expect(calls.every((call) => call == 'status'), isTrue);
     await close(tester, agent);
   });
@@ -173,45 +194,45 @@ void main() {
     tester,
   ) async {
     final agent = await open(tester);
-    await tester.ensureVisible(find.text('Request / Test LAN access'));
-    await tester.tap(find.text('Request / Test LAN access'));
+    await tester.ensureVisible(find.text('Yêu cầu / Thử truy cập LAN'));
+    await tester.tap(find.text('Yêu cầu / Thử truy cập LAN'));
     await tester.pumpAndSettle();
-    expect(find.text('Connected (last test)'), findsNothing);
+    expect(find.text('Đã kết nối (lần thử gần nhất)'), findsNothing);
     network = {
       'console': {'state': 'connected'},
       'helper': {'state': 'connected'},
     };
     await tester.pump(const Duration(seconds: 10));
     await tester.pumpAndSettle();
-    expect(find.text('Connected (last test)'), findsOneWidget);
+    expect(find.text('Đã kết nối (lần thử gần nhất)'), findsOneWidget);
     // Editing the endpoint invalidates the previous green result.
     await tester.enterText(find.byType(TextField).first, '192.168.50.106');
     await tester.pump();
-    expect(find.text('Connected (last test)'), findsNothing);
+    expect(find.text('Đã kết nối (lần thử gần nhất)'), findsNothing);
     await close(tester, agent);
   });
   testWidgets(
     'Continue works with missing grants; restart disabled during sharing',
     (tester) async {
       final agent = await open(tester, phase: 'sharing');
-      final restart = tester.widget<TextButton>(
-        find.widgetWithText(TextButton, 'Restart Teacher'),
+      final restart = tester.widget<OutlinedButton>(
+        find.widgetWithText(OutlinedButton, 'Khởi động lại Teacher'),
       );
       expect(restart.onPressed, isNull);
       await close(tester, agent);
       expect(agent.requested, isNull);
-      expect(find.text('Set up macOS permissions'), findsNothing);
+      expect(find.text('Thiết lập quyền macOS'), findsNothing);
     },
   );
   testWidgets('idle restart invokes existing Teacher lifecycle', (
     tester,
   ) async {
     final agent = await open(tester);
-    await tester.tap(find.text('Restart Teacher'));
+    await tester.tap(find.text('Khởi động lại Teacher'));
     await tester.pumpAndSettle();
     expect(agent.requested, 'restart');
     expect(restartArguments, agent.args);
-    expect(find.text('Set up macOS permissions'), findsNothing);
+    expect(find.text('Thiết lập quyền macOS'), findsNothing);
     agent.dispose();
   });
 }

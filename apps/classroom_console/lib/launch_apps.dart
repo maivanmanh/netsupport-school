@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'agent.dart';
+import 'app_dialog.dart';
 
 /// One saved program the Teacher can start on every Student at once.
 class LaunchItem {
@@ -35,7 +36,7 @@ class LaunchItem {
     if (note.trim().isNotEmpty) return note.trim();
     final parts = path.trim().split(RegExp(r'[\\/]'))
       ..removeWhere((e) => e.isEmpty);
-    return parts.isEmpty ? '(empty)' : parts.last;
+    return parts.isEmpty ? '(trống)' : parts.last;
   }
 }
 
@@ -66,7 +67,7 @@ const _presets = <(String, String, String, String)>[
 String _osLabel(String os) => switch (os) {
   'windows' => 'Windows',
   'macos' => 'macOS',
-  _ => 'Any system',
+  _ => 'Mọi hệ điều hành',
 };
 
 List<LaunchItem> _load(Agent agent) =>
@@ -145,24 +146,15 @@ class _LaunchDialogState extends State<_LaunchDialog> {
   Future<void> remove() async {
     final item = current;
     if (item == null) return;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Delete this item?'),
-        content: Text(item.title),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Delete'),
-          ),
-        ],
-      ),
+    final confirmed = await confirmDialog(
+      context,
+      title: 'Xóa mục này?',
+      message: '“${item.title}” sẽ bị xóa khỏi danh sách chương trình đã lưu.',
+      confirmLabel: 'Xóa',
+      icon: Icons.delete_outline,
+      destructive: true,
     );
-    if (confirmed != true) return;
+    if (!confirmed) return;
     setState(() {
       items.removeWhere((i) => i.id == item.id);
       selected = null;
@@ -179,7 +171,7 @@ class _LaunchDialogState extends State<_LaunchDialog> {
     if (targets.isEmpty) {
       setState(
         () => message =
-            'No selected student runs ${_osLabel(item.os)}; nothing was launched.',
+            'Không có máy nào đang chạy ${_osLabel(item.os)}; chưa khởi chạy gì.',
       );
       return;
     }
@@ -224,7 +216,7 @@ class _LaunchDialogState extends State<_LaunchDialog> {
     final job = jobs?.where((j) => j['id'] == jobId).firstOrNull;
     if (job == null) {
       return Text(
-        'Ready — ${widget.audience}',
+        'Sẵn sàng — ${widget.audience}',
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         style: const TextStyle(fontSize: 12, color: Colors.blueGrey),
@@ -237,10 +229,10 @@ class _LaunchDialogState extends State<_LaunchDialog> {
     final failed = targets.where((t) => t['status'] == 'error').toList();
     final waiting = targets.length - done - failed.length;
     final summary = waiting > 0
-        ? 'Launching… $done/${targets.length}'
+        ? 'Đang khởi chạy… $done/${targets.length}'
         : failed.isEmpty
-        ? 'Launched on $done'
-        : 'Launched on $done · failed on ${failed.length}';
+        ? 'Đã khởi chạy trên $done máy'
+        : 'Đã chạy $done máy · lỗi ${failed.length} máy';
     // One compact line; the failure reasons are in the tooltip.
     final detail = failed
         .map((t) => '${nameOf('${t['id']}')}: ${t['error']}')
@@ -267,104 +259,94 @@ class _LaunchDialogState extends State<_LaunchDialog> {
   @override
   Widget build(BuildContext context) {
     final item = current;
-    return AlertDialog(
-      title: Text('Launch app on ${widget.audience}'),
-      content: SizedBox(
-        width: 640,
-        height: 430,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                FilledButton.tonalIcon(
-                  onPressed: () => edit(),
-                  icon: const Icon(Icons.add, size: 17),
-                  label: const Text('Add'),
-                ),
-                const SizedBox(width: 8),
-                OutlinedButton.icon(
-                  onPressed: item == null ? null : () => edit(item),
-                  icon: const Icon(Icons.edit_outlined, size: 17),
-                  label: const Text('Edit'),
-                ),
-                const SizedBox(width: 8),
-                OutlinedButton.icon(
-                  onPressed: item == null ? null : remove,
-                  icon: const Icon(Icons.delete_outline, size: 17),
-                  label: const Text('Delete'),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Expanded(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  border: Border.all(color: const Color(0xffdfe5eb)),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: items.isEmpty
-                    ? const Center(
-                        child: Padding(
-                          padding: EdgeInsets.all(20),
-                          child: Text(
-                            'No saved programs yet. Press Add, e.g. Chrome with a web address.',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(color: Colors.blueGrey),
-                          ),
-                        ),
-                      )
-                    : ListView.separated(
-                        itemCount: items.length,
-                        separatorBuilder: (_, _) => const Divider(height: 1),
-                        itemBuilder: (_, i) {
-                          final it = items[i];
-                          return ListTile(
-                            dense: true,
-                            selected: it.id == selected,
-                            selectedTileColor: const Color(0xffdcecef),
-                            leading: const Icon(Icons.apps, size: 20),
-                            title: Text(
-                              it.title,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            subtitle: Text(
-                              '${it.path}${it.args.isEmpty ? '' : '  ${it.args}'}',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            trailing: Text(
-                              _osLabel(it.os),
-                              style: const TextStyle(
-                                fontSize: 11,
-                                color: Colors.blueGrey,
-                              ),
-                            ),
-                            onTap: () => setState(() => selected = it.id),
-                            onLongPress: () => edit(it),
-                          );
-                        },
-                      ),
-              ),
-            ),
-            const SizedBox(height: 10),
-            AnimatedBuilder(animation: agent, builder: (_, _) => status()),
-          ],
-        ),
+    return AppDialog(
+      icon: Icons.rocket_launch_outlined,
+      title: 'Chạy ứng dụng trên ${widget.audience}',
+      subtitle: 'Chọn một chương trình đã lưu rồi bấm “Chạy”.',
+      width: 680,
+      height: 400,
+      scrollable: false,
+      footerLeading: AnimatedBuilder(
+        animation: agent,
+        builder: (_, _) => status(),
       ),
       actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Close'),
-        ),
-        FilledButton.icon(
+        AppDialog.cancel(context, label: 'Đóng'),
+        AppDialog.primary(
           onPressed: item == null || busy ? null : launch,
-          icon: const Icon(Icons.rocket_launch_outlined, size: 18),
-          label: Text(busy ? 'Launching…' : 'Launch'),
+          icon: Icons.rocket_launch_outlined,
+          busy: busy,
+          label: busy ? 'Đang chạy…' : 'Chạy',
         ),
       ],
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              AppDialog.secondary(
+                onPressed: () => edit(),
+                icon: Icons.add,
+                label: 'Thêm',
+              ),
+              const SizedBox(width: 8),
+              AppDialog.secondary(
+                onPressed: item == null ? null : () => edit(item),
+                icon: Icons.edit_outlined,
+                label: 'Sửa',
+              ),
+              const SizedBox(width: 8),
+              AppDialog.secondary(
+                onPressed: item == null ? null : remove,
+                icon: Icons.delete_outline,
+                label: 'Xóa',
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Expanded(
+            child: DialogPanel(
+              child: items.isEmpty
+                  ? const DialogEmpty(
+                      icon: Icons.apps_outlined,
+                      title: 'Chưa có chương trình nào',
+                      message: 'Bấm “Thêm”, ví dụ Chrome kèm một địa chỉ web.',
+                    )
+                  : ListView.separated(
+                      itemCount: items.length,
+                      separatorBuilder: (_, _) => const Divider(height: 1),
+                      itemBuilder: (_, i) {
+                        final it = items[i];
+                        return ListTile(
+                          dense: true,
+                          selected: it.id == selected,
+                          selectedTileColor: const Color(0xffe3f1f3),
+                          leading: const Icon(Icons.apps, size: 20),
+                          title: Text(
+                            it.title,
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                          subtitle: Text(
+                            '${it.path}${it.args.isEmpty ? '' : '  ${it.args}'}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          trailing: Text(
+                            _osLabel(it.os),
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: AppDialog.muted,
+                            ),
+                          ),
+                          onTap: () => setState(() => selected = it.id),
+                          onLongPress: () => edit(it),
+                        );
+                      },
+                    ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -394,7 +376,7 @@ class _EditDialogState extends State<_EditDialog> {
   void save() {
     if (path.text.trim().isEmpty) {
       setState(
-        () => error = 'Enter the program path on the student computers.',
+        () => error = 'Hãy nhập đường dẫn chương trình trên máy học viên.',
       );
       return;
     }
@@ -426,7 +408,6 @@ class _EditDialogState extends State<_EditDialog> {
       decoration: InputDecoration(
         labelText: label,
         hintText: hint,
-        border: const OutlineInputBorder(),
         isDense: true,
       ),
     ),
@@ -434,87 +415,78 @@ class _EditDialogState extends State<_EditDialog> {
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: Text(widget.item == null ? 'Add program' : 'Edit program'),
-      content: SizedBox(
-        width: 520,
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Wrap(
-                spacing: 6,
-                children: [
-                  for (final p in _presets)
-                    ActionChip(
-                      visualDensity: VisualDensity.compact,
-                      label: Text(
-                        '${p.$1} · ${_osLabel(p.$4)}',
-                        style: const TextStyle(fontSize: 12),
-                      ),
-                      onPressed: () => setState(() {
-                        if (note.text.isEmpty) note.text = p.$1;
-                        path.text = p.$2;
-                        args.text = p.$3;
-                        os = p.$4;
-                      }),
-                    ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              field(note, 'Note', 'Shown in the list, e.g. Open class website'),
-              field(
-                path,
-                'Path to program',
-                r'C:\Program Files\Google\Chrome\Application\chrome.exe',
-              ),
-              field(
-                args,
-                'Arguments (optional)',
-                'https://example.org  or  --kiosk "https://example.org"',
-              ),
-              DropdownButtonFormField<String>(
-                initialValue: os,
-                decoration: const InputDecoration(
-                  labelText: 'Runs on',
-                  border: OutlineInputBorder(),
-                  isDense: true,
-                ),
-                items: const [
-                  DropdownMenuItem(value: 'any', child: Text('Any system')),
-                  DropdownMenuItem(
-                    value: 'windows',
-                    child: Text('Windows only'),
-                  ),
-                  DropdownMenuItem(value: 'macos', child: Text('macOS only')),
-                ],
-                onChanged: (v) => setState(() => os = v!),
-              ),
-              const SizedBox(height: 6),
-              const Text(
-                r'Bare names such as notepad.exe or chrome are looked up by Windows. %USERPROFILE% style variables work. On macOS give the .app path.',
-                style: TextStyle(fontSize: 11.5, color: Colors.blueGrey),
-              ),
-              if (error != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 8),
-                  child: Text(
-                    error!,
-                    style: const TextStyle(color: Color(0xffb83b40)),
-                  ),
-                ),
-            ],
-          ),
-        ),
-      ),
+    return AppDialog(
+      icon: widget.item == null
+          ? Icons.add_circle_outline
+          : Icons.edit_outlined,
+      title: widget.item == null ? 'Thêm chương trình' : 'Sửa chương trình',
+      subtitle: 'Chương trình sẽ được chạy trên máy học viên.',
+      width: 560,
       actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(onPressed: save, child: const Text('Save')),
+        AppDialog.cancel(context),
+        AppDialog.primary(label: 'Lưu', icon: Icons.check, onPressed: save),
       ],
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          DialogSection(
+            title: 'Mẫu có sẵn',
+            child: Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final p in _presets)
+                  ActionChip(
+                    visualDensity: VisualDensity.compact,
+                    label: Text(
+                      '${p.$1} · ${_osLabel(p.$4)}',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                    onPressed: () => setState(() {
+                      if (note.text.isEmpty) note.text = p.$1;
+                      path.text = p.$2;
+                      args.text = p.$3;
+                      os = p.$4;
+                    }),
+                  ),
+              ],
+            ),
+          ),
+          field(note, 'Ghi chú', 'Hiện trong danh sách, ví dụ: Mở web của lớp'),
+          field(
+            path,
+            'Đường dẫn chương trình',
+            r'C:\Program Files\Google\Chrome\Application\chrome.exe',
+          ),
+          field(
+            args,
+            'Tham số (không bắt buộc)',
+            'https://example.org  hoặc  --kiosk "https://example.org"',
+          ),
+          DropdownButtonFormField<String>(
+            initialValue: os,
+            decoration: const InputDecoration(
+              labelText: 'Chạy trên',
+              isDense: true,
+            ),
+            items: const [
+              DropdownMenuItem(value: 'any', child: Text('Mọi hệ điều hành')),
+              DropdownMenuItem(value: 'windows', child: Text('Chỉ Windows')),
+              DropdownMenuItem(value: 'macos', child: Text('Chỉ macOS')),
+            ],
+            onChanged: (v) => setState(() => os = v!),
+          ),
+          const SizedBox(height: 10),
+          const Text(
+            r'Tên ngắn như notepad.exe hoặc chrome sẽ do Windows tự tìm. Biến kiểu %USERPROFILE% dùng được. Trên macOS hãy nhập đường dẫn .app.',
+            style: TextStyle(fontSize: 12, color: AppDialog.muted, height: 1.4),
+          ),
+          if (error != null) ...[
+            const SizedBox(height: 12),
+            InlineNotice(error!),
+          ],
+        ],
+      ),
     );
   }
 }

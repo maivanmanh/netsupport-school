@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'agent.dart';
+import 'app_dialog.dart';
 
 const _permissions = MethodChannel('classroom/permissions');
 
@@ -11,20 +12,58 @@ Future<void> showMacPermissions(BuildContext context, Agent agent) =>
       builder: (_) => MacPermissionsDialog(agent: agent),
     );
 
+const _onboardingSeenKey = 'mac_permissions_onboarding_seen';
+
+/// Waits (bounded) for the console to finish reading its settings database.
+Future<void> _whenReady(Agent agent) async {
+  if (agent.connected) return;
+  final ready = Completer<void>();
+  void check() {
+    if (agent.connected && !ready.isCompleted) ready.complete();
+  }
+
+  agent.addListener(check);
+  try {
+    await ready.future.timeout(const Duration(seconds: 20));
+  } finally {
+    agent.removeListener(check);
+  }
+}
+
 /// Auto-onboarding is once per installation/profile, only with two explicitly
 /// missing Recording grants. Unknown helper status never creates a startup modal.
+/// The "seen" marker lives in the Teacher's settings database.
 Future<void> maybeShowMacPermissions(BuildContext context, Agent agent) async {
   try {
+    await _whenReady(agent);
     final status = await _permissions.invokeMapMethod<String, dynamic>(
       'status',
     );
-    if (status == null || status['onboardingSeen'] == true) return;
+    if (status == null) return;
+    Future<void> remember() async {
+      try {
+        await agent.storeApply('ui', {_onboardingSeenKey: true});
+      } catch (_) {
+        // Worst case the checklist is offered once more next launch.
+      }
+    }
+
+    var seen = false;
+    try {
+      seen = (await agent.storeList('ui'))[_onboardingSeenKey] == true;
+    } catch (_) {}
+    // Builds before the database kept this in macOS preferences; carry it over.
+    if (!seen && status['onboardingSeen'] == true) {
+      await remember();
+      seen = true;
+    }
+    if (seen) return;
     final anyGranted =
         status['screen'] == true || status['helperScreen'] == true;
     final noneGranted =
         status['screen'] == false && status['helperScreen'] == false;
     if (!anyGranted && !noneGranted) return;
-    await _permissions.invokeMethod<void>('markOnboardingSeen');
+    await remember();
     if (context.mounted && noneGranted) {
       await showMacPermissions(context, agent);
     }
@@ -105,7 +144,7 @@ class _MacPermissionsDialogState extends State<MacPermissionsDialog>
         error = next['helperError'] as String?;
       });
     } catch (e) {
-      if (mounted) setState(() => error = 'Could not check permissions: $e');
+      if (mounted) setState(() => error = 'Không kiểm tra được quyền: $e');
     } finally {
       checking = false;
     }
@@ -127,7 +166,7 @@ class _MacPermissionsDialogState extends State<MacPermissionsDialog>
       }
       if (mounted && result == false && method.startsWith('open')) {
         setState(
-          () => error = 'Open System Settings → Privacy & Security manually.',
+          () => error = 'Hãy tự mở System Settings → Privacy & Security.',
         );
       }
       if (mounted && result is Map && result['error'] is String) {
@@ -149,12 +188,22 @@ class _MacPermissionsDialogState extends State<MacPermissionsDialog>
     String? verifiedLabel,
   }) {
     final label = granted == true
-        ? verifiedLabel ?? 'Granted'
+        ? verifiedLabel ?? 'Đã cấp'
         : granted == false
-        ? 'Not granted'
-        : 'Not verified';
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 10),
+        ? 'Chưa cấp'
+        : 'Chưa xác minh';
+    final color = granted == true
+        ? const Color(0xff1f7a4d)
+        : granted == false
+        ? const Color(0xffb83b40)
+        : const Color(0xffc77d12);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        border: Border.all(color: AppDialog.border),
+        borderRadius: BorderRadius.circular(10),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -162,26 +211,52 @@ class _MacPermissionsDialogState extends State<MacPermissionsDialog>
             children: [
               Icon(
                 granted == true ? Icons.check_circle : Icons.info_outline,
-                color: granted == true
-                    ? Colors.green.shade700
-                    : Colors.orange.shade800,
+                color: color,
                 size: 22,
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 10),
               Expanded(
                 child: Text(
                   title,
-                  style: const TextStyle(fontWeight: FontWeight.w600),
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 13.5,
+                  ),
                 ),
               ),
-              Text(label),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w600,
+                    color: color,
+                  ),
+                ),
+              ),
             ],
           ),
           Padding(
-            padding: const EdgeInsets.only(left: 30, top: 5),
-            child: Text(reason),
+            padding: const EdgeInsets.only(left: 32, top: 6),
+            child: Text(
+              reason,
+              style: const TextStyle(
+                fontSize: 12.5,
+                height: 1.45,
+                color: AppDialog.muted,
+              ),
+            ),
           ),
-          if (buttons.isNotEmpty) Wrap(spacing: 8, children: buttons),
+          if (buttons.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(left: 24, top: 4),
+              child: Wrap(spacing: 8, children: buttons),
+            ),
         ],
       ),
     );
@@ -190,6 +265,18 @@ class _MacPermissionsDialogState extends State<MacPermissionsDialog>
   Widget button(String title, String method) => TextButton(
     onPressed: busy ? null : () => action(method),
     child: Text(title),
+  );
+
+  Widget note(String text) => Padding(
+    padding: const EdgeInsets.only(bottom: 10),
+    child: Text(
+      text,
+      style: const TextStyle(
+        fontSize: 12.5,
+        height: 1.45,
+        color: AppDialog.muted,
+      ),
+    ),
   );
 
   @override
@@ -201,151 +288,24 @@ class _MacPermissionsDialogState extends State<MacPermissionsDialog>
         helperNetwork?['state'] == 'connected';
     final idle =
         widget.agent.connected && widget.agent.state['phase'] == 'idle';
-    return AlertDialog(
-      title: const Text('Set up macOS permissions'),
-      content: SizedBox(
-        width: 640,
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'macOS asks you to approve access. Choose Allow or enable Classroom in Settings. Checks refresh every 2 seconds while this window is open.',
-              ),
-              permission(
-                'Screen Recording · Console',
-                'Needed to show the Teacher screen to the class. Classroom does not need system audio.',
-                status['screen'] as bool?,
-                [
-                  button(
-                    'Request / Open Settings',
-                    'openScreenRecordingSettings',
-                  ),
-                ],
-              ),
-              permission(
-                'Screen Recording · Agent',
-                'The bundled media helper captures the screen. Its permission is checked separately.',
-                status['helperScreen'] as bool?,
-                [
-                  button('Request Agent access', 'requestHelperScreen'),
-                  button(
-                    'Open Screen Recording',
-                    'openScreenRecordingSettings',
-                  ),
-                ],
-              ),
-              const Divider(),
-              permission(
-                'Local Network',
-                'Needed to connect to classroom computers. macOS has no general permission-status API. Green here means both Console and Agent connected to the test endpoint; it does not verify every classroom port.',
-                networkOK ? true : null,
-                [button('Open Local Network', 'openLocalNetworkSettings')],
-                verifiedLabel: 'Connected (last test)',
-              ),
-              const Text(
-                'Test a known TCP service on a classroom computer. Port 22 requires SSH. After the first test, LAN checks repeat every 10 seconds while this window is open. A failed test may mean an offline service, firewall or network issue.',
-              ),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: host,
-                      onChanged: (_) => setState(() {
-                        network = {};
-                        networkRequested = false;
-                      }),
-                      enabled: !busy,
-                      decoration: const InputDecoration(
-                        labelText: 'LAN IPv4 address',
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  SizedBox(
-                    width: 90,
-                    child: TextField(
-                      controller: port,
-                      onChanged: (_) => setState(() {
-                        network = {};
-                        networkRequested = false;
-                      }),
-                      enabled: !busy,
-                      keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(labelText: 'TCP port'),
-                    ),
-                  ),
-                ],
-              ),
-              TextButton.icon(
-                onPressed: busy
-                    ? null
-                    : () {
-                        setState(() {
-                          network = {};
-                          networkRequested = true;
-                        });
-                        action('probeNetwork', {
-                          'host': host.text.trim(),
-                          'port': int.tryParse(port.text) ?? 0,
-                        });
-                      },
-                icon: const Icon(Icons.network_check),
-                label: Text(busy ? 'Working…' : 'Request / Test LAN access'),
-              ),
-              if (consoleNetwork != null)
-                Text(
-                  'Console: ${consoleNetwork['state']} ${consoleNetwork['detail'] ?? ''}',
-                ),
-              if (helperNetwork != null)
-                Text(
-                  'Agent: ${helperNetwork['state']} ${helperNetwork['detail'] ?? ''}',
-                ),
-              const Divider(),
-              const Text(
-                'Accessibility: not required for this Teacher to share its screen or control a Windows Student. A Mac Student needs its own Accessibility permission to receive remote keyboard/mouse input.',
-              ),
-              const SizedBox(height: 10),
-              const Text(
-                'Files: no Full Disk Access is requested. Select files and folders using the system picker when transferring or saving them.',
-              ),
-              const SizedBox(height: 10),
-              const Text(
-                'After changing Screen Recording, restart Teacher. Continuing skips this setup window; it does not bypass macOS permissions.',
-              ),
-              if (restartNeeded)
-                const Text(
-                  'New Screen Recording grant detected. Restart Teacher to apply it.',
-                  style: TextStyle(fontWeight: FontWeight.w600),
-                ),
-              if (error != null)
-                Text(
-                  error!,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
-                ),
-              ExpansionTile(
-                title: const Text('Exact apps for manual setup'),
-                children: [
-                  SelectableText(
-                    'Console: ${status['appPath'] ?? 'Checking…'}\nAgent: ${status['helperPath'] ?? 'Checking…'}',
-                  ),
-                  button('Show apps in Finder', 'revealApps'),
-                  const Text(
-                    'This app does not remove old entries or reset privacy decisions. Check the full path before changing an entry in System Settings.',
-                  ),
-                ],
-              ),
-            ],
-          ),
+    return AppDialog(
+      icon: Icons.privacy_tip_outlined,
+      title: 'Thiết lập quyền macOS',
+      subtitle:
+          'macOS sẽ hỏi bạn cho phép. Chọn Allow hoặc bật Classroom trong Settings. Trạng thái tự làm mới mỗi 2 giây khi cửa sổ này đang mở.',
+      width: 700,
+      footerLeading: Align(
+        alignment: Alignment.centerLeft,
+        child: TextButton.icon(
+          onPressed: busy ? null : refresh,
+          icon: const Icon(Icons.refresh, size: 18),
+          label: const Text('Làm mới'),
         ),
       ),
       actions: [
-        TextButton(
-          onPressed: busy ? null : refresh,
-          child: const Text('Refresh'),
-        ),
-        TextButton(
+        AppDialog.secondary(
+          icon: Icons.restart_alt,
+          label: 'Khởi động lại Teacher',
           onPressed: idle && !busy
               ? () async {
                   setState(() => busy = true);
@@ -364,19 +324,159 @@ class _MacPermissionsDialogState extends State<MacPermissionsDialog>
                     if (mounted) {
                       setState(() {
                         busy = false;
-                        error = 'Could not restart Teacher: $e';
+                        error = 'Không khởi động lại được Teacher: $e';
                       });
                     }
                   }
                 }
               : null,
-          child: const Text('Restart Teacher'),
         ),
-        FilledButton(
+        AppDialog.primary(
           onPressed: () => Navigator.pop(context),
-          child: const Text('Continue'),
+          icon: Icons.arrow_forward,
+          label: 'Tiếp tục',
         ),
       ],
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (restartNeeded) ...[
+            const InlineNotice(
+              'Phát hiện quyền Screen Recording mới. Hãy khởi động lại Teacher để áp dụng.',
+              tone: AppTone.warning,
+            ),
+            const SizedBox(height: 12),
+          ],
+          permission(
+            'Screen Recording · Console',
+            'Cần để hiện màn hình giảng viên cho cả lớp. Classroom không cần âm thanh hệ thống.',
+            status['screen'] as bool?,
+            [button('Yêu cầu / Mở Settings', 'openScreenRecordingSettings')],
+          ),
+          permission(
+            'Screen Recording · Agent',
+            'Tiến trình media đi kèm là bên thực sự chụp màn hình. Quyền của nó được kiểm tra riêng.',
+            status['helperScreen'] as bool?,
+            [
+              button('Yêu cầu quyền cho Agent', 'requestHelperScreen'),
+              button('Mở Screen Recording', 'openScreenRecordingSettings'),
+            ],
+          ),
+          permission(
+            'Mạng nội bộ (Local Network)',
+            'Cần để kết nối tới máy học viên. macOS không có API chung cho trạng thái quyền này. Màu xanh nghĩa là cả Console và Agent đã kết nối được tới điểm thử; chưa xác minh mọi cổng của lớp học.',
+            networkOK ? true : null,
+            [button('Mở Local Network', 'openLocalNetworkSettings')],
+            verifiedLabel: 'Đã kết nối (lần thử gần nhất)',
+          ),
+          DialogSection(
+            title: 'Thử kết nối mạng nội bộ',
+            hint:
+                'Thử một dịch vụ TCP đã biết trên máy học viên. Cổng 22 cần SSH. Sau lần thử đầu, mạng được kiểm tra lại mỗi 10 giây khi cửa sổ này mở. Thử thất bại có thể do dịch vụ tắt, tường lửa hoặc mạng.',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: host,
+                        onChanged: (_) => setState(() {
+                          network = {};
+                          networkRequested = false;
+                        }),
+                        enabled: !busy,
+                        decoration: const InputDecoration(
+                          labelText: 'Địa chỉ IPv4 trong mạng LAN',
+                          isDense: true,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    SizedBox(
+                      width: 110,
+                      child: TextField(
+                        controller: port,
+                        onChanged: (_) => setState(() {
+                          network = {};
+                          networkRequested = false;
+                        }),
+                        enabled: !busy,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(
+                          labelText: 'Cổng TCP',
+                          isDense: true,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                TextButton.icon(
+                  onPressed: busy
+                      ? null
+                      : () {
+                          setState(() {
+                            network = {};
+                            networkRequested = true;
+                          });
+                          action('probeNetwork', {
+                            'host': host.text.trim(),
+                            'port': int.tryParse(port.text) ?? 0,
+                          });
+                        },
+                  icon: const Icon(Icons.network_check),
+                  label: Text(
+                    busy ? 'Đang xử lý…' : 'Yêu cầu / Thử truy cập LAN',
+                  ),
+                ),
+                if (consoleNetwork != null)
+                  Text(
+                    'Console: ${consoleNetwork['state']} ${consoleNetwork['detail'] ?? ''}',
+                    style: const TextStyle(fontSize: 12.5),
+                  ),
+                if (helperNetwork != null)
+                  Text(
+                    'Agent: ${helperNetwork['state']} ${helperNetwork['detail'] ?? ''}',
+                    style: const TextStyle(fontSize: 12.5),
+                  ),
+              ],
+            ),
+          ),
+          const Divider(),
+          const SizedBox(height: 6),
+          note(
+            'Accessibility: Teacher không cần quyền này để chiếu màn hình hay điều khiển học viên Windows. Máy học viên Mac cần quyền Accessibility riêng để nhận bàn phím/chuột từ xa.',
+          ),
+          note(
+            'Tệp: Classroom không xin Full Disk Access. Hãy chọn tệp và thư mục qua hộp thoại hệ thống khi truyền hoặc lưu.',
+          ),
+          note(
+            'Sau khi đổi quyền Screen Recording, hãy khởi động lại Teacher. “Tiếp tục” chỉ bỏ qua cửa sổ này, không vượt qua quyền của macOS.',
+          ),
+          if (error != null) ...[
+            const SizedBox(height: 4),
+            InlineNotice(error!),
+          ],
+          ExpansionTile(
+            tilePadding: EdgeInsets.zero,
+            title: const Text(
+              'Ứng dụng cần cấp quyền thủ công',
+              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+            ),
+            children: [
+              SelectableText(
+                'Console: ${status['appPath'] ?? 'Đang kiểm tra…'}\nAgent: ${status['helperPath'] ?? 'Đang kiểm tra…'}',
+                style: const TextStyle(fontSize: 12.5),
+              ),
+              button('Hiện ứng dụng trong Finder', 'revealApps'),
+              note(
+                'Ứng dụng này không xóa mục cũ hay đặt lại quyết định về quyền riêng tư. Hãy kiểm tra đường dẫn đầy đủ trước khi sửa một mục trong System Settings.',
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 

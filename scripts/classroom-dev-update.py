@@ -37,11 +37,23 @@ def architecture(executable, platform):
                 raise ValueError("Invalid PE header")
             machine = struct.unpack("<H", f.read(2))[0]
             result = {0x8664: "x86_64", 0xAA64: "aarch64"}.get(machine)
-        else:
+        elif platform == "linux":
+            header = f.read(64)
+            if (len(header) != 64 or header[:7] != b"\x7fELF\x02\x01\x01"
+                    or header[7] not in (0, 3)):
+                raise ValueError("Expected a little-endian 64-bit Linux ELF executable")
+            kind, machine, version = struct.unpack_from("<HHI", header, 16)
+            header_size = struct.unpack_from("<H", header, 52)[0]
+            if kind not in (2, 3) or version != 1 or header_size != 64:
+                raise ValueError("Expected an ELF executable or PIE")
+            result = {62: "x86_64", 183: "aarch64"}.get(machine)
+        elif platform == "macos":
             magic, cpu = struct.unpack("<II", f.read(8))
             if magic != 0xFEEDFACF:
                 raise ValueError("Expected a thin 64-bit Mach-O executable")
             result = {0x100000C: "aarch64", 0x1000007: "x86_64"}.get(cpu)
+        else:
+            raise ValueError("Unsupported Student platform")
     if result is None:
         raise ValueError("Unsupported Student architecture")
     return result
@@ -57,7 +69,11 @@ def package(args):
         files = sorted(p for p in source.rglob("*") if not p.is_dir())
     else:
         executable = source
-        platform = "windows" if source.suffix.lower() == ".exe" else "macos"
+        with source.open("rb") as f:
+            magic = f.read(4)
+        platform = "linux" if magic == b"\x7fELF" else (
+            "windows" if source.suffix.lower() == ".exe" else "macos"
+        )
         files = [source]
     arch = architecture(executable, platform)
     output = Path(args.output).resolve()

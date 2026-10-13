@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'agent.dart';
+import 'app_dialog.dart';
 
 Future<void> showWebsiteDialog(
   BuildContext context,
@@ -44,7 +45,7 @@ class _WebsiteDialogState extends State<_WebsiteDialog> {
 
   String normalize(String text) {
     var value = text.trim();
-    if (value.isEmpty) throw const FormatException('Enter a website address.');
+    if (value.isEmpty) throw const FormatException('Hãy nhập địa chỉ website.');
     if (!value.contains('://')) value = 'https://$value';
     final uri = Uri.tryParse(value);
     if (value.length > 4096 ||
@@ -54,17 +55,19 @@ class _WebsiteDialogState extends State<_WebsiteDialog> {
         uri.host.isEmpty ||
         uri.userInfo.isNotEmpty) {
       throw const FormatException(
-        'Use a valid http:// or https:// website address.',
+        'Hãy dùng địa chỉ website hợp lệ bắt đầu bằng http:// hoặc https://.',
       );
     }
     return uri.toString();
   }
 
   Future<void> persist(List<String> values) async {
-    if (widget.agent.dataDirectory == null) {
-      throw StateError('Teacher storage is unavailable.');
+    if (!widget.agent.connected) {
+      throw StateError(
+        'Không lưu được: kho cài đặt của giảng viên chưa sẵn sàng.',
+      );
     }
-    // Await the flushed on-disk settings update before dispatching the request.
+    // Await the committed settings update before dispatching the request.
     await widget.agent.savePreferences({historyKey: values});
   }
 
@@ -77,7 +80,9 @@ class _WebsiteDialogState extends State<_WebsiteDialog> {
     try {
       final url = normalize(saved ?? input.text);
       final ids = onlineTargets;
-      if (ids.isEmpty) throw StateError('No target computers are online.');
+      if (ids.isEmpty) {
+        throw StateError('Không có máy nào đang online để nhận.');
+      }
       final next = [url, ...recent.where((u) => u != url)].take(20).toList();
       await persist(next);
       if (mounted) {
@@ -113,7 +118,9 @@ class _WebsiteDialogState extends State<_WebsiteDialog> {
       await persist(next);
       if (mounted) setState(() => recent = next);
     } catch (e) {
-      if (mounted) setState(() => error = 'Could not save recent websites: $e');
+      if (mounted) {
+        setState(() => error = 'Không lưu được danh sách website gần đây: $e');
+      }
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -151,11 +158,10 @@ class _WebsiteDialogState extends State<_WebsiteDialog> {
           open();
         },
         decoration: InputDecoration(
-          labelText: 'Website URL',
+          labelText: 'Địa chỉ website',
           hintText: 'https://example.com',
           prefixIcon: const Icon(Icons.link),
-          helperText: 'Type an address or choose a saved suggestion.',
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+          helperText: 'Nhập địa chỉ hoặc chọn một gợi ý đã lưu.',
         ),
       ),
       optionsViewBuilder: (context, select, options) => Align(
@@ -236,8 +242,8 @@ class _WebsiteDialogState extends State<_WebsiteDialog> {
               children: [
                 Text(
                   waiting > 0
-                      ? 'Opening… $complete/${targets.length}'
-                      : 'Opened on $complete computer${complete == 1 ? '' : 's'}${failed.isEmpty ? '' : ' · ${failed.length} failed'}',
+                      ? 'Đang mở… $complete/${targets.length}'
+                      : 'Đã mở trên $complete máy${failed.isEmpty ? '' : ' · lỗi ${failed.length} máy'}',
                   style: const TextStyle(fontWeight: FontWeight.w600),
                 ),
                 if (failed.isNotEmpty) ...[
@@ -260,163 +266,103 @@ class _WebsiteDialogState extends State<_WebsiteDialog> {
   }
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
-    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-    title: Row(
+  Widget build(BuildContext context) => AppDialog(
+    icon: Icons.language,
+    title: 'Mở website',
+    subtitle: 'Mở trong trình duyệt mặc định của từng máy học viên.',
+    width: 620,
+    actions: [
+      AppDialog.cancel(context, label: 'Đóng'),
+      AppDialog.primary(
+        onPressed: () => open(),
+        icon: Icons.open_in_browser,
+        busy: busy,
+        label: busy ? 'Đang mở…' : 'Mở website',
+      ),
+    ],
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Container(
-          padding: const EdgeInsets.all(12),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
           decoration: BoxDecoration(
-            color: const Color(0xffe4f1f2),
-            borderRadius: BorderRadius.circular(12),
+            color: const Color(0xfff2f5f8),
+            borderRadius: BorderRadius.circular(8),
           ),
-          child: const Icon(Icons.language, color: Color(0xff237477)),
-        ),
-        const SizedBox(width: 14),
-        const Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          child: Row(
             children: [
-              Text('Open website'),
-              SizedBox(height: 4),
-              Text(
-                'In each Student’s default browser',
-                style: TextStyle(fontSize: 13, color: Colors.blueGrey),
+              const Icon(Icons.computer_outlined, size: 18),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Gửi tới ${widget.audience}',
+                  style: const TextStyle(fontSize: 13),
+                ),
               ),
             ],
           ),
         ),
+        const SizedBox(height: 18),
+        urlInput(),
+        if (error != null) ...[
+          const SizedBox(height: 10),
+          InlineNotice(error!),
+        ],
+        const SizedBox(height: 22),
+        DialogSection(
+          title: 'Website gần đây',
+          hint: 'Bấm một địa chỉ để mở ngay trên các máy này.',
+          padBottom: 0,
+          child: recent.isEmpty
+              ? const DialogPanel(
+                  child: DialogEmpty(
+                    icon: Icons.history,
+                    title: 'Chưa có website gần đây',
+                    message: 'Các địa chỉ bạn đã mở sẽ hiện ở đây.',
+                  ),
+                )
+              : DialogPanel(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 240),
+                    child: ListView.separated(
+                      shrinkWrap: true,
+                      itemCount: recent.length,
+                      separatorBuilder: (_, _) => const Divider(height: 1),
+                      itemBuilder: (_, index) => ListTile(
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                        ),
+                        dense: true,
+                        leading: const Icon(
+                          Icons.public,
+                          size: 20,
+                          color: Color(0xff237477),
+                        ),
+                        title: Text(
+                          recent[index],
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        subtitle: Text(
+                          Uri.tryParse(recent[index])?.host ?? '',
+                          maxLines: 1,
+                        ),
+                        onTap: busy ? null : () => open(recent[index]),
+                        trailing: IconButton(
+                          tooltip: 'Xóa khỏi danh sách gần đây',
+                          icon: const Icon(Icons.close, size: 17),
+                          onPressed: busy ? null : () => remove(recent[index]),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+        ),
+        AnimatedBuilder(
+          animation: widget.agent,
+          builder: (_, _) => deliveryStatus(),
+        ),
       ],
     ),
-    content: SizedBox(
-      width: 590,
-      child: SingleChildScrollView(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-              decoration: BoxDecoration(
-                color: const Color(0xfff2f5f8),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.computer_outlined, size: 18),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Send to ${widget.audience}',
-                      style: const TextStyle(fontSize: 13),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 20),
-            urlInput(),
-            if (error != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 10),
-                child: Text(
-                  error!,
-                  style: const TextStyle(color: Color(0xffb83b40)),
-                ),
-              ),
-            const SizedBox(height: 24),
-            const Text(
-              'RECENT WEBSITES',
-              style: TextStyle(
-                fontSize: 11,
-                letterSpacing: 1.2,
-                fontWeight: FontWeight.w700,
-                color: Colors.blueGrey,
-              ),
-            ),
-            const SizedBox(height: 4),
-            const Text(
-              'Click an address to open it on these computers.',
-              style: TextStyle(fontSize: 12, color: Colors.blueGrey),
-            ),
-            const SizedBox(height: 10),
-            if (recent.isEmpty)
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(24),
-                decoration: BoxDecoration(
-                  border: Border.all(color: const Color(0xffe1e7ed)),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: const Column(
-                  children: [
-                    Icon(Icons.history, color: Colors.blueGrey),
-                    SizedBox(height: 8),
-                    Text(
-                      'Your recent websites will appear here.',
-                      style: TextStyle(color: Colors.blueGrey),
-                    ),
-                  ],
-                ),
-              )
-            else
-              ConstrainedBox(
-                constraints: const BoxConstraints(maxHeight: 240),
-                child: ListView.separated(
-                  shrinkWrap: true,
-                  itemCount: recent.length,
-                  separatorBuilder: (_, _) => const Divider(height: 1),
-                  itemBuilder: (_, index) => ListTile(
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 4),
-                    dense: true,
-                    leading: const Icon(
-                      Icons.public,
-                      size: 20,
-                      color: Color(0xff237477),
-                    ),
-                    title: Text(
-                      recent[index],
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    subtitle: Text(
-                      Uri.tryParse(recent[index])?.host ?? '',
-                      maxLines: 1,
-                    ),
-                    onTap: busy ? null : () => open(recent[index]),
-                    trailing: IconButton(
-                      tooltip: 'Remove from recent websites',
-                      icon: const Icon(Icons.close, size: 17),
-                      onPressed: busy ? null : () => remove(recent[index]),
-                    ),
-                  ),
-                ),
-              ),
-            AnimatedBuilder(
-              animation: widget.agent,
-              builder: (_, _) => deliveryStatus(),
-            ),
-          ],
-        ),
-      ),
-    ),
-    actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
-    actions: [
-      TextButton(
-        onPressed: () => Navigator.pop(context),
-        child: const Text('Close'),
-      ),
-      FilledButton.icon(
-        onPressed: busy ? null : () => open(),
-        icon: busy
-            ? const SizedBox(
-                width: 16,
-                height: 16,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            : const Icon(Icons.open_in_browser, size: 19),
-        label: Text(busy ? 'Opening…' : 'Open'),
-      ),
-    ],
   );
 }

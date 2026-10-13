@@ -222,7 +222,7 @@ struct Job {
 struct State {
     hardware: hardware::Room,
     badge: HashMap<String, BadgeState>,
-    badge_path: Option<PathBuf>,
+    badge_doc: Option<classroom_store::Doc>,
     jobs: VecDeque<Job>,
     queues: HashMap<String, VecDeque<ToolPacket>>,
     peers: HashMap<String, u64>,
@@ -281,15 +281,11 @@ pub struct Hub(
     Mutex<recording::TeacherState>,
 );
 impl Hub {
-    pub fn load_badges(&self, path: PathBuf) -> Result<()> {
-        let saved: HashMap<String, bool> = match fs::read(&path) {
-            Ok(data) => serde_json::from_slice(&data)?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
-            Err(e) => return Err(e.into()),
-        };
+    pub fn load_badges(&self, doc: classroom_store::Doc) -> Result<()> {
+        let saved: HashMap<String, bool> = doc.read()?.unwrap_or_default();
         anyhow::ensure!(saved.len() <= 256, "Too many saved badge preferences");
         let mut s = self.0.lock().unwrap();
-        s.badge_path = Some(path);
+        s.badge_doc = Some(doc);
         for (id, on) in saved {
             s.badge.insert(id, BadgeState::new(on)?);
         }
@@ -313,10 +309,8 @@ impl Hub {
         for id in ids {
             saved.insert(id.clone(), enabled);
         }
-        if let Some(path) = &s.badge_path {
-            let tmp = path.with_extension("tmp");
-            fs::write(&tmp, serde_json::to_vec(&saved)?)?;
-            crate::monitoring_badge::atomic_replace(&tmp, path)?;
+        if let Some(doc) = &s.badge_doc {
+            doc.write(&saved)?;
         }
         for id in ids {
             let mut b = BadgeState::new(enabled)?;
@@ -1538,7 +1532,7 @@ pub struct Inbox {
     pub update_exit: AtomicBool,
     pub connection_popup: AtomicBool,
     pub terminal_active: AtomicUsize,
-    connection_popup_path: Mutex<Option<PathBuf>>,
+    connection_popup_doc: Mutex<Option<classroom_store::Doc>>,
     lock: Mutex<Option<String>>,
     lock_epoch: AtomicU64,
     last_poll_ms: AtomicU64,
@@ -1582,22 +1576,21 @@ impl Inbox {
         }
     }
     pub fn initialize_connection_popup(&self, profile: &Path, default: bool) {
-        let path = profile.with_file_name("connection-popup.txt");
-        let enabled = fs::read_to_string(&path).map_or(default, |s| s.trim() == "on");
+        let doc = super::startup::profile_doc(profile, "connection_popup")
+            .map_err(|error| warn!(%error, "Connection popup storage unavailable"))
+            .ok();
+        let enabled = doc
+            .as_ref()
+            .and_then(|doc| doc.read::<bool>().ok().flatten())
+            .unwrap_or(default);
         self.connection_popup.store(enabled, Ordering::Release);
-        *self.connection_popup_path.lock().unwrap() = Some(path);
+        *self.connection_popup_doc.lock().unwrap() = doc;
     }
     fn set_connection_popup(&self, enabled: bool) {
         self.connection_popup.store(enabled, Ordering::Release);
         info!(enabled, "Student connection popup preference received");
-        if let Some(path) = self.connection_popup_path.lock().unwrap().as_ref() {
-            let result = (|| -> std::io::Result<()> {
-                if let Some(parent) = path.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-                fs::write(path, if enabled { "on" } else { "off" })
-            })();
-            if let Err(error) = result {
+        if let Some(doc) = self.connection_popup_doc.lock().unwrap().as_ref() {
+            if let Err(error) = doc.write(&enabled) {
                 tracing::warn!(%error,"Connection popup preference could not be saved");
             }
         }
@@ -1845,11 +1838,17 @@ pub fn student(
         let mut activity_lifecycle = activity_jobs::Lifecycle::new();
         // Collection resumes by itself after a Student restart and keeps
         // going while the Teacher is away; it ends with the local day.
-        let activity_file = state_dir.join("activity-monitoring.json");
-        let mut activity_monitoring = false;
-        if let Some(day) = std::fs::read(&activity_file)
+        let activity_doc = classroom_store::open_shared(&state_dir)
+            .map_err(|error| warn!(%error, "Activity switch storage unavailable"))
             .ok()
-            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+            .map(|store| store.doc(classroom_store::ns::PROFILE, "activity_monitoring"));
+        let saved_activity = || {
+            activity_doc
+                .as_ref()
+                .and_then(|doc| doc.read::<Value>().ok().flatten())
+        };
+        let mut activity_monitoring = false;
+        if let Some(day) = saved_activity()
             .filter(|v| v["on"] == true)
             .and_then(|v| v["day"].as_u64())
         {
@@ -1874,15 +1873,14 @@ pub fn student(
                     }
                     inbox.sync_clipboard_block();
                     if activity_monitoring
-                        && std::fs::read(&activity_file)
-                            .ok()
-                            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
-                            .and_then(|v| v["day"].as_u64())
+                        && saved_activity().and_then(|v| v["day"].as_u64())
                             != Some(u64::from(crate::local_day::today()))
                     {
                         activity_monitoring = false;
                         activity_lifecycle.set_enabled(false);
-                        let _ = std::fs::remove_file(&activity_file);
+                        if let Some(doc) = &activity_doc {
+                            let _ = doc.clear();
+                        }
                     }
                 }
             };
@@ -1922,9 +1920,9 @@ pub fn student(
                     capabilities["monitoring_badge"] =
                         json!(u8::from(crate::monitoring_badge::supported()));
                     capabilities["badge_enabled"] = json!(inbox.badge.lock().unwrap().enabled);
-                    capabilities["screenshot"] = json!(1);
+                    capabilities["screenshot"] = json!(u8::from(cfg!(any(windows, target_os = "macos"))));
                     capabilities["recording"] = json!(u8::from(cfg!(windows)));
-                    capabilities["website"] = json!(1);
+                    capabilities["website"] = json!(u8::from(cfg!(any(windows, target_os = "macos"))));
                     capabilities["terminal"] = json!(u8::from(crate::remote_terminal::available()));
                     hello.text = capabilities.to_string();
                     send(&mut s, &hello)?;
@@ -2074,13 +2072,12 @@ pub fn student(
                                 );
                                 activity_monitoring = p.status == "on";
                                 activity_lifecycle.set_enabled(activity_monitoring);
-                                if activity_monitoring {
-                                    let _ = std::fs::write(
-                                        &activity_file,
-                                        json!({"on": true, "day": crate::local_day::today()}).to_string(),
-                                    );
-                                } else {
-                                    let _ = std::fs::remove_file(&activity_file);
+                                if let Some(doc) = &activity_doc {
+                                    let _ = if activity_monitoring {
+                                        doc.write(&json!({"on": true, "day": crate::local_day::today()}))
+                                    } else {
+                                        doc.clear()
+                                    };
                                 }
                             }
                             "launch" | "website" => launch::run(p, Arc::clone(&inbox)),
@@ -3096,11 +3093,11 @@ mod monitoring_badge_tests {
     use super::*;
     #[test]
     fn explicit_state_survives_disconnect_and_teacher_restart() {
-        let root = std::env::temp_dir().join(format!("badge-hub-{}", nonce().unwrap()));
-        fs::create_dir_all(&root).unwrap();
-        let path = root.join("badges.json");
+        let store: classroom_store::Shared =
+            std::sync::Arc::new(classroom_store::Store::open_in_memory().unwrap());
+        let doc = store.doc(classroom_store::ns::BADGES, "enabled");
         let hub = Hub::default();
-        hub.load_badges(path.clone()).unwrap();
+        hub.load_badges(doc.clone()).unwrap();
         {
             let mut s = hub.0.lock().unwrap();
             s.peers.insert("pc".into(), 7);
@@ -3123,7 +3120,7 @@ mod monitoring_badge_tests {
         hub.disconnected("pc", 7);
         assert_eq!(hub.snapshot()["monitoring_badges"]["pc"]["enabled"], true);
         let restored = Hub::default();
-        restored.load_badges(path).unwrap();
+        restored.load_badges(doc).unwrap();
         assert_eq!(
             restored.snapshot()["monitoring_badges"]["pc"]["enabled"],
             true
@@ -3141,7 +3138,6 @@ mod monitoring_badge_tests {
         .unwrap();
         assert_eq!(hub.snapshot()["monitoring_badges"]["pc"]["enabled"], false);
         assert!(hub.snapshot()["monitoring_badges"]["pc"]["actual"].is_null());
-        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn errors_timeouts_and_mismatched_ack_are_visible() {

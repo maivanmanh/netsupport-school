@@ -156,3 +156,14 @@ package endpoint, not a web product/UI or media transport. Rust Student receives
 room IP/port via adjacent config; Teacher controls native connection diagnostics.
 Windows Student tray omits Exit/Restart; process protection remains service work.
 Existing unattended logs/update flow remains after bootstrap. See doc20.
+
+## Owner override — Ubuntu Student receiver (2026-10-13)
+
+The owner authorized Ubuntu Student implementation, prioritizing the media
+receiver before further platform features. Linux reuses control, RTP/H.264,
+recovery and the latest decoded slot, with bundled OpenH264 software decode and
+a native X11/XWayland presentation backend. Software decoding avoids a new
+hardware/runtime-codec dependency. Native Wayland, Linux Teacher, capture/reverse
+publishing and platform controls remain separate tasks. This is an added receiver
+backend, not a redesign of Teacher distribution or Windows performance acceptance.
+See [Ubuntu Student tasks and verification](28_UBUNTU_STUDENT.md).

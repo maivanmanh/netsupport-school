@@ -28,7 +28,9 @@ use tracing::{info, warn};
 
 const IPC_VERSION: u32 = 1;
 const MAX_FRAME: usize = 8 * 1024 * 1024;
-const MAX_COMMAND: usize = 64 * 1024;
+/// Settings writes (e.g. the application inventory cache) can be large; the
+/// IPC peer is local and token-authenticated.
+const MAX_COMMAND: usize = 4 * 1024 * 1024;
 const MAX_CLIENTS: usize = 6;
 const MAX_OBSERVE: usize = 3;
 const MAX_FILE_WINDOWS: usize = 2;
@@ -311,6 +313,58 @@ async fn client(
     result
 }
 
+/// Namespaces the console may read through IPC.
+fn store_readable(namespace: &str) -> bool {
+    classroom_store::ns::ALL.contains(&namespace)
+}
+/// Namespaces the console owns. Rules, badges, recordings and hardware policy
+/// are written only by the agent's own validated commands.
+fn store_writable(namespace: &str) -> bool {
+    use classroom_store::ns;
+    [ns::PREFS, ns::CONFIG, ns::ROSTER, ns::INVENTORY, ns::UI, ns::ACTIVITY].contains(&namespace)
+}
+fn store_list(store: &classroom_store::Store, input: &Value) -> Result<Value, &'static str> {
+    let namespace = input["ns"].as_str().ok_or("Missing settings namespace")?;
+    if !store_readable(namespace) {
+        return Err("Unknown settings namespace");
+    }
+    let documents = store.list(namespace).map_err(|error| {
+        tracing::error!(%error, namespace, "settings read failed");
+        "Could not read saved settings"
+    })?;
+    serde_json::to_value(documents).map_err(|_| "Could not read saved settings")
+}
+/// `{"ns": …, "changes": {key: value | null}}`; `null` removes the key. When
+/// `replace` is true the namespace is replaced by exactly `changes`.
+fn store_apply(store: &classroom_store::Store, input: &Value) -> Result<(), &'static str> {
+    let namespace = input["ns"].as_str().ok_or("Missing settings namespace")?;
+    if !store_writable(namespace) {
+        return Err("This settings namespace is read-only");
+    }
+    let changes = input["changes"].as_object().ok_or("Missing settings changes")?;
+    if changes.len() > 512 {
+        return Err("Too many settings changes");
+    }
+    let result = if input["replace"] == true {
+        let entries = changes
+            .iter()
+            .filter(|(_, value)| !value.is_null())
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        store.replace_namespace(namespace, &entries)
+    } else {
+        let list: Vec<_> = changes
+            .iter()
+            .map(|(key, value)| (key.clone(), (!value.is_null()).then(|| value.clone())))
+            .collect();
+        store.apply(namespace, &list)
+    };
+    result.map_err(|error| {
+        tracing::error!(%error, namespace, "settings write failed");
+        "Could not save settings"
+    })
+}
+
 #[allow(clippy::too_many_lines)]
 pub(super) fn run(
     config: &Config,
@@ -343,9 +397,13 @@ pub(super) fn run(
         Arc::clone(&roster),
     ));
     let tools_hub = Arc::new(super::classroom_tools::Hub::default());
-    tools_hub.load_badges(parent.join("monitoring-badges.json"))?;
-    tools_hub.load_recordings(parent.join("recording-sessions.json"))?;
-    tools_hub.load_hardware(parent.join("hardware-policy.json"))?;
+    // One local database holds everything the Teacher remembers.
+    let store: classroom_store::Shared =
+        Arc::new(classroom_store::Store::open(&parent.join(classroom_store::FILE_NAME))?);
+    store.import_legacy(parent)?;
+    tools_hub.load_badges(store.doc(classroom_store::ns::BADGES, "enabled"))?;
+    tools_hub.load_recordings(store.doc(classroom_store::ns::RECORDINGS, "journal"))?;
+    tools_hub.load_hardware(store.doc(classroom_store::ns::HARDWARE, "policy"))?;
     tools_hub.set_connection_popup(config.tools.connection_popup);
     let mut diagnostics = super::diagnostics::Collector::new(config, parent)?;
     let tools_server = super::classroom_tools::teacher(
@@ -489,8 +547,8 @@ pub(super) fn run(
     // The class rules set today, kept on disk: they survive a Teacher restart
     // and are pushed to any covered Student that is out of step (late
     // joiners, restarted computers). All of them end with the local day.
-    let rules_path = parent.join("class-rules.json");
-    let mut class_rules = super::class_rules::ClassRules::load(&rules_path);
+    let rules_doc = store.doc(classroom_store::ns::RULES, "today");
+    let mut class_rules = super::class_rules::ClassRules::load(&rules_doc);
     if class_rules.activity {
         tools_hub.set_activity_monitoring(true);
     }
@@ -509,7 +567,7 @@ pub(super) fn run(
                     info!("New day: yesterday's class rules are void");
                     tools_hub.set_activity_monitoring(false);
                     rule_attempts.clear();
-                    let _ = fs::remove_file(&rules_path);
+                    let _ = rules_doc.clear();
                     publish_due = Instant::now();
                 }
                 let caps = tools_hub.snapshot()["capabilities"].clone();
@@ -665,6 +723,14 @@ pub(super) fn run(
                 let mut job_id: Option<String> = None;
                 let mut payload: Option<Value> = None;
                 let response = match command.action.as_str() {
+                    "store_list" => match store_list(&store, &command.input) {
+                        Ok(documents) => {
+                            payload = Some(json!({"documents": documents}));
+                            Ok(())
+                        }
+                        Err(reason) => Err(reason),
+                    },
+                    "store_apply" => store_apply(&store, &command.input),
                     "app_policy_state" => {
                         payload = Some(json!({"rule": class_rules.apps}));
                         Ok(())
@@ -1129,7 +1195,7 @@ pub(super) fn run(
                                             | "tool_power"
                                     ) {
                                         class_rules.day = super::local_day::today();
-                                        if let Err(error) = class_rules.save(&rules_path) {
+                                        if let Err(error) = class_rules.save(&rules_doc) {
                                             warn!(%error, "Could not remember the class rules");
                                         }
                                         rule_attempts.clear();
@@ -1299,7 +1365,7 @@ pub(super) fn run(
                                 tools_hub.set_activity_monitoring(enabled);
                                 class_rules.activity = enabled;
                                 class_rules.day = super::local_day::today();
-                                if let Err(error) = class_rules.save(&rules_path) {
+                                if let Err(error) = class_rules.save(&rules_doc) {
                                     warn!(%error, "Could not remember the class rules");
                                 }
                                 publish_due = Instant::now();
@@ -2159,5 +2225,49 @@ mod tests {
             .to_string()
             .contains("invalid local IPC"));
         sender.await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod store_ipc_tests {
+    use super::*;
+
+    fn store() -> classroom_store::Store {
+        classroom_store::Store::open_in_memory().unwrap()
+    }
+
+    #[test]
+    fn console_can_write_its_namespaces_and_null_removes() {
+        let store = store();
+        store_apply(&store, &json!({"ns":"prefs","changes":{"view":"list","a":1}})).unwrap();
+        store_apply(&store, &json!({"ns":"prefs","changes":{"a":null}})).unwrap();
+        let listed = store_list(&store, &json!({"ns":"prefs"})).unwrap();
+        assert_eq!(listed, json!({"view":"list"}));
+    }
+
+    #[test]
+    fn replace_swaps_a_namespace_and_ignores_nulls() {
+        let store = store();
+        store_apply(&store, &json!({"ns":"roster","changes":{"old":{"id":"old"}}})).unwrap();
+        store_apply(
+            &store,
+            &json!({"ns":"roster","replace":true,"changes":{"new":{"id":"new"},"gone":null}}),
+        )
+        .unwrap();
+        assert_eq!(store_list(&store, &json!({"ns":"roster"})).unwrap(), json!({"new":{"id":"new"}}));
+    }
+
+    #[test]
+    fn agent_owned_namespaces_are_read_only_to_the_console() {
+        let store = store();
+        for namespace in ["rules", "badges", "recordings", "hardware", "meta", "nope"] {
+            assert!(
+                store_apply(&store, &json!({"ns":namespace,"changes":{"k":1}})).is_err(),
+                "{namespace} must not be writable"
+            );
+        }
+        assert!(store_list(&store, &json!({"ns":"meta"})).is_err(), "internal bookkeeping stays hidden");
+        assert!(store_list(&store, &json!({"ns":"rules"})).is_ok());
+        assert!(store_apply(&store, &json!({"ns":"prefs"})).is_err());
     }
 }

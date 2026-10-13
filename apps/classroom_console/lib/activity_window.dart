@@ -1,9 +1,8 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:flutter/material.dart';
 import 'agent.dart';
+import 'app_dialog.dart';
 import 'app_icons.dart';
 import 'file_collection.dart' show formatBytes;
 
@@ -76,26 +75,12 @@ class _ActivityWindowState extends State<ActivityWindow> {
     refresh();
   }
 
-  File? get savedFile {
-    final dir = agent.dataDirectory;
-    if (dir == null) return null;
-    final safe = widget.studentId.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
-    return File('${dir.path}/activity-cache/$safe.json');
-  }
-
-  /// Shows the last report from a previous session straight away (before the
-  /// Teacher connection or the Student has answered); the refresh that
-  /// follows then flags whatever is new compared with it.
+  /// Last report per Student, kept in the settings database for one day.
   Future<void> loadSaved() async {
-    for (var i = 0; i < 40 && agent.dataDirectory == null && mounted; i++) {
-      await Future<void>.delayed(const Duration(milliseconds: 50));
-    }
     try {
-      final file = savedFile;
-      if (file == null) return;
-      await purgeOldCaches(file.parent);
-      if (!await file.exists()) return;
-      final saved = jsonDecode(await file.readAsString());
+      final all = await agent.storeList('activity');
+      await purgeOldCaches(all);
+      final saved = all[widget.studentId];
       if (!mounted || report != null || saved is! Map) return;
       final data = saved['report'];
       if (data is! Map) return;
@@ -112,17 +97,17 @@ class _ActivityWindowState extends State<ActivityWindow> {
   }
 
   /// Saved activity is only kept for the day it was recorded.
-  Future<void> purgeOldCaches(Directory dir) async {
-    if (!await dir.exists()) return;
+  Future<void> purgeOldCaches(Map<String, dynamic> all) async {
     final midnight = _midnightMs();
-    await for (final entry in dir.list()) {
-      if (entry is! File) continue;
-      try {
-        if ((await entry.lastModified()).millisecondsSinceEpoch < midnight) {
-          await entry.delete();
-        }
-      } catch (_) {}
-    }
+    final expired = <String, dynamic>{
+      for (final entry in all.entries)
+        if (entry.value is! Map ||
+            ((entry.value as Map)['saved_ms'] as num? ?? 0) < midnight)
+          entry.key: null,
+    };
+    if (expired.isEmpty) return;
+    all.removeWhere((key, _) => expired.containsKey(key));
+    await agent.storeApply('activity', expired);
   }
 
   /// Nothing before this instant is shown: the last Clear, or the start of
@@ -133,28 +118,16 @@ class _ActivityWindowState extends State<ActivityWindow> {
   }
 
   Future<void> clearHistory() async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Clear activity history?'),
-        content: Text(
-          'Closed windows, closed tabs, downloads and clipboard copies recorded so far for ${widget.studentName} '
-          'are removed from this view, and durations start counting again from now. '
-          'Things that are open right now stay listed.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Clear'),
-          ),
-        ],
-      ),
+    final ok = await confirmDialog(
+      context,
+      title: 'Xóa lịch sử hoạt động?',
+      icon: Icons.delete_sweep_outlined,
+      confirmLabel: 'Xóa',
+      destructive: true,
+      message:
+          'Cửa sổ và tab đã đóng, tệp đã tải và nội dung đã sao chép của ${widget.studentName} sẽ bị xóa khỏi màn hình này, và thời lượng bắt đầu tính lại từ bây giờ. Những gì đang mở vẫn được giữ trong danh sách.',
     );
-    if (ok != true || !mounted) return;
+    if (!ok || !mounted) return;
     setState(() {
       clearedMs = DateTime.now().millisecondsSinceEpoch;
       freshAt.clear();
@@ -169,16 +142,14 @@ class _ActivityWindowState extends State<ActivityWindow> {
 
   Future<void> save(Map<String, dynamic> data) async {
     try {
-      final file = savedFile;
-      if (file == null || data['monitoring_enabled'] != true) return;
-      await file.parent.create(recursive: true);
-      await file.writeAsString(
-        jsonEncode({
+      if (data['monitoring_enabled'] != true) return;
+      await agent.storeApply('activity', {
+        widget.studentId: {
           'saved_ms': DateTime.now().millisecondsSinceEpoch,
           'cleared_ms': clearedMs,
           'report': data,
-        }),
-      );
+        },
+      });
     } catch (_) {}
   }
 
@@ -328,7 +299,7 @@ class _ActivityWindowState extends State<ActivityWindow> {
     setState(() {
       loading = false;
       syncing = false;
-      if (report == null) error = 'The computer did not answer in time.';
+      if (report == null) error = 'Máy không phản hồi kịp thời.';
     });
   }
 
@@ -346,8 +317,8 @@ class _ActivityWindowState extends State<ActivityWindow> {
                 MaterialBanner(
                   content: Text(
                     agent.connected
-                        ? '${widget.studentName} is offline. The last known activity is shown below.'
-                        : 'Reconnecting to the Teacher…',
+                        ? '${widget.studentName} đang offline. Hoạt động gần nhất được hiển thị bên dưới.'
+                        : 'Đang kết nối lại với giảng viên…',
                   ),
                   actions: const [SizedBox.shrink()],
                 ),
@@ -370,22 +341,22 @@ class _ActivityWindowState extends State<ActivityWindow> {
                     Tab(
                       icon: const Icon(Icons.window_outlined, size: 19),
                       text:
-                          'Open windows${r == null ? '' : ' (${(r['apps'] as List? ?? const []).length})'}',
+                          'Cửa sổ đang mở${r == null ? '' : ' (${(r['apps'] as List? ?? const []).length})'}',
                     ),
                     Tab(
                       icon: const Icon(Icons.tab_outlined, size: 19),
                       text:
-                          'Browser tabs${r == null ? '' : ' (${(r['tabs'] as List? ?? const []).length})'}',
+                          'Tab trình duyệt${r == null ? '' : ' (${(r['tabs'] as List? ?? const []).length})'}',
                     ),
                     Tab(
                       icon: const Icon(Icons.download_outlined, size: 19),
                       text:
-                          'Downloads today${r == null ? '' : ' (${_downloads(r).length})'}',
+                          'Tải xuống hôm nay${r == null ? '' : ' (${_downloads(r).length})'}',
                     ),
                     Tab(
                       icon: const Icon(Icons.content_paste_outlined, size: 19),
                       text:
-                          'Clipboard today${r == null ? '' : ' (${_clipboard(r).length})'}',
+                          'Clipboard hôm nay${r == null ? '' : ' (${_clipboard(r).length})'}',
                     ),
                   ],
                 ),
@@ -396,8 +367,7 @@ class _ActivityWindowState extends State<ActivityWindow> {
                     : r['supported'] != true
                     ? const _Placeholder(
                         loading: false,
-                        error:
-                            'Activity monitoring is only available on Windows.',
+                        error: 'Theo dõi hoạt động chỉ có trên Windows.',
                       )
                     : r['monitoring_enabled'] != true ||
                           (enabling && _apps(r).isEmpty)
@@ -564,7 +534,7 @@ Future<void> _copy(BuildContext context, String text, String what) async {
           children: [
             const Icon(Icons.check_circle, color: Colors.white, size: 18),
             const SizedBox(width: 8),
-            Expanded(child: Text('Copied $what')),
+            Expanded(child: Text('Đã sao chép $what')),
           ],
         ),
       ),
@@ -624,8 +594,8 @@ class _Header extends StatelessWidget {
                 ),
                 Text(
                   fetchedAt == null
-                      ? 'Activity monitor'
-                      : 'Activity monitor · updated ${formatClock(fetchedAt!.millisecondsSinceEpoch)}',
+                      ? 'Theo dõi hoạt động'
+                      : 'Theo dõi hoạt động · cập nhật ${formatClock(fetchedAt!.millisecondsSinceEpoch)}',
                   style: const TextStyle(
                     fontSize: 11.5,
                     color: Colors.blueGrey,
@@ -636,8 +606,8 @@ class _Header extends StatelessWidget {
           ),
           Tooltip(
             message: autoRefresh
-                ? 'Auto-refreshing every 6s'
-                : 'Auto-refresh paused',
+                ? 'Tự làm mới mỗi 6 giây'
+                : 'Đã tạm dừng tự làm mới',
             child: IconButton(
               visualDensity: VisualDensity.compact,
               icon: Icon(
@@ -650,13 +620,13 @@ class _Header extends StatelessWidget {
           ),
           IconButton(
             visualDensity: VisualDensity.compact,
-            tooltip: 'Clear history and start counting again',
+            tooltip: 'Xóa lịch sử và tính lại từ đầu',
             icon: const Icon(Icons.delete_sweep_outlined, size: 20),
             onPressed: onClear,
           ),
           IconButton(
             visualDensity: VisualDensity.compact,
-            tooltip: 'Refresh now',
+            tooltip: 'Làm mới ngay',
             icon: loading
                 ? const SizedBox(
                     width: 16,
@@ -690,12 +660,12 @@ class _MonitoringOff extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           const Text(
-            'Activity monitoring is off for the class.',
+            'Theo dõi hoạt động đang tắt cho cả lớp.',
             style: TextStyle(fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 4),
           const Text(
-            'Turn it on so Students collect open windows, browser tabs and\ndownloads in the background — no effect on performance while it stays off.',
+            'Hãy bật để học viên thu thập cửa sổ đang mở, tab trình duyệt và\ntệp tải xuống ở chế độ nền — không ảnh hưởng hiệu năng khi vẫn tắt.',
             textAlign: TextAlign.center,
             style: TextStyle(fontSize: 12, color: Colors.blueGrey),
           ),
@@ -713,14 +683,14 @@ class _MonitoringOff extends StatelessWidget {
                   )
                 : const Icon(Icons.visibility, size: 18),
             label: Text(
-              enabling ? 'Collecting from Students…' : 'Turn on for the class',
+              enabling ? 'Đang thu thập từ học viên…' : 'Bật cho cả lớp',
             ),
           ),
           if (enabling)
             const Padding(
               padding: EdgeInsets.only(top: 10),
               child: Text(
-                'Monitoring is on — waiting for the first report.',
+                'Đã bật theo dõi — đang chờ báo cáo đầu tiên.',
                 style: TextStyle(fontSize: 12, color: Colors.blueGrey),
               ),
             ),
@@ -830,7 +800,7 @@ class _Section extends StatelessWidget {
               ? Padding(
                   padding: const EdgeInsets.all(16),
                   child: Text(
-                    empty ?? 'Nothing here.',
+                    empty ?? 'Chưa có gì.',
                     style: const TextStyle(
                       fontSize: 12.5,
                       color: Colors.blueGrey,
@@ -886,7 +856,7 @@ class _RowState extends State<_Row> {
       onExit: (_) => setState(() => hover = false),
       cursor: SystemMouseCursors.click,
       child: Tooltip(
-        message: 'Click to copy',
+        message: 'Bấm để sao chép',
         waitDuration: const Duration(milliseconds: 700),
         child: InkWell(
           onTap:
@@ -991,8 +961,8 @@ Widget _statusBadges(Map a) {
       if (reopened > 0) _Badge('×${reopened + 1}', color: _teal),
       _Badge(
         open
-            ? 'open $total'
-            : 'closed ${formatClock((a['closed_ms'] as num?)?.toInt() ?? 0)} · $total',
+            ? 'mở $total'
+            : 'đóng ${formatClock((a['closed_ms'] as num?)?.toInt() ?? 0)} · $total',
         color: open ? _open : _closed,
       ),
     ],
@@ -1055,7 +1025,7 @@ class _WindowsTabState extends State<_WindowsTab> {
     if (widget.apps.isEmpty) {
       return const Center(
         child: Text(
-          'No application windows observed yet.',
+          'Chưa ghi nhận cửa sổ ứng dụng nào.',
           style: TextStyle(color: Colors.blueGrey),
         ),
       );
@@ -1074,23 +1044,23 @@ class _WindowsTabState extends State<_WindowsTab> {
     return ListView(
       children: [
         _Search(
-          hint: 'Filter windows',
+          hint: 'Lọc cửa sổ',
           onChanged: (v) => setState(() => query = v),
         ),
         _Section(
-          title: 'Open now',
+          title: 'Đang mở',
           count: open.length,
-          empty: 'Nothing currently open.',
+          empty: 'Hiện không có gì đang mở.',
           children: [for (final a in open) _appRow(a)],
         ),
         _Section(
-          title: 'Closed',
+          title: 'Đã đóng',
           count: closed.length,
-          empty: 'Nothing closed yet this session.',
+          empty: 'Chưa có gì đóng trong phiên này.',
           children: [for (final a in closed) _appRow(a)],
         ),
         const _Note(
-          'History is recorded only while monitoring is on — there may be gaps. Click any row to copy it.',
+          'Lịch sử chỉ được ghi khi đang bật theo dõi — có thể có khoảng trống. Bấm một dòng để sao chép.',
         ),
       ],
     );
@@ -1109,7 +1079,7 @@ class _WindowsTabState extends State<_WindowsTab> {
       trailing: _statusBadges(a),
       fresh: widget.isFresh(_appKey(a)),
       copyText: '$name\n${a['title']}',
-      copyLabel: 'window title',
+      copyLabel: 'tiêu đề cửa sổ',
     );
   }
 }
@@ -1141,29 +1111,29 @@ class _TabsTabState extends State<_TabsTab> {
     return ListView(
       children: [
         _Search(
-          hint: 'Filter tabs by title or address',
+          hint: 'Lọc tab theo tiêu đề hoặc địa chỉ',
           onChanged: (v) => setState(() => query = v),
         ),
         if (widget.browsers.isEmpty)
           const _Section(
-            title: 'Open now',
+            title: 'Đang mở',
             count: 0,
-            empty: 'No browser window is open.',
+            empty: 'Không có cửa sổ trình duyệt nào đang mở.',
             children: [],
           )
         else
           for (final b in widget.browsers) _browserSection(b),
         _Section(
-          title: 'History · closed tabs',
+          title: 'Lịch sử · tab đã đóng',
           count: history.length,
-          empty: 'No closed tabs recorded yet this session.',
+          empty: 'Chưa ghi nhận tab nào đã đóng trong phiên này.',
           children: [
             for (final t in history) _tabRow(t, status: t, open: false),
           ],
         ),
         const _Note(
-          'Tab addresses come from the active tab and the browser history, so a background tab '
-          'that was never visited may show no address. Click any row to copy its title and address.',
+          'Địa chỉ tab lấy từ tab đang hiển thị và lịch sử trình duyệt, nên tab nền chưa từng xem '
+          'có thể không có địa chỉ. Bấm một dòng để sao chép tiêu đề và địa chỉ.',
         ),
       ],
     );
@@ -1182,7 +1152,7 @@ class _TabsTabState extends State<_TabsTab> {
         size: 20,
         icon: widget.icons[app.toLowerCase()],
       ),
-      empty: 'No tabs match the filter.',
+      empty: 'Không có tab nào khớp bộ lọc.',
       children: [for (final t in tabs) _tabRow(t, active: t['active'] == true)],
     );
   }
@@ -1199,14 +1169,14 @@ class _TabsTabState extends State<_TabsTab> {
       title: title,
       boldTitle: active,
       fresh: widget.isFresh(_tabKey(t, open: open)),
-      subtitle: url.isEmpty ? 'Address not available' : url,
+      subtitle: url.isEmpty ? 'Không có địa chỉ' : url,
       trailing: status != null
           ? _statusBadges(status)
           : active
           ? const _Badge('active', color: _open)
           : null,
       copyText: url.isEmpty ? title : '$title\n$url',
-      copyLabel: url.isEmpty ? 'tab title' : 'tab title and address',
+      copyLabel: url.isEmpty ? 'tiêu đề tab' : 'tiêu đề và địa chỉ tab',
     );
   }
 }
@@ -1228,7 +1198,7 @@ class _DownloadsTabState extends State<_DownloadsTab> {
     if (widget.downloads.isEmpty) {
       return const Center(
         child: Text(
-          'No browser downloads today.',
+          'Hôm nay chưa có tệp tải xuống.',
           style: TextStyle(color: Colors.blueGrey),
         ),
       );
@@ -1239,13 +1209,13 @@ class _DownloadsTabState extends State<_DownloadsTab> {
     return ListView(
       children: [
         _Search(
-          hint: 'Filter downloads',
+          hint: 'Lọc tệp tải xuống',
           onChanged: (v) => setState(() => query = v),
         ),
         _Section(
-          title: 'Downloaded today',
+          title: 'Đã tải hôm nay',
           count: shown.length,
-          empty: 'No downloads match the filter.',
+          empty: 'Không có tệp tải xuống nào khớp bộ lọc.',
           children: [
             for (final d in shown)
               () {
@@ -1268,7 +1238,7 @@ class _DownloadsTabState extends State<_DownloadsTab> {
                   title: '${d['name']}',
                   fresh: widget.isFresh(_downloadKey(d)),
                   subtitle: [
-                    if (source.isNotEmpty) 'from $source',
+                    if (source.isNotEmpty) 'từ $source',
                     '${d['browser']}',
                     time,
                   ].where((s) => s.isNotEmpty).join(' · '),
@@ -1280,7 +1250,7 @@ class _DownloadsTabState extends State<_DownloadsTab> {
                     ),
                   ),
                   copyText: url.isEmpty ? '${d['name']}' : '${d['name']}\n$url',
-                  copyLabel: 'download name and source',
+                  copyLabel: 'tên tệp và nguồn tải',
                 );
               }(),
           ],
@@ -1479,7 +1449,7 @@ class _ClipboardTabState extends State<_ClipboardTab> {
     if (widget.entries.isEmpty) {
       return const Center(
         child: Text(
-          'Nothing copied today while monitoring was on.',
+          'Hôm nay chưa có nội dung nào được sao chép khi đang theo dõi.',
           style: TextStyle(color: Colors.blueGrey),
         ),
       );
@@ -1490,18 +1460,18 @@ class _ClipboardTabState extends State<_ClipboardTab> {
     return ListView(
       children: [
         _Search(
-          hint: 'Filter clipboard copies',
+          hint: 'Lọc nội dung đã sao chép',
           onChanged: (v) => setState(() => query = v),
         ),
         _Section(
-          title: 'Copied today',
+          title: 'Đã sao chép hôm nay',
           count: shown.length,
-          empty: 'No copies match the filter.',
+          empty: 'Không có nội dung nào khớp bộ lọc.',
           children: [for (final c in shown) _row(c)],
         ),
         const _Note(
-          'Recorded only while activity monitoring was switched on, and only plain text that was explicitly copied — '
-          'never keystrokes. Click a row to read the full copy.',
+          'Chỉ ghi khi đang bật theo dõi hoạt động, và chỉ là văn bản thuần được chủ động sao chép — '
+          'không bao giờ ghi phím. Bấm một dòng để đọc toàn bộ nội dung.',
         ),
       ],
     );
@@ -1534,7 +1504,7 @@ class _ClipboardTabState extends State<_ClipboardTab> {
         formatClock(((c['unix_ms'] as num?) ?? 0).toInt()),
       ].join(' · '),
       copyText: text,
-      copyLabel: 'copied text',
+      copyLabel: 'nội dung',
       onTap: () => _showDetail(c),
     );
   }
@@ -1571,84 +1541,45 @@ class _ClipboardDetail extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final code = looksLikeCode(text);
-    return Dialog(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 680, maxHeight: 560),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Icon(
-                    code ? Icons.code : Icons.content_paste,
-                    size: 18,
-                    color: code ? _codeKeyword : _teal,
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Copied by $studentName',
-                      style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ),
-                  IconButton(
-                    tooltip: 'Close',
-                    icon: const Icon(Icons.close, size: 18),
-                    onPressed: () => Navigator.pop(context),
-                  ),
-                ],
+    return AppDialog(
+      icon: code ? Icons.code : Icons.content_paste,
+      title: 'Nội dung $studentName đã sao chép',
+      subtitle: [
+        if (app.isNotEmpty) 'từ ${lookAppUp(app).name}',
+        formatClock(unixMs),
+        if (truncated) 'đã cắt ở giới hạn ghi nhận',
+        if (duplicates > 0) 'sao chép ${duplicates + 1} lần',
+      ].join(' · '),
+      width: 720,
+      height: 380,
+      scrollable: false,
+      actions: [
+        AppDialog.cancel(context, label: 'Đóng'),
+        AppDialog.primary(
+          onPressed: () => _copy(context, text, 'nội dung'),
+          icon: Icons.copy_rounded,
+          label: 'Sao chép',
+        ),
+      ],
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: const Color(0xfff6f7f9),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: _line),
+        ),
+        child: SingleChildScrollView(
+          child: SelectableText.rich(
+            TextSpan(
+              style: TextStyle(
+                fontSize: 12.5,
+                height: 1.45,
+                fontFamily: code ? 'monospace' : null,
+                color: Colors.black87,
               ),
-              Text(
-                [
-                  if (app.isNotEmpty) 'from ${lookAppUp(app).name}',
-                  formatClock(unixMs),
-                  if (truncated) 'truncated at the recorded limit',
-                  if (duplicates > 0) 'copied ${duplicates + 1} times',
-                ].join(' · '),
-                style: const TextStyle(fontSize: 11.5, color: Colors.blueGrey),
-              ),
-              const SizedBox(height: 10),
-              Expanded(
-                child: Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: const Color(0xfff6f7f9),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: _line),
-                  ),
-                  child: SingleChildScrollView(
-                    child: SelectableText.rich(
-                      TextSpan(
-                        style: TextStyle(
-                          fontSize: 12.5,
-                          height: 1.45,
-                          fontFamily: code ? 'monospace' : null,
-                          color: Colors.black87,
-                        ),
-                        children: code
-                            ? highlightCode(text)
-                            : [TextSpan(text: text)],
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 10),
-              Align(
-                alignment: Alignment.centerRight,
-                child: FilledButton.icon(
-                  onPressed: () => _copy(context, text, 'copied text'),
-                  icon: const Icon(Icons.copy_rounded, size: 16),
-                  label: const Text('Copy'),
-                ),
-              ),
-            ],
+              children: code ? highlightCode(text) : [TextSpan(text: text)],
+            ),
           ),
         ),
       ),

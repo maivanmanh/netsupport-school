@@ -137,7 +137,8 @@ pub fn capabilities() -> serde_json::Value {
                     .and_then(|p| hash(&p).ok())
                     .is_some_and(|h| r["sha256"] == h)
         });
-    serde_json::json!({"dev_update":1,"connection_popup":1,"fs":1,"launch":1,"power":1,"os":std::env::consts::OS,"arch":std::env::consts::ARCH,
+    let desktop_supported = u8::from(cfg!(any(windows, target_os = "macos")));
+    serde_json::json!({"dev_update":desktop_supported,"connection_popup":desktop_supported,"fs":1,"launch":desktop_supported,"power":desktop_supported,"os":std::env::consts::OS,"arch":std::env::consts::ARCH,
         "build":env!("CLASSROOM_BUILD_ID"),"pid":std::process::id(),"last_update":receipt})
 }
 pub fn connected() {
@@ -509,7 +510,7 @@ pub fn early_operation() -> Option<Result<()>> {
         "--dev-update-probe" => Some(if args.next().is_none() {
             println!(
                 "{}",
-                serde_json::json!({"dev_update":1,"student":env!("CARGO_BIN_NAME") == "ClassroomStudent",
+                serde_json::json!({"dev_update":u8::from(cfg!(any(windows, target_os = "macos"))),"student":env!("CARGO_BIN_NAME") == "ClassroomStudent",
                 "os":std::env::consts::OS,"arch":std::env::consts::ARCH,"build":env!("CLASSROOM_BUILD_ID")})
             );
             Ok(())

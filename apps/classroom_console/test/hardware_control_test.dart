@@ -39,6 +39,7 @@ void main() {
     );
     final toggle = find.descendant(of: card, matching: find.byType(Switch));
     await tester.ensureVisible(toggle);
+    await tester.pumpAndSettle();
     await tester.tap(toggle);
     await tester.pumpAndSettle();
     expect(agent.calls.single, {

@@ -33,7 +33,7 @@ const PACE: Duration = Duration::from_millis(6); // <=10.42 MiB/s per slot, two 
 
 #[derive(Default)]
 pub(super) struct TeacherState {
-    path: Option<PathBuf>,
+    doc: Option<classroom_store::Doc>,
     sessions: Vec<Session>,
     active_uploads: usize,
 }
@@ -104,8 +104,8 @@ fn replace(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 fn save(state: &TeacherState) -> Result<()> {
-    if let Some(path) = &state.path {
-        atomic_json(path, &state.sessions)?;
+    if let Some(doc) = &state.doc {
+        doc.write(&state.sessions)?;
     }
     Ok(())
 }
@@ -133,22 +133,14 @@ fn authenticated<'a>(state: &'a mut TeacherState, p: &ToolPacket) -> Result<&'a 
     Ok(target)
 }
 impl Hub {
-    pub fn load_recordings(&self, path: PathBuf) -> Result<()> {
-        let sessions: Vec<Session> = if path.exists() {
-            anyhow::ensure!(
-                fs::metadata(&path)?.len() <= 32 * 1024 * 1024,
-                "Recording journal too large"
-            );
-            serde_json::from_slice(&fs::read(&path)?)?
-        } else {
-            Vec::new()
-        };
+    pub fn load_recordings(&self, doc: classroom_store::Doc) -> Result<()> {
+        let sessions: Vec<Session> = doc.read()?.unwrap_or_default();
         anyhow::ensure!(
             sessions.len() <= 32 && sessions.iter().all(|s| s.targets.len() <= 64),
             "Invalid recording journal"
         );
         let mut state = self.7.lock().unwrap();
-        state.path = Some(path);
+        state.doc = Some(doc);
         state.sessions = sessions;
         Ok(())
     }
@@ -510,7 +502,8 @@ mod tests {
                 st.capabilities.insert(id.into(), json!({"recording":1}));
             }
         }
-        hub.load_recordings(root.join("journal.json")).unwrap();
+        let journal = test_journal();
+        hub.load_recordings(journal.clone()).unwrap();
         let id = hub
             .recording_start_at(
                 &[("a".into(), "PC".into()), ("b".into(), "pc".into())],
@@ -535,7 +528,7 @@ mod tests {
         hub.recording_stop(&id).unwrap();
         assert_eq!(hub.recording_poll("a").unwrap().action, "recording_stop");
         let reloaded = Hub::default();
-        reloaded.load_recordings(root.join("journal.json")).unwrap();
+        reloaded.load_recordings(journal).unwrap();
         assert_eq!(
             reloaded.recording_poll("a").unwrap().action,
             "recording_stop"
@@ -543,6 +536,17 @@ mod tests {
         assert!(chunk_name(0).is_err());
         assert!(chunk_name(MAX_CHUNKS + 1).is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+    fn test_journal() -> classroom_store::Doc {
+        let store: classroom_store::Shared =
+            std::sync::Arc::new(classroom_store::Store::open_in_memory().unwrap());
+        store.doc(classroom_store::ns::RECORDINGS, "journal")
+    }
+    /// A journal whose writes always fail (invalid document name).
+    fn failing_journal() -> classroom_store::Doc {
+        let store: classroom_store::Shared =
+            std::sync::Arc::new(classroom_store::Store::open_in_memory().unwrap());
+        store.doc("", "journal")
     }
     fn transport_fixture() -> (std::sync::Arc<Hub>, PathBuf, student::Metadata) {
         let hub = std::sync::Arc::new(Hub::default());
@@ -555,7 +559,7 @@ mod tests {
                 .capabilities
                 .insert("s".into(), json!({"recording":1}));
         }
-        hub.load_recordings(root.join("journal.json")).unwrap();
+        hub.load_recordings(test_journal()).unwrap();
         let id = hub
             .recording_start_at(&[("s".into(), "PC01".into())], &root)
             .unwrap();
@@ -628,7 +632,8 @@ mod tests {
         // Simulate lost final ACK + Teacher restart. A matching received chunk is
         // acknowledged idempotently without retransmitting or duplicating it.
         let reloaded = std::sync::Arc::new(Hub::default());
-        reloaded.load_recordings(root.join("journal.json")).unwrap();
+        let journal = hub.7.lock().unwrap().doc.clone().unwrap();
+        reloaded.load_recordings(journal).unwrap();
         let server = endpoint(std::sync::Arc::clone(&reloaded), &mut meta);
         assert!(student::transfer(&meta, &src, 1, &AtomicBool::new(false)).unwrap());
         server.join().unwrap().unwrap();
@@ -693,7 +698,8 @@ mod tests {
         let (hub, root, mut meta) = transport_fixture();
         let src = root.join("source.mp4");
         fs::write(&src, b"video").unwrap();
-        hub.7.lock().unwrap().path = Some(root.join("missing/journal.json"));
+        let working = hub.7.lock().unwrap().doc.clone();
+        hub.7.lock().unwrap().doc = Some(failing_journal());
         let server = endpoint(std::sync::Arc::clone(&hub), &mut meta);
         assert!(student::transfer(&meta, &src, 1, &AtomicBool::new(false)).is_err());
         assert!(server.join().unwrap().is_err());
@@ -702,7 +708,7 @@ mod tests {
             hub.recording_snapshot(&HashMap::new())[0]["targets"][0]["received"],
             0
         );
-        hub.7.lock().unwrap().path = Some(root.join("journal.json"));
+        hub.7.lock().unwrap().doc = working;
         let server = endpoint(std::sync::Arc::clone(&hub), &mut meta);
         assert!(student::transfer(&meta, &src, 1, &AtomicBool::new(false)).unwrap());
         server.join().unwrap().unwrap();

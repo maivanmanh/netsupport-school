@@ -1,6 +1,5 @@
 //! Small native launch screen for selecting a role and the Teacher address.
 use std::{
-    fs,
     net::Ipv4Addr,
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -317,7 +316,8 @@ fn show_impl(
 
 pub fn load_teacher_ip(default: Ipv4Addr) -> Ipv4Addr {
     settings_path()
-        .and_then(|path| fs::read_to_string(path).ok())
+        .and_then(|path| super::startup::profile_doc(&path, "teacher_ip").ok())
+        .and_then(|doc| doc.read::<String>().ok().flatten())
         .and_then(|value| value.trim().parse().ok())
         .unwrap_or(default)
 }
@@ -330,12 +330,9 @@ fn pointer_pixel(x: f32, y: f32) -> (usize, usize) {
 
 fn save_teacher_ip(address: Ipv4Addr) -> Result<()> {
     let path = settings_path().context("cannot determine Classroom settings directory")?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("cannot create settings directory {}", parent.display()))?;
-    }
-    fs::write(&path, format!("{address}\n"))
-        .with_context(|| format!("cannot save Teacher IP to {}", path.display()))
+    super::startup::profile_doc(&path, "teacher_ip")?
+        .write(&address.to_string())
+        .with_context(|| format!("cannot save Teacher IP in {}", path.display()))
 }
 
 pub(crate) fn settings_path() -> Option<PathBuf> {

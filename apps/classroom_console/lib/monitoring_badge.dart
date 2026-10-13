@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'agent.dart';
+import 'app_dialog.dart';
 
 Map badgeState(Agent agent, String id) =>
     (((agent.state['tools'] as Map?)?['monitoring_badges'] as Map?)?[id]
@@ -82,46 +83,45 @@ class _BadgeDialogState extends State<_BadgeDialog> {
         final b = badgeState(agent, id);
         return b['status'] == 'applied' && b['actual'] == b['enabled'];
       }).length;
-      return AlertDialog(
-        title: Row(
+      return AppDialog(
+        icon: Icons.badge_outlined,
+        tone: AppTone.danger,
+        title: 'Huy hiệu “Đang giám sát”',
+        subtitle: '$acknowledged/${widget.ids.length} máy đã xác nhận',
+        width: 540,
+        actions: [
+          AppDialog.cancel(context, label: 'Đóng'),
+          AppDialog.primary(
+            onPressed: !agent.connected ? null : () => apply(targetEnabled),
+            icon: targetEnabled ? Icons.badge_outlined : Icons.badge,
+            busy: busy,
+            label: badgeActionLabel(agent, widget.ids),
+          ),
+        ],
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Icon(Icons.badge_outlined, color: Color(0xffc91f28)),
-            const SizedBox(width: 10),
-            const Expanded(child: Text('Đang giám sát')),
-            IconButton(
-              tooltip: 'Đóng',
-              onPressed: () => Navigator.pop(context),
-              icon: const Icon(Icons.close),
+            const Text(
+              'Hiển thị huy hiệu nhắc nhở trên màn hình học viên. Huy hiệu không có nghĩa là đang ghi hình hay ghi phím.',
+              style: TextStyle(fontSize: 13, height: 1.45),
             ),
-          ],
-        ),
-        content: SizedBox(
-          width: 480,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'Hiển thị badge nhắc nhở trên màn hình Student. Badge không có nghĩa là đang ghi hình hoặc ghi phím.',
+            const SizedBox(height: 8),
+            const Text(
+              'Mất kết nối không tắt huy hiệu. Khi đang chiếu màn hình, huy hiệu tạm ẩn rồi tự hiện lại; chỉ lệnh tắt từ giảng viên mới gỡ hẳn.',
+              style: TextStyle(
+                fontSize: 12.5,
+                height: 1.45,
+                color: AppDialog.muted,
               ),
-              const SizedBox(height: 8),
-              const Text(
-                'Mất kết nối không tắt badge. Khi đang chiếu màn hình, badge tạm ẩn rồi tự hiện lại; chỉ lệnh tắt từ Teacher mới gỡ hẳn.',
-                style: TextStyle(fontWeight: FontWeight.w600),
-              ),
+            ),
+            if (error != null) ...[
               const SizedBox(height: 12),
-              Text('$acknowledged/${widget.ids.length} máy đã xác nhận'),
-              if (error != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 8),
-                  child: Text(
-                    error!,
-                    style: const TextStyle(color: Colors.red),
-                  ),
-                ),
-              const SizedBox(height: 8),
-              ConstrainedBox(
-                constraints: const BoxConstraints(maxHeight: 300),
+              InlineNotice(error!),
+            ],
+            const SizedBox(height: 14),
+            DialogPanel(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 280),
                 child: ListView(
                   shrinkWrap: true,
                   children: widget.ids.map((id) {
@@ -132,7 +132,6 @@ class _BadgeDialogState extends State<_BadgeDialog> {
                     final b = badgeState(agent, id);
                     return ListTile(
                       dense: true,
-                      contentPadding: EdgeInsets.zero,
                       leading: Icon(
                         b['status'] == 'applied'
                             ? Icons.check_circle
@@ -149,24 +148,9 @@ class _BadgeDialogState extends State<_BadgeDialog> {
                   }).toList(),
                 ),
               ),
-            ],
-          ),
-        ),
-        actions: [
-          if (busy)
-            const SizedBox(
-              width: 18,
-              height: 18,
-              child: CircularProgressIndicator(strokeWidth: 2),
             ),
-          FilledButton.icon(
-            onPressed: busy || !agent.connected
-                ? null
-                : () => apply(targetEnabled),
-            icon: Icon(targetEnabled ? Icons.badge_outlined : Icons.badge),
-            label: Text(badgeActionLabel(agent, widget.ids)),
-          ),
-        ],
+          ],
+        ),
       );
     },
   );

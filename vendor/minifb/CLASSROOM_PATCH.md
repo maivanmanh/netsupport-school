@@ -16,6 +16,18 @@ replacement is published before another native update.
 These small extensions keep native desktop lifecycle outside the media engine.
 No browser or network dependency is added to this vendor crate.
 
+### Linux X11 hidden host (2026-10-13)
+
+X11 creation now honors `WindowOptions.visible = false`: allocate the native
+window, input context and image without mapping/raising the window or focusing
+its input context. This lets Ubuntu Student warm up native initialization before
+control registration without displaying its 1x1 event host. `set_visible` forwards
+through the POSIX wrapper to X11 map/unmap and flushes the owned connection;
+repeated requests are idempotent. Showing does not explicitly raise or take
+keyboard focus (the window manager retains its normal mapping policy).
+`is_visible` reports the requested X11 mapping state, not compositor occlusion.
+No globals, new helper process or native Wayland mapping behavior is introduced.
+
 macOS exposes native view backing density through convertSizeToBacking, independent
 of logical window dimensions. Completed left clicks are latched until the next
 native pump with release coordinates; SharedData Rust/C layout is kept in sync.

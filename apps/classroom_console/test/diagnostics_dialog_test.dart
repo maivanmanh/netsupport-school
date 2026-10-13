@@ -62,13 +62,13 @@ void main() {
     await open(tester, agent);
     expect(agent.lastCommand, 'collect_diagnostics');
     expect(agent.requested, ['online', 'offline']);
-    expect(find.textContaining('after you stop sharing'), findsOneWidget);
-    await tester.tap(find.text('Cancel collection'));
+    expect(find.textContaining('sau khi bạn dừng chiếu'), findsOneWidget);
+    await tester.tap(find.text('Hủy thu thập'));
     await tester.pumpAndSettle();
     expect(agent.lastCommand, 'cancel_diagnostics');
-    expect(find.text('Collection cancelled.'), findsOneWidget);
-    expect(find.text('Cancel collection'), findsNothing);
-    await tester.tap(find.text('Close'));
+    expect(find.text('Đã hủy thu thập.'), findsOneWidget);
+    expect(find.text('Hủy thu thập'), findsNothing);
+    await tester.tap(find.text('Đóng'));
     await tester.pumpAndSettle();
     agent.dispose();
   });
@@ -93,12 +93,12 @@ void main() {
         },
       };
     await open(tester, agent);
-    expect(find.textContaining('1/2 Students'), findsOneWidget);
+    expect(find.textContaining('1/2 học viên'), findsOneWidget);
     expect(find.textContaining('/fixture/diagnostics.zip'), findsOneWidget);
     expect(find.text('PC 02 (10.0.55.12): offline'), findsOneWidget);
-    expect(find.text('Show ZIP'), findsOneWidget);
-    expect(find.text('Cancel collection'), findsNothing);
-    await tester.tap(find.text('Close'));
+    expect(find.text('Hiện tệp ZIP'), findsOneWidget);
+    expect(find.text('Hủy thu thập'), findsNothing);
+    await tester.tap(find.text('Đóng'));
     await tester.pumpAndSettle();
     agent.dispose();
   });

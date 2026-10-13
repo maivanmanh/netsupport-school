@@ -119,11 +119,14 @@ use renderer_windows::NativeRenderer as PlatformRenderer;
 #[cfg(not(any(windows, target_os = "macos")))]
 use capture_windows_dxgi::DxgiCapture as PlatformCapture;
 #[cfg(not(any(windows, target_os = "macos")))]
-use codec_windows_mf::{
-    MediaFoundationRuntime, MfH264Decoder as PlatformH264Decoder,
-    MfH264Encoder as PlatformH264Encoder,
-};
-#[cfg(not(any(windows, target_os = "macos")))]
+use codec_windows_mf::{MediaFoundationRuntime, MfH264Encoder as PlatformH264Encoder};
+#[cfg(target_os = "linux")]
+use codec_linux::LinuxH264Decoder as PlatformH264Decoder;
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+use codec_windows_mf::MfH264Decoder as PlatformH264Decoder;
+#[cfg(target_os = "linux")]
+use renderer_linux::NativeRenderer as PlatformRenderer;
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 use renderer_windows::NativeRenderer as PlatformRenderer;
 
 #[derive(Debug, Parser)]
@@ -431,11 +434,36 @@ async fn run(
     if student_only || matches!(cli.role, Some(CliRole::Student)) {
         student_settings::apply_saved(&mut config, &profile_path)?;
     }
+    // The Teacher agent reads everything it remembers from the one local
+    // database: the configuration overlay and the console's port/adapter.
+    let mut saved_bind_ip: Option<String> = None;
+    let mut saved_ports: Option<(u16, u16, u16)> = None;
+    if cli.teacher_agent {
+        if let Some(directory) = cli.ipc_file.as_deref().and_then(std::path::Path::parent) {
+            let store = classroom_store::Store::open(&directory.join(classroom_store::FILE_NAME))?;
+            store.import_legacy(directory)?;
+            if let Some(overlay) = store.get(classroom_store::ns::CONFIG, "overlay")? {
+                if let Some(table) = json_to_toml(&overlay) {
+                    config.apply_saved(&toml::to_string(&table)?)?;
+                }
+            }
+            let prefs = store.list(classroom_store::ns::PREFS)?;
+            saved_bind_ip = prefs
+                .get("bind_ip")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned);
+            saved_ports = prefs
+                .get("port")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|p| u16::try_from(p).ok())
+                .and_then(|p| Some((p, p.checked_add(10)?, p.checked_add(11)?)));
+        }
+    }
     let selected_role = cli
         .role
         .map(|role| Role::from(role).to_string())
         .or_else(|| gui_selection.map(|selection| selection.role.to_string()));
-    let bind_ip = cli.bind_ip.clone().or_else(|| {
+    let bind_ip = cli.bind_ip.clone().or(saved_bind_ip).or_else(|| {
         gui_selection
             .filter(|selection| selection.role == Role::Teacher)
             .map(|_| "auto".to_owned())
@@ -448,9 +476,9 @@ async fn run(
             .or_else(|| gui_selection.map(|s| s.teacher_ip)),
         bind_ip,
         interface: cli.interface_name,
-        control_port: cli.control_port,
-        media_port: cli.media_port,
-        feedback_port: cli.feedback_port,
+        control_port: cli.control_port.or(saved_ports.map(|p| p.0)),
+        media_port: cli.media_port.or(saved_ports.map(|p| p.1)),
+        feedback_port: cli.feedback_port.or(saved_ports.map(|p| p.2)),
     })?;
     // Acquire before initializing the compact log: a duplicate launch must
     // neither steal ports nor truncate the active agent's diagnostic log.
@@ -569,6 +597,11 @@ async fn run(
     }
 
     let role = choose_role(&config.app.role)?;
+    #[cfg(target_os = "linux")]
+    anyhow::ensure!(
+        role == Role::Student,
+        "Ubuntu currently supports Student receive/presentation only; Teacher is unavailable"
+    );
     match role {
         Role::Teacher => {
             if cli.student_connect_delay_ms != 0 {
@@ -816,10 +849,10 @@ fn run_local_media_benchmark(
     #[cfg(target_os = "macos")]
     let mut encoder = PlatformH264Encoder::new(codec_config)
         .context("failed to initialize native H.264 encoder")?;
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     let mut decoder = PlatformH264Decoder::new(&runtime, codec_config)
         .context("failed to initialize native H.264 decoder")?;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     let mut decoder = PlatformH264Decoder::new(codec_config)
         .context("failed to initialize native H.264 decoder")?;
     let mut renderer = PlatformRenderer::new(output_width, output_height, "Classroom M2 preview")
@@ -983,6 +1016,27 @@ fn run_local_media_benchmark(
         bail!("local media benchmark completed without encoded and rendered frames");
     }
     Ok(())
+}
+
+/// JSON from the settings database as TOML for `Config::apply_saved`. TOML has
+/// no null, so a null entry simply means "not set".
+fn json_to_toml(value: &serde_json::Value) -> Option<toml::Value> {
+    use serde_json::Value;
+    Some(match value {
+        Value::Null => return None,
+        Value::Bool(b) => toml::Value::Boolean(*b),
+        Value::Number(n) => n.as_i64().map_or_else(
+            || n.as_f64().map(toml::Value::Float),
+            |i| Some(toml::Value::Integer(i)),
+        )?,
+        Value::String(text) => toml::Value::String(text.clone()),
+        Value::Array(items) => toml::Value::Array(items.iter().filter_map(json_to_toml).collect()),
+        Value::Object(map) => toml::Value::Table(
+            map.iter()
+                .filter_map(|(k, v)| json_to_toml(v).map(|v| (k.clone(), v)))
+                .collect(),
+        ),
+    })
 }
 
 fn log_startup(adapter: &SelectedAdapter, config_path: Option<&std::path::Path>) {
@@ -2037,6 +2091,9 @@ async fn run_student_media(
         // Visible Students draw the Teacher pointer channel themselves.
         pointer_overlay: !headless && config.video.pointer_channel,
     };
+    // Initialize the native host before TCP registration. On Linux this also
+    // warms and retains XWayland, so cold display startup cannot consume the
+    // active control connection's liveness budget.
     let mut desktop = if headless {
         None
     } else {
@@ -2075,7 +2132,8 @@ async fn run_student_media(
         std::sync::Arc::clone(&presenting),
     );
     let mut restart_requested = false;
-    let monitor = config.monitoring.enabled.then(|| {
+    // Linux is receive-only: do not register a capture/Observe endpoint.
+    let monitor = (cfg!(any(windows, target_os = "macos")) && config.monitoring.enabled).then(|| {
         monitoring::student(
             SocketAddrV4::new(teacher_ip, config.network.control_port + 1),
             registration.instance_id.clone(),
@@ -2577,11 +2635,11 @@ fn run_student_receiver(
             .saturating_mul(config.video.keyframe_interval_ms)
             / 1_000,
     };
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     let runtime = MediaFoundationRuntime::new().context("failed to initialize media runtime")?;
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     let mut decoder = PlatformH264Decoder::new(&runtime, codec_config)?;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     let mut decoder = PlatformH264Decoder::with_codec(codec_config, video_codec)?;
     info!(codec = %video_codec, max_fps = presentation.max_fps, "receiver codec selected");
     socket.set_read_timeout(Some(Duration::from_millis(5)))?;
@@ -3830,3 +3888,28 @@ mod tests {
         assert!(!annex_b_contains_idr(&[0, 0, 0, 1, 0x61, 1, 2]));
     }
 }
+
+#[cfg(test)]
+mod saved_settings_tests {
+    use super::json_to_toml;
+    use serde_json::json;
+
+    #[test]
+    fn database_json_becomes_a_valid_config_overlay() {
+        let overlay = json!({
+            "network": {"control_port": 47800, "teacher_ip": "10.0.0.5"},
+            "video": {"adaptive": true, "adaptive_large_change_percent": 0.3, "codec": ""},
+            "tools": {"max_file_mb": 300, "unset": null}
+        });
+        let table = json_to_toml(&overlay).unwrap();
+        let text = toml::to_string(&table).unwrap();
+        let mut config = classroom_config::Config::load(None).unwrap().0;
+        config.apply_saved(&text).unwrap();
+        assert_eq!(config.network.control_port, 47800);
+        assert_eq!(config.tools.max_file_mb, 300);
+        assert!(!text.contains("unset"));
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_student_smoke;

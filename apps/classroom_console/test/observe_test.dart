@@ -79,9 +79,9 @@ void main() {
       );
       agent.notifyListeners();
       await t.pump(const Duration(milliseconds: 350));
-      expect(find.text('Connecting to student…'), findsOneWidget);
-      expect(find.text('Reconnecting to student…'), findsNothing);
-      expect(find.textContaining('Window closes in'), findsNothing);
+      expect(find.text('Đang kết nối tới học viên…'), findsOneWidget);
+      expect(find.text('Đang kết nối lại tới học viên…'), findsNothing);
+      expect(find.textContaining('Cửa sổ sẽ đóng sau'), findsNothing);
       // A native texture only copies pixels when Flutter renders it. It must
       // already exist underneath loading before copied sequence can advance.
       expect(find.byType(Texture), findsOneWidget);
@@ -90,8 +90,8 @@ void main() {
       final dynamic observeState = t.state(find.byType(ObserveWindow));
       await observeState.poll();
       await t.pump();
-      expect(find.text('Connecting to student…'), findsOneWidget);
-      expect(find.text('Reconnecting to student…'), findsNothing);
+      expect(find.text('Đang kết nối tới học viên…'), findsOneWidget);
+      expect(find.text('Đang kết nối lại tới học viên…'), findsNothing);
       copiedFrame = true;
       await observeState.poll();
       await t.pump(const Duration(milliseconds: 600));
@@ -179,10 +179,10 @@ void main() {
         await t.pump(const Duration(milliseconds: 600));
         await t.pump();
         expect(a.inputs.where((v) => v['action'] == 'control').length, 1);
-        expect(find.text('Changing input mode…'), findsOneWidget);
+        expect(find.text('Đang đổi chế độ nhập…'), findsOneWidget);
         a.notifyListeners(); // Repeated old error must not cancel the mode request.
         await t.pump();
-        expect(find.text('Changing input mode…'), findsOneWidget);
+        expect(find.text('Đang đổi chế độ nhập…'), findsOneWidget);
         final mouse = await t.createGesture(kind: PointerDeviceKind.mouse);
         await mouse.addPointer(location: const Offset(400, 300));
         await mouse.moveTo(const Offset(450, 300));
@@ -191,7 +191,7 @@ void main() {
         a.state['observe']['error'] = '';
         a.notifyListeners();
         await t.pump();
-        expect(find.text('Changing input mode…'), findsNothing);
+        expect(find.text('Đang đổi chế độ nhập…'), findsNothing);
         await mouse.moveTo(const Offset(500, 300));
         expect(a.inputs.any((v) => v['action'] == 'move'), isTrue);
         await mouse.removePointer();
@@ -456,15 +456,15 @@ void main() {
       await t.pump(const Duration(milliseconds: 100));
       await t.pump();
       expect(
-        find.text('Connecting to student…'),
+        find.text('Đang kết nối tới học viên…'),
         findsNothing,
         reason:
             'An available first frame must not wait for the one-second stats tick',
       );
       await t.pump(const Duration(milliseconds: 900));
       expect(find.byType(Dialog), findsNothing);
-      expect(find.text('Fill'), findsOneWidget);
-      expect(find.text('Observe · Read only'), findsOneWidget);
+      expect(find.text('Lấp đầy'), findsOneWidget);
+      expect(find.text('Quan sát · Chỉ xem'), findsOneWidget);
       expect(find.byType(Texture), findsOneWidget);
       expect(find.byType(ObserveStatsPanel), findsNothing);
       // Widget setup may take real seconds on Windows/VMs. Keep the mocked
@@ -498,16 +498,16 @@ void main() {
         t.getSize(find.byKey(const ValueKey('observe-image'))),
         const Size(800, 600),
       );
-      await t.tap(find.text('Fill'));
+      await t.tap(find.text('Lấp đầy'));
       await t.pump();
       expect(
         t.getSize(find.byKey(const ValueKey('observe-image'))),
         const Size(800, 600),
       );
-      await t.tap(find.text('Control'));
+      await t.tap(find.text('Điều khiển'));
       await t.pump();
       expect(a.inputs.any((v) => v['action'] == 'control'), true);
-      expect(find.text('Changing input mode…'), findsOneWidget);
+      expect(find.text('Đang đổi chế độ nhập…'), findsOneWidget);
       expect(titles.last, 'Observe · PC 01');
       a.state['observe']['mode'] = 'control';
       a.notifyListeners();
@@ -545,7 +545,7 @@ void main() {
         findsOneWidget,
       );
       expect(
-        find.text('Shared control · Student input stays enabled'),
+        find.text('Điều khiển chung · Học viên vẫn nhập được'),
         findsNothing,
       );
       final image = find.byKey(const ValueKey('observe-image'));
@@ -696,7 +696,7 @@ void main() {
       await mouse.moveTo(const Offset(400, 598));
       await t.pump(const Duration(milliseconds: 200));
       expect(
-        find.text('Shared control · Student input stays enabled'),
+        find.text('Điều khiển chung · Học viên vẫn nhập được'),
         findsNothing,
         reason: 'Control never reveals a footer, even at the bottommost edge',
       );
@@ -715,7 +715,7 @@ void main() {
         t.getSize(find.byKey(const ValueKey('observe-bottom-edge'))).height,
         5,
       );
-      expect(find.text('Observe · Read only'), findsOneWidget);
+      expect(find.text('Quan sát · Chỉ xem'), findsOneWidget);
       a.state['observe']['mode'] = 'exclusive';
       a.notifyListeners();
       await t.pump();
@@ -769,9 +769,9 @@ void main() {
     await t.pump();
     await t.pump(const Duration(seconds: 1));
     await t.pump();
-    await t.tap(find.text('Stretch'));
+    await t.tap(find.text('Giãn'));
     await t.pump();
-    await t.tap(find.text('Control'));
+    await t.tap(find.text('Điều khiển'));
     a.state['observe']['mode'] = 'control';
     a.notifyListeners();
     await t.pump();
@@ -828,9 +828,11 @@ void main() {
         ),
       );
     }
-    expect(a.inputs.where((v) => v['action'] == 'scroll').map((v) => v['y']), [
-      1,
-    ], reason: 'Small wheel deltas must accumulate rather than disappear');
+    expect(
+      a.inputs.where((v) => v['action'] == 'scroll').map((v) => v['y']),
+      [1],
+      reason: 'Small wheel deltas must accumulate rather than disappear',
+    );
     a.inputs.clear();
     await t.sendEventToBinding(
       const PointerPanZoomStartEvent(pointer: 8, position: Offset(400, 300)),
@@ -848,9 +850,11 @@ void main() {
     await t.sendEventToBinding(
       const PointerPanZoomEndEvent(pointer: 8, position: Offset(400, 300)),
     );
-    expect(a.inputs.where((v) => v['action'] == 'scroll').map((v) => v['y']), [
-      1,
-    ], reason: 'Trackpad content pan must become remote wheel input');
+    expect(
+      a.inputs.where((v) => v['action'] == 'scroll').map((v) => v['y']),
+      [1],
+      reason: 'Trackpad content pan must become remote wheel input',
+    );
     // A new frame shape changes the crop immediately after native stats update.
     source = const Size(1920, 1080);
     await t.pump(const Duration(seconds: 1));
@@ -928,7 +932,7 @@ void main() {
     );
     await t.pump(const Duration(seconds: 1));
     await t.pump();
-    expect(find.text('Connecting to student…'), findsNothing);
+    expect(find.text('Đang kết nối tới học viên…'), findsNothing);
     expect(find.byType(Texture), findsOneWidget);
     expect(t.takeException(), isNull);
     await t.pumpWidget(const SizedBox());

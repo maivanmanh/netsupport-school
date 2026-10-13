@@ -207,6 +207,12 @@ void main() {
           'recordings': [session, old],
         },
       };
+      // The dialog is height-limited; use a window tall enough to build both
+      // history cards (the narrow-window overflow check below shrinks it).
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(1000, 900);
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
       await tester.pumpWidget(
         MaterialApp(
           home: Builder(
@@ -273,7 +279,7 @@ void main() {
       };
     await tester.pumpWidget(ClassroomApp(agent: agent));
     await tester.pumpAndSettle();
-    await tester.tap(find.byTooltip('Select computers for presentation'));
+    await tester.tap(find.byTooltip('Chọn nhiều máy để thao tác'));
     await tester.pumpAndSettle();
     await tester.tap(find.byType(Checkbox).first);
     await tester.pumpAndSettle();

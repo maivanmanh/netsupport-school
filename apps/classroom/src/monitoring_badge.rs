@@ -3,9 +3,11 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
-    path::{Path, PathBuf},
+    path::Path,
     time::{Duration, Instant},
 };
+#[cfg(windows)]
+use std::path::PathBuf;
 
 #[cfg(windows)]
 pub const TEXT: &str = "ĐANG GIÁM SÁT";
@@ -23,36 +25,24 @@ pub struct Preference {
 pub struct Request {
     pub enabled: bool,
     pub revision: Option<String>,
-    pub path: Option<PathBuf>,
+    pub doc: Option<classroom_store::Doc>,
 }
 impl Request {
     pub fn load(&mut self, profile: &Path) -> Result<()> {
-        let path = profile.with_file_name("monitoring-badge.json");
-        match std::fs::read(&path) {
-            Ok(bytes) => self.enabled = serde_json::from_slice::<Preference>(&bytes)?.enabled,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
+        let doc = crate::startup::profile_doc(profile, "badge")?;
+        if let Some(saved) = doc.read::<Preference>()? {
+            self.enabled = saved.enabled;
         }
-        self.path = Some(path);
+        self.doc = Some(doc);
         Ok(())
     }
     pub fn persist(&self) -> Result<()> {
-        let path = self
-            .path
+        self.doc
             .as_ref()
-            .context("Badge preference path unavailable")?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let tmp = path.with_extension("tmp");
-        let mut file = std::fs::File::create(&tmp)?;
-        use std::io::Write;
-        file.write_all(&serde_json::to_vec(&Preference {
-            enabled: self.enabled,
-        })?)?;
-        file.sync_all()?;
-        // Windows rename cannot replace an existing file. Use the project's atomic helper.
-        atomic_replace(&tmp, path)?;
+            .context("Badge preference storage unavailable")?
+            .write(&Preference {
+                enabled: self.enabled,
+            })?;
         Ok(())
     }
 }
