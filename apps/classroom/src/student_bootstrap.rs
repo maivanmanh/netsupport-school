@@ -336,9 +336,9 @@ if errorlevel 1 (
   )
   echo Dang xin quyen Administrator...
   if defined SCRIPT_ARGS (
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%SELF%' -ArgumentList '%SCRIPT_ARGS%' -Verb RunAs"
+    powershell -NoProfile -Command "Start-Process -FilePath '%SELF%' -ArgumentList '%SCRIPT_ARGS%' -Verb RunAs"
   ) else (
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%SELF%' -Verb RunAs"
+    powershell -NoProfile -Command "Start-Process -FilePath '%SELF%' -Verb RunAs"
   )
   exit /b
 )
@@ -347,7 +347,7 @@ echo ==============================================
 echo  Cai dat Classroom Student
 echo  May giang vien: %CLASSROOM_BASE%
 echo ==============================================
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$t=[IO.File]::ReadAllText('%SELF%'); Invoke-Expression $t.Substring($t.LastIndexOf('#PS-BEGIN'))"
+powershell -NoProfile -Command "$t=[IO.File]::ReadAllText('%SELF%'); Invoke-Expression $t.Substring($t.LastIndexOf('#PS-BEGIN'))"
 set "RESULT=%errorlevel%"
 if not "%QUIET%"=="1" pause
 exit /b %RESULT%

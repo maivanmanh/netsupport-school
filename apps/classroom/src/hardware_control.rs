@@ -71,7 +71,6 @@ fn run_windows(
     recovery: bool,
     service: bool,
 ) -> Result<Value> {
-    use base64::Engine;
     use std::{
         io::{Read, Write},
         os::windows::process::CommandExt,
@@ -81,22 +80,14 @@ fn run_windows(
     if let Some(p) = policy {
         p.validate()?;
     }
+    // The reconciler is a fixed, readable script passed as the -Command text
+    // (policy is JSON on stdin, never interpolated into it). Plain text rather
+    // than a compressed/encoded loader: encoded fileless loaders are a classic
+    // malware pattern that antivirus heuristics flag. -Command is not subject
+    // to the PowerShell execution policy, so no policy override is needed.
     let script = include_str!("hardware_control/windows.ps1");
-    // Compress the embedded script to stay well below CreateProcessW's 32767
-    // character command-line limit as the reconciler evolves.
-    let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-    gzip.write_all(script.as_bytes())?;
-    let compressed = base64::engine::general_purpose::STANDARD.encode(gzip.finish()?);
-    let loader = format!("$m=[IO.MemoryStream]::new([Convert]::FromBase64String('{compressed}'));$z=[IO.Compression.GZipStream]::new($m,[IO.Compression.CompressionMode]::Decompress);$r=[IO.StreamReader]::new($z,[Text.Encoding]::UTF8);& ([scriptblock]::Create($r.ReadToEnd()))");
-    let encoded = base64::engine::general_purpose::STANDARD.encode(
-        loader
-            .encode_utf16()
-            .flat_map(u16::to_le_bytes)
-            .collect::<Vec<_>>(),
-    );
-    // A fixed script; policy is JSON on stdin, never interpolated into executable code.
     anyhow::ensure!(
-        encoded.len() < 30000,
+        script.encode_utf16().count() < 30000,
         "Hardware script exceeds Windows command limit"
     );
     let powershell =
@@ -107,8 +98,8 @@ fn run_windows(
             "-NoLogo",
             "-NoProfile",
             "-NonInteractive",
-            "-EncodedCommand",
-            &encoded,
+            "-Command",
+            script,
         ])
         .creation_flags(0x0800_0000)
         .stdin(Stdio::piped())

@@ -363,8 +363,6 @@ fn powershell(script: &str) -> Result<String> {
         .args([
             "-NoProfile",
             "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
             "-Command",
             script,
         ])

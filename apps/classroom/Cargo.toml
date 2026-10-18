@@ -86,3 +86,6 @@ windows-service = "0.8"
 codec-linux = { path = "../../crates/codec-linux" }
 renderer-linux = { path = "../../crates/renderer-linux" }
 minifb = { version = "0.28.0", default-features = false, features = ["x11"] }
+
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "3"
