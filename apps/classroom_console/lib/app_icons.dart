@@ -1,8 +1,11 @@
+import 'icon_tints.dart';
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'agent.dart';
 
 /// A curated icon + colour + friendly name for common Windows programs,
 /// looked up by process (executable) name. Real per-exe icons aren't
@@ -136,22 +139,80 @@ class AppBadge extends StatelessWidget {
         color: look.color.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(size * 0.3),
       ),
-      child: Icon(look.icon, size: size * 0.6, color: look.color),
+      child: TIcon(look.icon, size: size * 0.6, color: look.color),
     );
   }
 }
 
 /// Fetches site icons from the Teacher's own network connection, one lookup
-/// per host for the app's lifetime (a failure is retried after a while). The
-/// Student only has to report the address.
+/// per host (a failure is retried after a while). The Student only has to
+/// report the address. Icons are kept as small PNGs in the Teacher's store, so
+/// a separate window (a new process each time) and the next session show them
+/// at once instead of fetching every site again.
 class FaviconCache {
   FaviconCache._();
+  @visibleForTesting
+  FaviconCache.create();
   static final FaviconCache instance = FaviconCache._();
   static const _retryAfter = Duration(minutes: 5);
+  static const _staleAfter = Duration(days: 30);
   static const _maxBytes = 256 * 1024;
+  static const _storeNamespace = 'favicons';
+  static const _edge = 64;
 
   final Map<String, Future<Uint8List?>> _byHost = {};
+
+  /// At most this many sites are fetched at once, so a list of dozens of
+  /// sites does not open dozens of connections together.
+  static const _maxParallel = 4;
+  int _active = 0;
+  final _waiting = <Completer<void>>[];
+
+  Future<T> _gated<T>(Future<T> Function() job) async {
+    if (_active >= _maxParallel) {
+      final turn = Completer<void>();
+      _waiting.add(turn);
+      await turn.future;
+    }
+    _active++;
+    try {
+      return await job();
+    } finally {
+      _active--;
+      if (_waiting.isNotEmpty) _waiting.removeAt(0).complete();
+    }
+  }
+
   final Map<String, DateTime> _failedAt = {};
+  Agent? _agent;
+  Future<void>? _diskLoad;
+  final Map<String, (Uint8List, DateTime)> _disk = {};
+
+  /// Lets the cache read and write the Teacher's store. Optional: without it
+  /// icons are only remembered for this run.
+  void bind(Agent agent) => _agent = agent;
+
+  Future<void> _loadDisk() {
+    final agent = _agent;
+    if (agent == null) return Future.value();
+    return _diskLoad ??= () async {
+      try {
+        final documents = await agent.storeList(_storeNamespace);
+        for (final entry in documents.entries) {
+          final value = entry.value;
+          if (value is! Map || value['png'] is! String) continue;
+          _disk[entry.key] = (
+            base64Decode(value['png'] as String),
+            DateTime.fromMillisecondsSinceEpoch(
+              (value['ms'] as num?)?.toInt() ?? 0,
+            ),
+          );
+        }
+      } catch (_) {
+        _diskLoad = null; // not connected yet: try again on the next lookup
+      }
+    }();
+  }
 
   /// The icon for [url]'s site, or null if none could be fetched.
   Future<Uint8List?> forUrl(String url) {
@@ -168,10 +229,56 @@ class FaviconCache {
       _failedAt.remove(key);
     }
     return _byHost.putIfAbsent(key, () async {
-      final icon = await _fetch(uri);
-      if (icon == null) _failedAt[key] = DateTime.now();
+      await _loadDisk();
+      final host = uri.host.toLowerCase();
+      final kept = _disk[host];
+      if (kept != null && DateTime.now().difference(kept.$2) < _staleAfter) {
+        return kept.$1;
+      }
+      final fetched = await _gated(() => _fetch(uri));
+      if (fetched == null) {
+        _failedAt[key] = DateTime.now();
+        return kept?.$1; // an old icon beats a globe
+      }
+      final icon = await _normalize(fetched);
+      _disk[host] = (icon, DateTime.now());
+      final agent = _agent;
+      if (agent != null) {
+        unawaited(
+          agent
+              .storeApply(_storeNamespace, {
+                host: {
+                  'png': base64Encode(icon),
+                  'ms': DateTime.now().millisecondsSinceEpoch,
+                },
+              })
+              .catchError((_) {}),
+        );
+      }
       return icon;
     });
+  }
+
+  /// A PNG no larger than 64 px: a few KB to store, quick to decode in a list.
+  Future<Uint8List> _normalize(Uint8List bytes) async {
+    try {
+      final probe = await ui.instantiateImageCodec(bytes);
+      final first = await probe.getNextFrame();
+      final width = first.image.width, height = first.image.height;
+      first.image.dispose();
+      probe.dispose();
+      final codec = await ui.instantiateImageCodec(
+        bytes,
+        targetWidth: width >= height && width > _edge ? _edge : null,
+        targetHeight: height > width && height > _edge ? _edge : null,
+      );
+      final frame = await codec.getNextFrame();
+      final png = await frame.image.toByteData(format: ui.ImageByteFormat.png);
+      frame.image.dispose();
+      codec.dispose();
+      if (png != null) return png.buffer.asUint8List();
+    } catch (_) {}
+    return bytes;
   }
 
   Future<Uint8List?> _fetch(Uri page) async {
@@ -326,7 +433,7 @@ class _SiteIconState extends State<SiteIcon> {
   }
 
   Widget get _globe =>
-      Icon(Icons.public, size: widget.size, color: Colors.blueGrey);
+      TIcon(Icons.public, size: widget.size, color: Colors.blueGrey);
 
   @override
   Widget build(BuildContext context) {

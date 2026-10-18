@@ -1,3 +1,4 @@
+import 'icon_tints.dart';
 import 'package:flutter/material.dart';
 import 'app_dialog.dart';
 
@@ -56,7 +57,7 @@ class WindowShell extends StatelessWidget {
                     color: tone.color.withValues(alpha: 0.12),
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: Icon(icon, size: 21, color: tone.color),
+                  child: TIcon(icon, size: 21, color: tone.color),
                 ),
                 const SizedBox(width: 14),
               ],

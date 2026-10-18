@@ -1,3 +1,4 @@
+import 'icon_tints.dart';
 import 'dart:async';
 import 'dart:io';
 import 'package:desktop_drop/desktop_drop.dart';
@@ -103,8 +104,11 @@ class _PanelModel extends ChangeNotifier {
     if (started['ok'] != true) return {'error': Agent.failure(started)};
     final id = started['job_id'];
     final deadline = DateTime.now().add(const Duration(seconds: 25));
+    var attempt = 0;
     while (DateTime.now().isBefore(deadline)) {
-      await Future<void>.delayed(const Duration(milliseconds: 120));
+      await Future<void>.delayed(
+        resultPollDelay(attempt++, const Duration(milliseconds: 120)),
+      );
       final answer = await agent.request('fs_result', input: {'id': id});
       if (answer['ok'] != true) return {'error': Agent.failure(answer)};
       final body = answer['result'];
@@ -462,7 +466,7 @@ class _MoveButton extends StatelessWidget {
     builder: (_, _) => IconButton.filledTonal(
       tooltip: tooltip,
       onPressed: enabled && model.selected.isNotEmpty ? onPressed : null,
-      icon: Icon(icon, size: 20),
+      icon: TIcon(icon, size: 20),
     ),
   );
 }
@@ -543,7 +547,7 @@ class _ProgressStrip extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(14, 6, 4, 6),
       child: Row(
         children: [
-          Icon(
+          TIcon(
             bad ? Icons.error_outline : Icons.check_circle_outline,
             size: 18,
             color: bad ? const Color(0xffb83b40) : const Color(0xff1f7a4d),
@@ -559,7 +563,7 @@ class _ProgressStrip extends StatelessWidget {
           ),
           IconButton(
             visualDensity: VisualDensity.compact,
-            icon: const Icon(Icons.close, size: 16),
+            icon: const TIcon(Icons.close, size: 16),
             onPressed: onDismiss,
           ),
         ],
@@ -683,7 +687,7 @@ class _PanelState extends State<_Panel> {
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       child: Row(
         children: [
-          Icon(
+          TIcon(
             r.dir ? Icons.folder : Icons.insert_drive_file_outlined,
             size: 18,
             color: r.dir ? const Color(0xff3b8ea0) : Colors.blueGrey,
@@ -808,7 +812,7 @@ class _PanelState extends State<_Panel> {
               padding: const EdgeInsets.fromLTRB(10, 8, 8, 2),
               child: Row(
                 children: [
-                  Icon(widget.icon, size: 17, color: const Color(0xff156b79)),
+                  TIcon(widget.icon, size: 17, color: const Color(0xff156b79)),
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
@@ -819,7 +823,7 @@ class _PanelState extends State<_Panel> {
                   ),
                   PopupMenuButton<String>(
                     tooltip: 'Truy cập nhanh',
-                    icon: const Icon(Icons.bookmarks_outlined, size: 18),
+                    icon: const TIcon(Icons.bookmarks_outlined, size: 18),
                     padding: EdgeInsets.zero,
                     onSelected: model.load,
                     itemBuilder: (_) => [
@@ -833,7 +837,7 @@ class _PanelState extends State<_Panel> {
                   IconButton(
                     tooltip: model.hidden ? 'Ẩn tệp ẩn' : 'Hiện tệp ẩn',
                     visualDensity: VisualDensity.compact,
-                    icon: Icon(
+                    icon: TIcon(
                       model.hidden ? Icons.visibility : Icons.visibility_off,
                       size: 18,
                     ),
@@ -845,7 +849,7 @@ class _PanelState extends State<_Panel> {
                   IconButton(
                     tooltip: 'Làm mới',
                     visualDensity: VisualDensity.compact,
-                    icon: const Icon(Icons.refresh, size: 18),
+                    icon: const TIcon(Icons.refresh, size: 18),
                     onPressed: () => model.load(model.path),
                   ),
                 ],
@@ -858,7 +862,7 @@ class _PanelState extends State<_Panel> {
                   IconButton(
                     tooltip: 'Lên thư mục cha',
                     visualDensity: VisualDensity.compact,
-                    icon: const Icon(Icons.arrow_upward, size: 18),
+                    icon: const TIcon(Icons.arrow_upward, size: 18),
                     onPressed: up.isEmpty ? null : () => model.load(up),
                   ),
                   Expanded(

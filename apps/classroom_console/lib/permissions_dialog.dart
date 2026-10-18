@@ -1,3 +1,4 @@
+import 'icon_tints.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -209,7 +210,7 @@ class _MacPermissionsDialogState extends State<MacPermissionsDialog>
         children: [
           Row(
             children: [
-              Icon(
+              TIcon(
                 granted == true ? Icons.check_circle : Icons.info_outline,
                 color: color,
                 size: 22,
@@ -298,7 +299,7 @@ class _MacPermissionsDialogState extends State<MacPermissionsDialog>
         alignment: Alignment.centerLeft,
         child: TextButton.icon(
           onPressed: busy ? null : refresh,
-          icon: const Icon(Icons.refresh, size: 18),
+          icon: const TIcon(Icons.refresh, size: 18),
           label: const Text('Làm mới'),
         ),
       ),
@@ -425,7 +426,7 @@ class _MacPermissionsDialogState extends State<MacPermissionsDialog>
                             'port': int.tryParse(port.text) ?? 0,
                           });
                         },
-                  icon: const Icon(Icons.network_check),
+                  icon: const TIcon(Icons.network_check),
                   label: Text(
                     busy ? 'Đang xử lý…' : 'Yêu cầu / Thử truy cập LAN',
                   ),

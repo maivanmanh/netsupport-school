@@ -1,3 +1,4 @@
+import 'package:classroom_console/live_activity.dart';
 import 'dart:io';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -19,6 +20,7 @@ class LiveAgent extends Agent {
 }
 
 void main() {
+  setUpAll(() => BlinkingRecordDot.animated = false);
   TestWidgetsFlutterBinding.ensureInitialized();
   testWidgets(
     'offline toggle hides remembered PCs and restores them without removing roster',
@@ -63,6 +65,263 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Offline PC'), findsOneWidget);
       expect(agent.preferences['show_offline'], true);
+      await tester.pumpWidget(const SizedBox());
+      agent.dispose();
+    },
+  );
+  testWidgets(
+    'receiving FPS and speed (bytes) appear in grid, list and compact views',
+    (tester) async {
+      tester.view.physicalSize = const Size(1300, 800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final agent = LiveAgent()
+        ..state = {
+          'phase': 'sharing',
+          'students': [
+            {
+              'id': 'one',
+              'name': 'Lab PC 01',
+              'ip': '10.0.55.11',
+              'online': true,
+              'media': {
+                'state': 'receiving',
+                'render_fps': 23.6,
+                'receive_mbps': 24.0,
+              },
+            },
+          ],
+        };
+      await tester.pumpWidget(ClassroomApp(agent: agent));
+      await tester.pumpAndSettle();
+      // Grid: numbers only.
+      expect(find.text('24 FPS · 2.9 MB/s'), findsOneWidget);
+      await tester.tap(find.byIcon(Icons.view_list_outlined));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('23.6 FPS · 2.9 MB/s'), findsOneWidget);
+      await tester.tap(find.byIcon(Icons.format_list_bulleted));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('23.6 FPS · 2.9 MB/s'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+      agent.dispose();
+    },
+  );
+  testWidgets(
+    'evidence shows as a camera count on the computer and announces new pictures',
+    (tester) async {
+      tester.view.physicalSize = const Size(1300, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      Map<String, dynamic> shot(String id) => {
+        'id': id,
+        'student': 'one',
+        'label': 'chatgpt.com',
+        'address': 'chatgpt.com/c/1',
+        'title': 'x',
+        'reason': 'conversation',
+        'taken_ms': 1,
+        'bytes': 10,
+        'path': '/nowhere/$id.jpg',
+      };
+      final agent = LiveAgent()
+        ..state = {
+          'phase': 'idle',
+          'students': [
+            {
+              'id': 'one',
+              'name': 'Lab PC 01',
+              'ip': '10.0.55.11',
+              'online': true,
+            },
+          ],
+          'tools': {
+            'evidence': {
+              'items': [shot('1'), shot('2')],
+            },
+          },
+        };
+      await tester.pumpWidget(ClassroomApp(agent: agent));
+      await tester.pumpAndSettle();
+      // What was already there is shown but not announced.
+      expect(find.byKey(const ValueKey('evidence-badge-one')), findsOneWidget);
+      expect(find.text('2'), findsWidgets);
+      expect(find.textContaining('đã lưu ảnh minh chứng'), findsNothing);
+      // A new picture arrives while the console is open.
+      ((agent.state['tools'] as Map)['evidence'] as Map)['items'] = [
+        shot('3'),
+        shot('1'),
+        shot('2'),
+      ];
+      agent.notifyListeners();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(
+        find.textContaining(
+          'Lab PC 01 đang dùng chatgpt.com — đã lưu ảnh minh chứng',
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Xem'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+      agent.dispose();
+    },
+  );
+  testWidgets(
+    'a Student on an AI site is highlighted in every view, browser in front or not',
+    (tester) async {
+      tester.view.physicalSize = const Size(1300, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final agent = LiveAgent()
+        ..state = {
+          'phase': 'idle',
+          'students': [
+            {
+              'id': 'ai',
+              'name': 'Lab PC 01',
+              'ip': '10.0.55.11',
+              'online': true,
+            },
+            {
+              'id': 'ok',
+              'name': 'Lab PC 02',
+              'ip': '10.0.55.12',
+              'online': true,
+            },
+          ],
+          'tools': {
+            'activity_monitoring': true,
+            'activity_live': {
+              // ChatGPT in a background Chrome while VS Code is in front.
+              'ai': {
+                'apps': [
+                  {'app': 'Code.exe', 'title': 'main.rs'},
+                  {'app': 'chrome.exe', 'title': 'ChatGPT'},
+                ],
+                'url': 'https://chatgpt.com/c/1',
+                'url_in_front': false,
+                'ai': ['chatgpt.com'],
+              },
+              'ok': {
+                'apps': [
+                  {'app': 'Code.exe', 'title': 'main.rs'},
+                ],
+                'url': 'https://docs.rs',
+                'url_in_front': false,
+              },
+            },
+          },
+        };
+      agent.state['students'] = [
+        {'id': 'ai', 'name': 'Lab PC 01', 'ip': '10.0.55.11', 'online': true},
+        {'id': 'ok', 'name': 'Lab PC 02', 'ip': '10.0.55.12', 'online': true},
+      ];
+      await tester.pumpWidget(ClassroomApp(agent: agent));
+      await tester.pumpAndSettle();
+      void expectHighlight() {
+        expect(find.text('AI · chatgpt.com'), findsOneWidget);
+        expect(
+          find.byTooltip('Đang mở website AI: chatgpt.com'),
+          findsOneWidget,
+        );
+        // The other Student shows its page but no warning.
+        expect(find.textContaining('docs.rs'), findsOneWidget);
+      }
+
+      expectHighlight();
+      await tester.tap(find.byIcon(Icons.view_list_outlined));
+      await tester.pumpAndSettle();
+      expectHighlight();
+      await tester.tap(find.byIcon(Icons.format_list_bulleted));
+      await tester.pumpAndSettle();
+      expectHighlight();
+      // Without activity monitoring nothing is flagged.
+      (agent.state['tools'] as Map)['activity_monitoring'] = false;
+      agent.notifyListeners();
+      await tester.pumpAndSettle();
+      expect(find.textContaining('AI ·'), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+      agent.dispose();
+    },
+  );
+  testWidgets(
+    'live activity, blocks and recording time appear in every roster view',
+    (tester) async {
+      tester.view.physicalSize = const Size(1300, 800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final agent = LiveAgent()
+        ..state = {
+          'phase': 'idle',
+          'students': [
+            {
+              'id': 'one',
+              'name': 'Lab PC 01',
+              'ip': '10.0.55.11',
+              'online': true,
+            },
+          ],
+          'tools': {
+            'activity_monitoring': true,
+            'activity_live': {
+              'one': {
+                'apps': [
+                  {'app': 'chrome.exe', 'title': 'Docs'},
+                  {'app': 'Code.exe', 'title': 'main.rs'},
+                ],
+                'url': 'https://www.example.org/page',
+                'tab_title': 'Example',
+              },
+            },
+            'apps_blocked': ['one'],
+            'internet': {'one': 'block_all'},
+            'recordings': [
+              {
+                'id': 'r',
+                'targets': [
+                  {
+                    'id': 'one',
+                    'report': {'phase': 'recording', 'elapsed_seconds': 125},
+                  },
+                ],
+              },
+            ],
+          },
+        };
+      await tester.pumpWidget(ClassroomApp(agent: agent));
+      await tester.pumpAndSettle();
+      Future<void> expectAll() async {
+        expect(find.textContaining('example.org'), findsOneWidget);
+        expect(find.byTooltip('Chrome — Docs'), findsOneWidget);
+        expect(find.byTooltip('VS Code — main.rs'), findsOneWidget);
+        expect(
+          find.byTooltip('Đang chặn ứng dụng trên máy này'),
+          findsOneWidget,
+        );
+        expect(find.byTooltip('Internet: Chặn tất cả'), findsOneWidget);
+        expect(
+          find.byTooltip('Đang ghi màn hình • đã ghi 02:05'),
+          findsOneWidget,
+        );
+      }
+
+      await expectAll(); // grid
+      await tester.tap(find.byIcon(Icons.view_list_outlined));
+      await tester.pumpAndSettle();
+      await expectAll();
+      await tester.tap(find.byIcon(Icons.format_list_bulleted));
+      await tester.pumpAndSettle();
+      await expectAll();
+      // Monitoring off: the live strip goes away, the blocks stay.
+      (agent.state['tools'] as Map)['activity_monitoring'] = false;
+      agent.notifyListeners();
+      await tester.pumpAndSettle();
+      expect(find.textContaining('example.org'), findsNothing);
+      expect(find.byTooltip('Đang chặn ứng dụng trên máy này'), findsOneWidget);
       await tester.pumpWidget(const SizedBox());
       agent.dispose();
     },

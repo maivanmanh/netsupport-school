@@ -1,3 +1,4 @@
+import 'icon_tints.dart';
 import 'package:flutter/material.dart';
 import 'agent.dart';
 import 'app_dialog.dart';
@@ -331,7 +332,6 @@ class _CollectProgress extends StatelessWidget {
             icon: Icons.download_for_offline_outlined,
             title: 'Thu tệp',
             width: 440,
-            actions: [AppDialog.cancel(context, label: 'Đóng')],
             child: const DialogEmpty(
               icon: Icons.inbox_outlined,
               title: 'Chưa có đợt thu tệp nào',
@@ -382,11 +382,6 @@ class _CollectProgress extends StatelessWidget {
               icon: Icons.folder_open,
               label: 'Mở thư mục',
             ),
-            AppDialog.primary(
-              onPressed: () => Navigator.pop(context),
-              icon: Icons.check,
-              label: active > 0 ? 'Ẩn' : 'Đóng',
-            ),
           ],
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -409,7 +404,7 @@ class _CollectProgress extends StatelessWidget {
                         children: [
                           Row(
                             children: [
-                              Icon(
+                              TIcon(
                                 failed
                                     ? Icons.error_outline
                                     : t['status'] == 'complete'

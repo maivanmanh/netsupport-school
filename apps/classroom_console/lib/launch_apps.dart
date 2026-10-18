@@ -1,3 +1,4 @@
+import 'icon_tints.dart';
 import 'package:flutter/material.dart';
 import 'agent.dart';
 import 'app_dialog.dart';
@@ -271,7 +272,6 @@ class _LaunchDialogState extends State<_LaunchDialog> {
         builder: (_, _) => status(),
       ),
       actions: [
-        AppDialog.cancel(context, label: 'Đóng'),
         AppDialog.primary(
           onPressed: item == null || busy ? null : launch,
           icon: Icons.rocket_launch_outlined,
@@ -321,7 +321,7 @@ class _LaunchDialogState extends State<_LaunchDialog> {
                           dense: true,
                           selected: it.id == selected,
                           selectedTileColor: const Color(0xffe3f1f3),
-                          leading: const Icon(Icons.apps, size: 20),
+                          leading: const TIcon(Icons.apps, size: 20),
                           title: Text(
                             it.title,
                             style: const TextStyle(fontWeight: FontWeight.w600),
@@ -371,6 +371,17 @@ class _EditDialogState extends State<_EditDialog> {
     path.dispose();
     args.dispose();
     super.dispose();
+  }
+
+  /// A path is required, and an existing entry must actually differ.
+  bool get canSave {
+    if (path.text.trim().isEmpty) return false;
+    final item = widget.item;
+    return item == null ||
+        note.text.trim() != item.note ||
+        path.text.trim() != item.path ||
+        args.text.trim() != item.args ||
+        os != item.os;
   }
 
   void save() {
@@ -424,7 +435,14 @@ class _EditDialogState extends State<_EditDialog> {
       width: 560,
       actions: [
         AppDialog.cancel(context),
-        AppDialog.primary(label: 'Lưu', icon: Icons.check, onPressed: save),
+        ListenableBuilder(
+          listenable: Listenable.merge([note, path, args]),
+          builder: (context, _) => AppDialog.primary(
+            label: 'Lưu',
+            icon: Icons.check,
+            onPressed: canSave ? save : null,
+          ),
+        ),
       ],
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

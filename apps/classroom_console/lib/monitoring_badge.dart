@@ -1,3 +1,4 @@
+import 'icon_tints.dart';
 import 'package:flutter/material.dart';
 import 'agent.dart';
 import 'app_dialog.dart';
@@ -90,7 +91,6 @@ class _BadgeDialogState extends State<_BadgeDialog> {
         subtitle: '$acknowledged/${widget.ids.length} máy đã xác nhận',
         width: 540,
         actions: [
-          AppDialog.cancel(context, label: 'Đóng'),
           AppDialog.primary(
             onPressed: !agent.connected ? null : () => apply(targetEnabled),
             icon: targetEnabled ? Icons.badge_outlined : Icons.badge,
@@ -132,7 +132,7 @@ class _BadgeDialogState extends State<_BadgeDialog> {
                     final b = badgeState(agent, id);
                     return ListTile(
                       dense: true,
-                      leading: Icon(
+                      leading: TIcon(
                         b['status'] == 'applied'
                             ? Icons.check_circle
                             : b['status'] == 'pending'

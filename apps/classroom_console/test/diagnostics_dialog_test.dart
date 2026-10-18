@@ -68,7 +68,7 @@ void main() {
     expect(agent.lastCommand, 'cancel_diagnostics');
     expect(find.text('Đã hủy thu thập.'), findsOneWidget);
     expect(find.text('Hủy thu thập'), findsNothing);
-    await tester.tap(find.text('Đóng'));
+    await tester.tap(find.byTooltip('Đóng'));
     await tester.pumpAndSettle();
     agent.dispose();
   });
@@ -98,7 +98,7 @@ void main() {
     expect(find.text('PC 02 (10.0.55.12): offline'), findsOneWidget);
     expect(find.text('Hiện tệp ZIP'), findsOneWidget);
     expect(find.text('Hủy thu thập'), findsNothing);
-    await tester.tap(find.text('Đóng'));
+    await tester.tap(find.byTooltip('Đóng'));
     await tester.pumpAndSettle();
     agent.dispose();
   });

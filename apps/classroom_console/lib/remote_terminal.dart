@@ -1,3 +1,4 @@
+import 'icon_tints.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -14,9 +15,13 @@ class RemoteTerminalWindow extends StatefulWidget {
     required this.agent,
     required this.studentId,
     required this.name,
+    this.now = DateTime.now,
   });
   final Agent agent;
   final String studentId, name;
+
+  /// Clock used for the wait display; replaced in tests.
+  final DateTime Function() now;
   @override
   State<RemoteTerminalWindow> createState() => _RemoteTerminalWindowState();
 }
@@ -30,7 +35,8 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
   String studentIp = '';
   bool exporting = false;
   Socket? stream;
-  Timer? heartbeat, retry;
+  Timer? heartbeat, retry, ticker;
+  late DateTime openedAt = widget.now();
   String? session, error;
   String status = 'Đang kết nối tới học viên…', os = 'windows';
   bool connected = false, starting = false, closing = false, ended = false;
@@ -52,6 +58,61 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
     agent.addListener(ready);
     windowManager.addListener(this);
     unawaited(windowManager.setPreventClose(true));
+    // Re-render once a second while waiting so the Teacher sees elapsed time
+    // instead of a frozen "connecting" label on a slow or unreachable Student.
+    ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted && !connected && !ended && !closing) setState(() {});
+    });
+    ready();
+  }
+
+  /// Status line that reflects how long we have been waiting and why.
+  String get displayStatus {
+    if (connected || ended) return status;
+    if (!agent.connected) return 'Mất kết nối với chương trình giảng viên…';
+    final online = agent.students.any(
+      (s) => s['id'] == widget.studentId && s['online'] == true,
+    );
+    if (!online) {
+      return everConnected
+          ? 'Máy học viên đang offline · sẽ tự nối lại khi máy trở lại…'
+          : 'Máy học viên đang offline. Hãy kiểm tra máy đã bật và kết nối mạng.';
+    }
+    final seconds = widget
+        .now()
+        .difference(disconnectedAt ?? openedAt)
+        .inSeconds;
+    if (seconds < 3) return status;
+    if (seconds < 10) {
+      return 'Máy học viên phản hồi chậm… (${seconds}s)';
+    }
+    return 'Vẫn đang chờ học viên (${seconds}s) · máy có thể đang bận hoặc mạng chậm';
+  }
+
+  /// Abandons the current session and opens a fresh one on the same Student.
+  void restart() {
+    final old = session;
+    heartbeat?.cancel();
+    retry?.cancel();
+    stream?.destroy();
+    stream = null;
+    decoder?.close();
+    bytes.clear();
+    setState(() {
+      error = null;
+      session = null;
+      ended = false;
+      starting = false;
+      connected = false;
+      everConnected = false;
+      lastSequence = 0;
+      disconnectedAt = null;
+      openedAt = widget.now();
+      status = 'Đang kết nối tới học viên…';
+    });
+    if (old != null) {
+      unawaited(agent.request('terminal_close', input: {'session': old}));
+    }
     ready();
   }
 
@@ -247,7 +308,7 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
           }
         } else {
           disconnectedAt ??= DateTime.now();
-          if (DateTime.now().difference(disconnectedAt!).inSeconds >= 15) {
+          if (DateTime.now().difference(disconnectedAt!).inSeconds >= 30) {
             ended = true;
             heartbeat?.cancel();
             unawaited(
@@ -275,7 +336,9 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
         }
         if (mounted) {
           setState(() {
-            status = 'Shell đã thoát';
+            status = everConnected
+                ? 'Shell đã thoát'
+                : 'Không kết nối được tới học viên';
           });
         }
       }
@@ -288,7 +351,7 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
     stream = null;
     if (closing || !mounted) return;
     disconnectedAt ??= DateTime.now();
-    if (DateTime.now().difference(disconnectedAt!).inSeconds >= 15) {
+    if (DateTime.now().difference(disconnectedAt!).inSeconds >= 30) {
       ended = true;
       unawaited(agent.request('terminal_close', input: {'session': session}));
     }
@@ -335,11 +398,11 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
     inputWrites = inputWrites
         .then((_) async {
           if ((!connected && !protocolReply) || !identical(stream, socket)) {
-            throw StateError('Input not sent: session disconnected');
+            throw StateError('Chưa gửi được phím: phiên đã mất kết nối.');
           }
           for (var i = 0; i < data.length; i += 16384) {
             if (!identical(stream, socket)) {
-              throw StateError('Input not sent: connection changed');
+              throw StateError('Chưa gửi được phím: kết nối vừa thay đổi.');
             }
             frame(2, 0, data.sublist(i, (i + 16384).clamp(0, data.length)));
             await socket.flush();
@@ -377,10 +440,25 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
               context,
               onPressed: () => Navigator.pop(context, false),
             ),
-            AppDialog.primary(
-              onPressed: () => Navigator.pop(context, true),
-              icon: Icons.check,
-              label: 'Lưu',
+            ListenableBuilder(
+              listenable: Listenable.merge([font, fall, size, lines]),
+              builder: (context, _) {
+                // Enabled only when something differs from the current settings.
+                final changed =
+                    font.text.trim() != family ||
+                    fall.text != fallback ||
+                    (double.tryParse(size.text) ?? fontPt) != fontPt ||
+                    (int.tryParse(lines.text) ?? scrollback) != scrollback ||
+                    nextBlack != black ||
+                    nextCompatibility != compatibility;
+                return AppDialog.primary(
+                  onPressed: changed
+                      ? () => Navigator.pop(context, true)
+                      : null,
+                  icon: Icons.check,
+                  label: 'Lưu',
+                );
+              },
             ),
           ],
           child: Column(
@@ -456,10 +534,10 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
         'terminal_windows_compatibility': compatibility,
       });
     }
-    font.dispose();
-    fall.dispose();
-    size.dispose();
-    lines.dispose();
+    disposeAfterClose(font);
+    disposeAfterClose(fall);
+    disposeAfterClose(size);
+    disposeAfterClose(lines);
   }
 
   Future<void> copySelection() async {
@@ -596,6 +674,7 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
     windowManager.removeListener(this);
     heartbeat?.cancel();
     retry?.cancel();
+    ticker?.cancel();
     stream?.destroy();
     decoder?.close();
     terminalController.dispose();
@@ -617,7 +696,7 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
           padding: const EdgeInsets.only(left: 10, right: 4),
           child: Row(
             children: [
-              Icon(
+              TIcon(
                 connected ? Icons.circle : Icons.sync,
                 size: 8,
                 color: connected ? Colors.greenAccent : Colors.amber,
@@ -625,7 +704,7 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  status,
+                  displayStatus,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(color: Colors.white70, fontSize: 12),
@@ -636,7 +715,7 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
                 tooltip: 'Cài đặt Terminal',
                 iconSize: 18,
                 visualDensity: VisualDensity.compact,
-                icon: const Icon(Icons.tune),
+                icon: const TIcon(Icons.tune),
               ),
               IconButton(
                 onPressed: terminal != null && !exporting
@@ -645,14 +724,14 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
                 tooltip: 'Lưu toàn bộ nội dung hiện có vào Desktop',
                 iconSize: 18,
                 visualDensity: VisualDensity.compact,
-                icon: const Icon(Icons.download_outlined),
+                icon: const TIcon(Icons.download_outlined),
               ),
               IconButton(
                 onPressed: connected ? () => sendInput('\x03') : null,
                 tooltip: 'Gửi Ctrl+C',
                 iconSize: 18,
                 visualDensity: VisualDensity.compact,
-                icon: const Icon(Icons.stop_circle_outlined),
+                icon: const TIcon(Icons.stop_circle_outlined),
               ),
             ],
           ),
@@ -661,16 +740,10 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
           MaterialBanner(
             content: Text(error!),
             actions: [
-              if (session == null)
+              if (session == null || ended)
                 TextButton(
-                  onPressed: () {
-                    setState(() {
-                      error = null;
-                      starting = false;
-                    });
-                    ready();
-                  },
-                  child: const Text('Thử lại'),
+                  onPressed: restart,
+                  child: Text(ended ? 'Mở phiên mới' : 'Thử lại'),
                 ),
               TextButton(
                 onPressed: () => setState(() => error = null),

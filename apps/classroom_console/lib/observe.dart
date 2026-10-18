@@ -1,3 +1,4 @@
+import 'icon_tints.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -1345,7 +1346,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              const Icon(
+                              const TIcon(
                                 Icons.wifi_off_rounded,
                                 color: Color(0xffffc857),
                                 size: 36,
@@ -1522,216 +1523,256 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                       horizontal: 4,
                       vertical: 5,
                     ),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.desktop_windows_outlined, size: 18),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            widget.name,
-                            style: const TextStyle(fontWeight: FontWeight.w600),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                        SegmentedButton<String>(
-                          style: const ButtonStyle(
-                            visualDensity: VisualDensity.compact,
-                          ),
-                          segments: const [
-                            ButtonSegment(
-                              value: 'observe',
-                              label: Text('Quan sát'),
-                              icon: Icon(Icons.visibility_outlined, size: 18),
+                    child: LayoutBuilder(
+                      builder: (context, box) {
+                        // A narrow window scrolls the controls instead of overflowing.
+                        final narrow = box.maxWidth < 900;
+                        final controls = <Widget>[
+                          SegmentedButton<String>(
+                            style: const ButtonStyle(
+                              visualDensity: VisualDensity.compact,
                             ),
-                            ButtonSegment(
-                              value: 'control',
-                              label: Text('Điều khiển'),
-                              icon: Icon(Icons.mouse_outlined, size: 18),
+                            segments: const [
+                              ButtonSegment(
+                                value: 'observe',
+                                label: Text('Quan sát'),
+                                icon: TIcon(
+                                  Icons.visibility_outlined,
+                                  size: 18,
+                                ),
+                              ),
+                              ButtonSegment(
+                                value: 'control',
+                                label: Text('Điều khiển'),
+                                icon: TIcon(Icons.mouse_outlined, size: 18),
+                              ),
+                            ],
+                            selected: {
+                              mode == 'observe' ? 'observe' : 'control',
+                            },
+                            onSelectionChanged:
+                                canSwitchMode &&
+                                    !classControl &&
+                                    requestedMode == null
+                                ? (v) => switchMode(v.first)
+                                : null,
+                          ),
+                          PopupMenuButton<String>(
+                            tooltip: 'Thao tác với học viên và điều khiển',
+                            enabled: widget.agent.connected,
+                            onSelected: (action) {
+                              if (action == 'screenshot') {
+                                saveStudentScreenshot();
+                              } else if (action == 'message') {
+                                messageStudent();
+                              } else if (action == 'file') {
+                                sendFileToStudent();
+                              } else {
+                                switchMode(action);
+                              }
+                              revealChrome();
+                            },
+                            itemBuilder: (_) => [
+                              PopupMenuItem(
+                                value: 'control',
+                                enabled: canSwitchMode && requestedMode == null,
+                                child: Text(
+                                  'Giảng viên và học viên cùng điều khiển',
+                                ),
+                              ),
+                              PopupMenuItem(
+                                value: 'exclusive',
+                                enabled: canSwitchMode && requestedMode == null,
+                                child: Text(
+                                  'Chỉ giảng viên · Khóa nhập liệu của học viên (Windows)',
+                                ),
+                              ),
+                              const PopupMenuDivider(),
+                              PopupMenuItem(
+                                value: 'screenshot',
+                                enabled: live,
+                                child: const ListTile(
+                                  dense: true,
+                                  leading: TIcon(Icons.photo_camera_outlined),
+                                  title: Text('Lưu ảnh chụp vào Desktop'),
+                                ),
+                              ),
+                              const PopupMenuItem(
+                                value: 'message',
+                                child: ListTile(
+                                  dense: true,
+                                  leading: TIcon(Icons.chat_outlined),
+                                  title: Text('Gửi tin nhắn'),
+                                ),
+                              ),
+                              const PopupMenuItem(
+                                value: 'file',
+                                child: ListTile(
+                                  dense: true,
+                                  leading: TIcon(Icons.attach_file),
+                                  title: Text('Gửi tệp'),
+                                ),
+                              ),
+                            ],
+                            icon: const TIcon(Icons.tune, size: 20),
+                          ),
+                          const SizedBox(width: 4),
+                          SegmentedButton<String>(
+                            style: const ButtonStyle(
+                              visualDensity: VisualDensity.compact,
                             ),
+                            key: const ValueKey('observe-display-mode'),
+                            segments: const [
+                              ButtonSegment(
+                                value: 'stretch',
+                                label: Text('Stretch'),
+                                tooltip:
+                                    'Cover the window; scroll to see the full image',
+                                icon: TIcon(Icons.width_full, size: 18),
+                              ),
+                              ButtonSegment(
+                                value: 'fill',
+                                label: Text('Fill'),
+                                tooltip: 'Resize the image with the window',
+                                icon: TIcon(Icons.fit_screen, size: 18),
+                              ),
+                            ],
+                            selected: {displayMode},
+                            onSelectionChanged: (v) {
+                              if (viewportScroll.hasClients) {
+                                viewportScroll.jumpTo(0);
+                              }
+                              setState(() => displayMode = v.first);
+                              revealChrome();
+                            },
+                          ),
+                          IconButton(
+                            style: IconButton.styleFrom(
+                              minimumSize: const Size(32, 32),
+                              padding: const EdgeInsets.all(4),
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            tooltip: fullScreen
+                                ? 'Thoát toàn màn hình'
+                                : 'Toàn màn hình',
+                            icon: TIcon(
+                              fullScreen
+                                  ? Icons.fullscreen_exit
+                                  : Icons.fullscreen,
+                              size: 20,
+                            ),
+                            onPressed: toggleFullScreen,
+                          ),
+                          IconButton(
+                            style: IconButton.styleFrom(
+                              minimumSize: const Size(32, 32),
+                              padding: const EdgeInsets.all(4),
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            tooltip: 'Duyệt và thu tệp',
+                            icon: const TIcon(
+                              Icons.folder_copy_outlined,
+                              size: 19,
+                            ),
+                            onPressed: () {
+                              widget.agent.request(
+                                'files_window',
+                                selected: [widget.studentId],
+                              );
+                              revealChrome();
+                            },
+                          ),
+                          IconButton(
+                            style: IconButton.styleFrom(
+                              minimumSize: const Size(32, 32),
+                              padding: const EdgeInsets.all(4),
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            tooltip: 'Cửa sổ, tab trình duyệt và tệp tải xuống',
+                            icon: const TIcon(
+                              Icons.visibility_outlined,
+                              size: 19,
+                            ),
+                            onPressed: () {
+                              widget.agent.request(
+                                'activity_window',
+                                selected: [widget.studentId],
+                              );
+                              revealChrome();
+                            },
+                          ),
+                          IconButton(
+                            style: IconButton.styleFrom(
+                              minimumSize: const Size(32, 32),
+                              padding: const EdgeInsets.all(4),
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            key: const ValueKey('observe-stats-toggle'),
+                            tooltip: showStats
+                                ? 'Ẩn thống kê'
+                                : 'Hiện thống kê',
+                            isSelected: showStats,
+                            icon: const TIcon(Icons.speed_outlined, size: 19),
+                            selectedIcon: const TIcon(Icons.speed, size: 19),
+                            onPressed: () {
+                              setState(() => showStats = !showStats);
+                              revealChrome();
+                            },
+                          ),
+                          IconButton(
+                            style: IconButton.styleFrom(
+                              minimumSize: const Size(32, 32),
+                              padding: const EdgeInsets.all(4),
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            tooltip: autoHide
+                                ? 'Giữ thanh công cụ luôn hiện'
+                                : 'Tự ẩn thanh công cụ',
+                            isSelected: !autoHide,
+                            icon: const TIcon(
+                              Icons.push_pin_outlined,
+                              size: 18,
+                            ),
+                            selectedIcon: const TIcon(Icons.push_pin, size: 18),
+                            onPressed: () {
+                              setState(() => autoHide = !autoHide);
+                              revealChrome();
+                            },
+                          ),
+                        ];
+                        return Row(
+                          children: [
+                            const TIcon(
+                              Icons.desktop_windows_outlined,
+                              size: 18,
+                            ),
+                            const SizedBox(width: 8),
+                            if (narrow)
+                              Expanded(
+                                child: SingleChildScrollView(
+                                  scrollDirection: Axis.horizontal,
+                                  reverse: true,
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: controls,
+                                  ),
+                                ),
+                              )
+                            else ...[
+                              Expanded(
+                                child: Text(
+                                  widget.name,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                              ...controls,
+                            ],
                           ],
-                          selected: {mode == 'observe' ? 'observe' : 'control'},
-                          onSelectionChanged:
-                              canSwitchMode &&
-                                  !classControl &&
-                                  requestedMode == null
-                              ? (v) => switchMode(v.first)
-                              : null,
-                        ),
-                        PopupMenuButton<String>(
-                          tooltip: 'Thao tác với học viên và điều khiển',
-                          enabled: widget.agent.connected,
-                          onSelected: (action) {
-                            if (action == 'screenshot') {
-                              saveStudentScreenshot();
-                            } else if (action == 'message') {
-                              messageStudent();
-                            } else if (action == 'file') {
-                              sendFileToStudent();
-                            } else {
-                              switchMode(action);
-                            }
-                            revealChrome();
-                          },
-                          itemBuilder: (_) => [
-                            PopupMenuItem(
-                              value: 'control',
-                              enabled: canSwitchMode && requestedMode == null,
-                              child: Text(
-                                'Giảng viên và học viên cùng điều khiển',
-                              ),
-                            ),
-                            PopupMenuItem(
-                              value: 'exclusive',
-                              enabled: canSwitchMode && requestedMode == null,
-                              child: Text(
-                                'Chỉ giảng viên · Khóa nhập liệu của học viên (Windows)',
-                              ),
-                            ),
-                            const PopupMenuDivider(),
-                            PopupMenuItem(
-                              value: 'screenshot',
-                              enabled: live,
-                              child: const ListTile(
-                                dense: true,
-                                leading: Icon(Icons.photo_camera_outlined),
-                                title: Text('Lưu ảnh chụp vào Desktop'),
-                              ),
-                            ),
-                            const PopupMenuItem(
-                              value: 'message',
-                              child: ListTile(
-                                dense: true,
-                                leading: Icon(Icons.chat_outlined),
-                                title: Text('Gửi tin nhắn'),
-                              ),
-                            ),
-                            const PopupMenuItem(
-                              value: 'file',
-                              child: ListTile(
-                                dense: true,
-                                leading: Icon(Icons.attach_file),
-                                title: Text('Gửi tệp'),
-                              ),
-                            ),
-                          ],
-                          icon: const Icon(Icons.tune, size: 20),
-                        ),
-                        const SizedBox(width: 4),
-                        SegmentedButton<String>(
-                          style: const ButtonStyle(
-                            visualDensity: VisualDensity.compact,
-                          ),
-                          key: const ValueKey('observe-display-mode'),
-                          segments: const [
-                            ButtonSegment(
-                              value: 'stretch',
-                              label: Text('Stretch'),
-                              tooltip:
-                                  'Cover the window; scroll to see the full image',
-                              icon: Icon(Icons.width_full, size: 18),
-                            ),
-                            ButtonSegment(
-                              value: 'fill',
-                              label: Text('Fill'),
-                              tooltip: 'Resize the image with the window',
-                              icon: Icon(Icons.fit_screen, size: 18),
-                            ),
-                          ],
-                          selected: {displayMode},
-                          onSelectionChanged: (v) {
-                            if (viewportScroll.hasClients) {
-                              viewportScroll.jumpTo(0);
-                            }
-                            setState(() => displayMode = v.first);
-                            revealChrome();
-                          },
-                        ),
-                        IconButton(
-                          style: IconButton.styleFrom(
-                            minimumSize: const Size(32, 32),
-                            padding: const EdgeInsets.all(4),
-                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                          ),
-                          tooltip: fullScreen
-                              ? 'Thoát toàn màn hình'
-                              : 'Toàn màn hình',
-                          icon: Icon(
-                            fullScreen
-                                ? Icons.fullscreen_exit
-                                : Icons.fullscreen,
-                            size: 20,
-                          ),
-                          onPressed: toggleFullScreen,
-                        ),
-                        IconButton(
-                          style: IconButton.styleFrom(
-                            minimumSize: const Size(32, 32),
-                            padding: const EdgeInsets.all(4),
-                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                          ),
-                          tooltip: 'Duyệt và thu tệp',
-                          icon: const Icon(
-                            Icons.folder_copy_outlined,
-                            size: 19,
-                          ),
-                          onPressed: () {
-                            widget.agent.request(
-                              'files_window',
-                              selected: [widget.studentId],
-                            );
-                            revealChrome();
-                          },
-                        ),
-                        IconButton(
-                          style: IconButton.styleFrom(
-                            minimumSize: const Size(32, 32),
-                            padding: const EdgeInsets.all(4),
-                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                          ),
-                          tooltip: 'Cửa sổ, tab trình duyệt và tệp tải xuống',
-                          icon: const Icon(Icons.visibility_outlined, size: 19),
-                          onPressed: () {
-                            widget.agent.request(
-                              'activity_window',
-                              selected: [widget.studentId],
-                            );
-                            revealChrome();
-                          },
-                        ),
-                        IconButton(
-                          style: IconButton.styleFrom(
-                            minimumSize: const Size(32, 32),
-                            padding: const EdgeInsets.all(4),
-                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                          ),
-                          key: const ValueKey('observe-stats-toggle'),
-                          tooltip: showStats ? 'Ẩn thống kê' : 'Hiện thống kê',
-                          isSelected: showStats,
-                          icon: const Icon(Icons.speed_outlined, size: 19),
-                          selectedIcon: const Icon(Icons.speed, size: 19),
-                          onPressed: () {
-                            setState(() => showStats = !showStats);
-                            revealChrome();
-                          },
-                        ),
-                        IconButton(
-                          style: IconButton.styleFrom(
-                            minimumSize: const Size(32, 32),
-                            padding: const EdgeInsets.all(4),
-                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                          ),
-                          tooltip: autoHide
-                              ? 'Giữ thanh công cụ luôn hiện'
-                              : 'Tự ẩn thanh công cụ',
-                          isSelected: !autoHide,
-                          icon: const Icon(Icons.push_pin_outlined, size: 18),
-                          selectedIcon: const Icon(Icons.push_pin, size: 18),
-                          onPressed: () {
-                            setState(() => autoHide = !autoHide);
-                            revealChrome();
-                          },
-                        ),
-                      ],
+                        );
+                      },
                     ),
                   ),
                   if (error != null && error.isNotEmpty)
@@ -1763,7 +1804,7 @@ class _ObserveWindowState extends State<ObserveWindow> with WindowListener {
                                 'request-accessibility-permission',
                               ),
                               onPressed: requestMacAccessibility,
-                              icon: const Icon(
+                              icon: const TIcon(
                                 Icons.accessibility_new,
                                 size: 15,
                               ),

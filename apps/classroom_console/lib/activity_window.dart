@@ -1,3 +1,4 @@
+import 'icon_tints.dart';
 import 'dart:async';
 import 'package:flutter/services.dart';
 import 'package:flutter/material.dart';
@@ -266,9 +267,12 @@ class _ActivityWindowState extends State<ActivityWindow> {
       return;
     }
     final deadline = DateTime.now().add(const Duration(seconds: 20));
+    var attempt = 0;
     while (DateTime.now().isBefore(deadline)) {
       if (!mounted || mine != generation) return;
-      await Future<void>.delayed(const Duration(milliseconds: 250));
+      await Future<void>.delayed(
+        resultPollDelay(attempt++, const Duration(milliseconds: 250)),
+      );
       final answer = await agent.request('fs_result', input: {'id': id});
       if (!mounted || mine != generation) return;
       if (answer['ok'] != true) {
@@ -339,22 +343,22 @@ class _ActivityWindowState extends State<ActivityWindow> {
                   indicatorColor: _teal,
                   tabs: [
                     Tab(
-                      icon: const Icon(Icons.window_outlined, size: 19),
+                      icon: const TIcon(Icons.window_outlined, size: 19),
                       text:
                           'Cửa sổ đang mở${r == null ? '' : ' (${(r['apps'] as List? ?? const []).length})'}',
                     ),
                     Tab(
-                      icon: const Icon(Icons.tab_outlined, size: 19),
+                      icon: const TIcon(Icons.tab_outlined, size: 19),
                       text:
                           'Tab trình duyệt${r == null ? '' : ' (${(r['tabs'] as List? ?? const []).length})'}',
                     ),
                     Tab(
-                      icon: const Icon(Icons.download_outlined, size: 19),
+                      icon: const TIcon(Icons.download_outlined, size: 19),
                       text:
                           'Tải xuống hôm nay${r == null ? '' : ' (${_downloads(r).length})'}',
                     ),
                     Tab(
-                      icon: const Icon(Icons.content_paste_outlined, size: 19),
+                      icon: const TIcon(Icons.content_paste_outlined, size: 19),
                       text:
                           'Clipboard hôm nay${r == null ? '' : ' (${_clipboard(r).length})'}',
                     ),
@@ -532,7 +536,7 @@ Future<void> _copy(BuildContext context, String text, String what) async {
         width: 320,
         content: Row(
           children: [
-            const Icon(Icons.check_circle, color: Colors.white, size: 18),
+            const TIcon(Icons.check_circle, color: Colors.white, size: 18),
             const SizedBox(width: 8),
             Expanded(child: Text('Đã sao chép $what')),
           ],
@@ -573,7 +577,7 @@ class _Header extends StatelessWidget {
               color: _teal.withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(10),
             ),
-            child: const Icon(
+            child: const TIcon(
               Icons.monitor_heart_outlined,
               color: _teal,
               size: 20,
@@ -610,7 +614,7 @@ class _Header extends StatelessWidget {
                 : 'Đã tạm dừng tự làm mới',
             child: IconButton(
               visualDensity: VisualDensity.compact,
-              icon: Icon(
+              icon: TIcon(
                 autoRefresh ? Icons.sync : Icons.sync_disabled,
                 size: 19,
                 color: autoRefresh ? _teal : Colors.blueGrey,
@@ -621,7 +625,7 @@ class _Header extends StatelessWidget {
           IconButton(
             visualDensity: VisualDensity.compact,
             tooltip: 'Xóa lịch sử và tính lại từ đầu',
-            icon: const Icon(Icons.delete_sweep_outlined, size: 20),
+            icon: const TIcon(Icons.delete_sweep_outlined, size: 20),
             onPressed: onClear,
           ),
           IconButton(
@@ -633,7 +637,7 @@ class _Header extends StatelessWidget {
                     height: 16,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
-                : const Icon(Icons.refresh, size: 19),
+                : const TIcon(Icons.refresh, size: 19),
             onPressed: loading ? null : onRefresh,
           ),
         ],
@@ -653,7 +657,7 @@ class _MonitoringOff extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(
+          const TIcon(
             Icons.visibility_off_outlined,
             size: 40,
             color: Colors.blueGrey,
@@ -681,7 +685,7 @@ class _MonitoringOff extends StatelessWidget {
                       color: Colors.white,
                     ),
                   )
-                : const Icon(Icons.visibility, size: 18),
+                : const TIcon(Icons.visibility, size: 18),
             label: Text(
               enabling ? 'Đang thu thập từ học viên…' : 'Bật cho cả lớp',
             ),
@@ -921,7 +925,11 @@ class _RowState extends State<_Row> {
                 AnimatedOpacity(
                   duration: const Duration(milliseconds: 120),
                   opacity: hover ? 1 : 0,
-                  child: const Icon(Icons.copy_rounded, size: 15, color: _teal),
+                  child: const TIcon(
+                    Icons.copy_rounded,
+                    size: 15,
+                    color: _teal,
+                  ),
                 ),
               ],
             ),
@@ -984,7 +992,7 @@ class _Search extends StatelessWidget {
         style: const TextStyle(fontSize: 13),
         decoration: InputDecoration(
           hintText: hint,
-          prefixIcon: const Icon(Icons.search, size: 18),
+          prefixIcon: const TIcon(Icons.search, size: 18),
           filled: true,
           fillColor: Colors.white,
           contentPadding: EdgeInsets.zero,
@@ -1233,7 +1241,7 @@ class _DownloadsTabState extends State<_DownloadsTab> {
                       color: color.withValues(alpha: 0.12),
                       borderRadius: BorderRadius.circular(8),
                     ),
-                    child: Icon(icon, size: 18, color: color),
+                    child: TIcon(icon, size: 18, color: color),
                   ),
                   title: '${d['name']}',
                   fresh: widget.isFresh(_downloadKey(d)),
@@ -1487,7 +1495,7 @@ class _ClipboardTabState extends State<_ClipboardTab> {
     final lineCount = text.split('\n').length;
     final duplicates = ((c['duplicates'] as num?) ?? 0).toInt();
     return _Row(
-      leading: Icon(
+      leading: TIcon(
         code ? Icons.code : Icons.content_paste,
         size: 18,
         color: code ? _codeKeyword : Colors.blueGrey,
@@ -1554,7 +1562,6 @@ class _ClipboardDetail extends StatelessWidget {
       height: 380,
       scrollable: false,
       actions: [
-        AppDialog.cancel(context, label: 'Đóng'),
         AppDialog.primary(
           onPressed: () => _copy(context, text, 'nội dung'),
           icon: Icons.copy_rounded,

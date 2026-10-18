@@ -1,3 +1,8 @@
+import 'icon_tints.dart';
+import 'student_sort.dart';
+import 'live_activity.dart';
+import 'ai_sites_dialog.dart';
+import 'evidence_view.dart';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
@@ -5,6 +10,8 @@ import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:screen_retriever/screen_retriever.dart';
 import 'agent.dart';
+import 'performance_toggle.dart';
+import 'app_icons.dart';
 import 'observe.dart';
 import 'media_health.dart';
 import 'diagnostics_dialog.dart';
@@ -66,6 +73,8 @@ Future<void> main(List<String> args) async {
   final appsIds = agent.option('--apps-ids');
   final hardware = agent.option('--hardware-control') != null;
   final terminalId = agent.option('--terminal-id');
+  // Every window process shares the Teacher's store of site icons.
+  FaviconCache.instance.bind(agent);
   const lifecycle = MethodChannel('classroom/lifecycle');
   lifecycle.setMethodCallHandler((call) async {
     if (call.method == 'reopenConsole' &&
@@ -341,6 +350,7 @@ class _ConsoleState extends State<Console> with WindowListener {
   bool preparingFile = false;
   bool gridAuto = true;
   bool showOffline = true;
+  StudentSort sortMode = StudentSort.none;
   double gridSize = 300;
   final selected = <String>{};
   int request = 0;
@@ -375,6 +385,13 @@ class _ConsoleState extends State<Console> with WindowListener {
             const []))
       '$id',
   };
+
+  /// A Student with an AI / chatbot website open in any tab (monitoring on).
+  bool aiHit(Map<String, dynamic> r) => liveAiHosts(liveOf(r)).isNotEmpty;
+
+  /// What this Student is doing right now (only while activity monitoring is on).
+  Map? liveOf(Map<String, dynamic> r) =>
+      liveActivityFor((agent.state['tools'] as Map?) ?? const {}, '${r['id']}');
 
   bool get activityMonitoringOn =>
       (agent.state['tools'] as Map? ?? const {})['activity_monitoring'] == true;
@@ -514,7 +531,7 @@ class _ConsoleState extends State<Console> with WindowListener {
           enabled: agent.connected && !agent.commandBusy,
           child: ListTile(
             dense: true,
-            leading: Icon(badgeEnabled ? Icons.badge : Icons.badge_outlined),
+            leading: TIcon(badgeEnabled ? Icons.badge : Icons.badge_outlined),
             title: Text(badgeEnabled ? 'Tắt giám sát' : 'Bật giám sát'),
             subtitle: Text(badgeLabel(agent, studentId)),
           ),
@@ -523,7 +540,7 @@ class _ConsoleState extends State<Console> with WindowListener {
           value: 'terminal',
           child: ListTile(
             dense: true,
-            leading: Icon(Icons.terminal),
+            leading: TIcon(Icons.terminal),
             title: Text('Terminal từ xa…'),
           ),
         ),
@@ -531,7 +548,7 @@ class _ConsoleState extends State<Console> with WindowListener {
           value: 'files',
           child: ListTile(
             dense: true,
-            leading: Icon(Icons.folder_open_outlined),
+            leading: TIcon(Icons.folder_open_outlined),
             title: Text('Thu tệp…'),
           ),
         ),
@@ -539,7 +556,7 @@ class _ConsoleState extends State<Console> with WindowListener {
           value: 'observe',
           child: ListTile(
             dense: true,
-            leading: Icon(Icons.monitor_outlined),
+            leading: TIcon(Icons.monitor_outlined),
             title: Text('Quan sát màn hình'),
           ),
         ),
@@ -548,7 +565,7 @@ class _ConsoleState extends State<Console> with WindowListener {
           enabled: agent.connected && !agent.commandBusy,
           child: ListTile(
             dense: true,
-            leading: Icon(
+            leading: TIcon(
               recordingActive
                   ? Icons.stop_circle_outlined
                   : Icons.video_camera_back_outlined,
@@ -567,7 +584,7 @@ class _ConsoleState extends State<Console> with WindowListener {
           enabled: agent.connected && !agent.commandBusy,
           child: const ListTile(
             dense: true,
-            leading: Icon(Icons.screenshot_monitor_outlined),
+            leading: TIcon(Icons.screenshot_monitor_outlined),
             title: Text('Chụp màn hình'),
             subtitle: Text('Lưu vào Desktop giảng viên'),
           ),
@@ -583,7 +600,7 @@ class _ConsoleState extends State<Console> with WindowListener {
               agent.state['source_id'] != row['id'],
           child: const ListTile(
             dense: true,
-            leading: Icon(Icons.present_to_all),
+            leading: TIcon(Icons.present_to_all),
             title: Text(Vi.presentStudent),
           ),
         ),
@@ -616,6 +633,26 @@ class _ConsoleState extends State<Console> with WindowListener {
         'id': recordingSession['id'] as String,
         'student_id': studentId,
       });
+      if (!mounted) return;
+      final targets = (recordingSession['targets'] as List? ?? const [])
+          .whereType<Map>();
+      final target = targets.where((t) => t['id'] == studentId).firstOrNull;
+      final folder = '${target?['folder'] ?? recordingSession['folder'] ?? ''}';
+      final sessionId = recordingSession['id'] as String;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          duration: const Duration(seconds: 12),
+          content: Text(
+            'Đã dừng ghi màn hình ${row['name']}. '
+            'Video được lưu tại:\n$folder\n(đoạn cuối sẽ tự tải về trong giây lát)',
+          ),
+          action: SnackBarAction(
+            label: 'Mở thư mục',
+            onPressed: () =>
+                agent.request('recording_open', input: {'id': sessionId}),
+          ),
+        ),
+      );
     } else if (choice == 'screenshot') {
       try {
         await screenshotStudent(row);
@@ -835,6 +872,8 @@ class _ConsoleState extends State<Console> with WindowListener {
     wasSharing = agent.state['phase'] == 'sharing';
     havePresentationState = agent.state.containsKey('phase');
     agent.addListener(changed);
+    // What evidence already exists when the console opens is not news.
+    WidgetsBinding.instance.addPostFrameCallback((_) => announceEvidence());
     toolActivity.addListener(refresh);
     windowManager.addListener(this);
     windowManager.setPreventClose(true);
@@ -882,13 +921,57 @@ class _ConsoleState extends State<Console> with WindowListener {
     if (mounted) setState(() {});
   }
 
+  final seenEvidence = <String>{};
+  bool evidenceBaselined = false;
+
+  /// Tells the Teacher when new evidence arrives (not for what was already there).
+  void announceEvidence() {
+    final tools = agent.state['tools'];
+    if (tools is! Map || !tools.containsKey('evidence')) return;
+    final items = evidenceItems(tools);
+    final fresh = [
+      for (final e in items)
+        if (!seenEvidence.contains(e.id)) e,
+    ];
+    seenEvidence
+      ..clear()
+      ..addAll(items.map((e) => e.id));
+    if (!evidenceBaselined) {
+      evidenceBaselined = true;
+      return;
+    }
+    if (fresh.isEmpty || !mounted) return;
+    final first = fresh.first;
+    final text = fresh.length == 1
+        ? '${evidenceWho(agent, first.student)} đang dùng ${first.label} — đã lưu ảnh minh chứng'
+        : '${fresh.length} ảnh minh chứng mới về việc dùng website AI';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        duration: const Duration(seconds: 10),
+        backgroundColor: const Color(0xff7c2d12),
+        content: Text(text),
+        action: SnackBarAction(
+          label: 'Xem',
+          textColor: Colors.white,
+          onPressed: () => showEvidence(
+            context,
+            agent,
+            studentId: fresh.length == 1 ? first.student : null,
+          ),
+        ),
+      ),
+    );
+  }
+
   void changed() {
+    announceEvidence();
     if (!loadedView && agent.connected) {
       view =
           agent.preferences['view'] as String? ??
           (agent.preferences['grid'] == false ? 'list' : 'grid');
       gridAuto = agent.preferences['grid_auto'] as bool? ?? true;
       showOffline = agent.preferences['show_offline'] as bool? ?? true;
+      sortMode = StudentSort.fromId(agent.preferences['sort']);
       gridSize = (agent.preferences['grid_size'] as num? ?? 300)
           .toDouble()
           .clamp(180, 480);
@@ -942,14 +1025,17 @@ class _ConsoleState extends State<Console> with WindowListener {
 
   @override
   Widget build(BuildContext context) {
-    final rows = agent.students
-        .where((r) => showOffline || r['online'] == true)
-        .where(
-          (r) => '${r['name']} ${r['ip']}'.toLowerCase().contains(
-            query.toLowerCase(),
-          ),
-        )
-        .toList();
+    final rows = sortStudents(
+      agent.students
+          .where((r) => showOffline || r['online'] == true)
+          .where(
+            (r) => '${r['name']} ${r['ip']}'.toLowerCase().contains(
+              query.toLowerCase(),
+            ),
+          )
+          .toList(),
+      sortMode,
+    );
     final online = agent.students.where((r) => r['online'] == true).length;
     final capturePermissionError =
         agent.error?.contains('TCC') == true ||
@@ -986,7 +1072,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 child: Row(
                   children: [
-                    const Icon(
+                    const TIcon(
                       Icons.school_outlined,
                       color: Colors.white,
                       size: 18,
@@ -1048,7 +1134,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                       IconButton(
                         tooltip: 'Quyền macOS',
                         onPressed: () => showMacPermissions(context, agent),
-                        icon: const Icon(
+                        icon: const TIcon(
                           Icons.verified_user_outlined,
                           size: 17,
                           color: Colors.white70,
@@ -1061,7 +1147,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                         padding: EdgeInsets.zero,
                         tooltip: 'Cài đặt lớp học',
                         onPressed: idle ? settings : null,
-                        icon: Icon(
+                        icon: TIcon(
                           Icons.settings_outlined,
                           size: 17,
                           color: idle ? Colors.white70 : Colors.white24,
@@ -1080,7 +1166,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                           await windowManager.setPreventClose(false);
                           await windowManager.destroy();
                         },
-                        icon: const Icon(
+                        icon: const TIcon(
                           Icons.power_settings_new,
                           color: Colors.white70,
                           size: 17,
@@ -1169,7 +1255,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                             onPressed: canSwitch
                                 ? () => agent.command('switch_source')
                                 : null,
-                            icon: const Icon(Icons.screen_share_outlined),
+                            icon: const TIcon(Icons.screen_share_outlined),
                           ),
                         if (agent.connected &&
                             phase == 'idle' &&
@@ -1183,7 +1269,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                                 : null,
                             icon: Badge(
                               label: Text('${onlineSelected.length}'),
-                              child: const Icon(Icons.screen_share_outlined),
+                              child: const TIcon(Icons.screen_share_outlined),
                             ),
                           ),
                         if (canPresentSelected)
@@ -1198,7 +1284,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                                     onlineSelected.single != sourceId
                                 ? () => presentStudent(onlineSelected)
                                 : null,
-                            icon: const Icon(Icons.present_to_all),
+                            icon: const TIcon(Icons.present_to_all),
                           ),
                       ].expand((w) => [w, const SizedBox(width: 6)]).toList(),
                     );
@@ -1212,12 +1298,6 @@ class _ConsoleState extends State<Console> with WindowListener {
                             ),
                           ),
                     );
-                    final recordIds = selectionMode && selected.isNotEmpty
-                        ? onlineSelected.toList()
-                        : agent.students
-                              .where((r) => r['online'] == true)
-                              .map((r) => '${r['id']}')
-                              .toList();
                     final badgeIds = selectionMode && selected.isNotEmpty
                         ? selected.toList()
                         : agent.students.map((r) => '${r['id']}').toList();
@@ -1241,6 +1321,22 @@ class _ConsoleState extends State<Console> with WindowListener {
                           tooltip: 'Giới hạn truy cập Internet',
                           badge: restrictedStudents(agent).length,
                           onPressed: toolsEnabled ? internetAccess : null,
+                        ),
+                        RibbonItem(
+                          icon: Icons.smart_toy_outlined,
+                          label: 'Website AI',
+                          tooltip:
+                              'Danh sách website AI/chatbot và nút chặn tất cả',
+                          active: AiSitesState.of(
+                            (agent.state['tools'] as Map?) ?? const {},
+                          ).blocking,
+                          badge: evidenceItems(
+                            (agent.state['tools'] as Map?) ?? const {},
+                          ).length,
+                          badgeColor: const Color(0xffc2410c),
+                          onPressed: toolsEnabled
+                              ? () => showAiSites(context, agent)
+                              : null,
                         ),
                         RibbonItem(
                           icon: Icons.block_outlined,
@@ -1354,9 +1450,9 @@ class _ConsoleState extends State<Console> with WindowListener {
                           icon: Icons.video_camera_back_outlined,
                           label: 'Ghi màn hình',
                           tooltip:
-                              'Ghi màn hình các máy đã chọn hoặc toàn bộ máy online',
+                              'Quản lý các phiên ghi màn hình. Muốn ghi một máy: nhấp chuột phải vào máy đó.',
                           onPressed: agent.connected
-                              ? () => showRecordings(context, agent, recordIds)
+                              ? () => showRecordings(context, agent, const [])
                               : null,
                         ),
                         RibbonItem(
@@ -1418,7 +1514,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                                 horizontal: 10,
                                 vertical: 8,
                               ),
-                              prefixIcon: const Icon(Icons.search, size: 17),
+                              prefixIcon: const TIcon(Icons.search, size: 17),
                               prefixIconConstraints: const BoxConstraints(
                                 minWidth: 32,
                               ),
@@ -1437,7 +1533,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                           onPressed: agent.connected && !agent.commandBusy
                               ? agent.rescan
                               : null,
-                          icon: const Icon(Icons.refresh, size: 18),
+                          icon: const TIcon(Icons.refresh, size: 18),
                         ),
                         Tooltip(
                           message: selectionMode
@@ -1450,7 +1546,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                                     selectionMode = false;
                                     selected.clear();
                                   }),
-                                  icon: const Icon(Icons.check, size: 16),
+                                  icon: const TIcon(Icons.check, size: 16),
                                   label: Text(
                                     selected.isEmpty
                                         ? Vi.donePicking
@@ -1461,7 +1557,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                                   style: toolbarButton(),
                                   onPressed: () =>
                                       setState(() => selectionMode = true),
-                                  icon: const Icon(Icons.checklist, size: 16),
+                                  icon: const TIcon(Icons.checklist, size: 16),
                                   label: const Text(Vi.pickMachines),
                                 ),
                         ),
@@ -1485,6 +1581,31 @@ class _ConsoleState extends State<Console> with WindowListener {
                             child: const Text(Vi.clearSelection),
                           ),
                         ],
+                        PopupMenuButton<StudentSort>(
+                          key: const ValueKey('student-sort-menu'),
+                          tooltip: 'Sắp xếp: ${sortMode.label}',
+                          initialValue: sortMode,
+                          icon: TIcon(
+                            sortMode == StudentSort.nameDesc ||
+                                    sortMode == StudentSort.ipDesc
+                                ? Icons.arrow_downward
+                                : Icons.sort,
+                            size: 18,
+                          ),
+                          onSelected: (value) {
+                            setState(() => sortMode = value);
+                            agent.savePreferences({'sort': value.id});
+                          },
+                          itemBuilder: (_) => [
+                            for (final mode in StudentSort.values)
+                              CheckedPopupMenuItem(
+                                value: mode,
+                                checked: mode == sortMode,
+                                child: Text(mode.label),
+                              ),
+                          ],
+                        ),
+                        const SizedBox(width: 4),
                         ToggleButtons(
                           borderRadius: BorderRadius.circular(6),
                           constraints: const BoxConstraints(
@@ -1505,15 +1626,18 @@ class _ConsoleState extends State<Console> with WindowListener {
                           children: const [
                             Tooltip(
                               message: 'Dạng lưới',
-                              child: Icon(Icons.grid_view, size: 16),
+                              child: TIcon(Icons.grid_view, size: 16),
                             ),
                             Tooltip(
                               message: 'Dạng danh sách',
-                              child: Icon(Icons.view_list_outlined, size: 17),
+                              child: TIcon(Icons.view_list_outlined, size: 17),
                             ),
                             Tooltip(
                               message: 'Danh sách gọn',
-                              child: Icon(Icons.format_list_bulleted, size: 17),
+                              child: TIcon(
+                                Icons.format_list_bulleted,
+                                size: 17,
+                              ),
                             ),
                           ],
                         ),
@@ -1553,7 +1677,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(
+                            TIcon(
                               Icons.devices_outlined,
                               size: 64,
                               color: Colors.blueGrey.shade300,
@@ -1605,7 +1729,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                 ),
                 child: Row(
                   children: [
-                    Icon(
+                    TIcon(
                       agent.connected ? Icons.link : Icons.link_off,
                       size: 16,
                       color: Colors.blueGrey,
@@ -1625,7 +1749,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                       ),
                     ),
                     if (view == 'grid') ...[
-                      const Icon(
+                      const TIcon(
                         Icons.photo_size_select_large,
                         size: 15,
                         color: Colors.blueGrey,
@@ -1656,7 +1780,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                       IconButton(
                         key: const ValueKey('grid-auto-toggle'),
                         tooltip: 'Tự động sắp xếp kích thước ô máy',
-                        icon: const Icon(
+                        icon: const TIcon(
                           Icons.auto_awesome_mosaic_outlined,
                           size: 18,
                         ),
@@ -1677,7 +1801,7 @@ class _ConsoleState extends State<Console> with WindowListener {
                       tooltip: showOffline
                           ? 'Ẩn máy offline'
                           : 'Hiện máy offline',
-                      icon: Icon(
+                      icon: TIcon(
                         showOffline
                             ? Icons.visibility_off_outlined
                             : Icons.visibility_outlined,
@@ -1702,7 +1826,12 @@ class _ConsoleState extends State<Console> with WindowListener {
                       },
                     ),
                     const SizedBox(width: 16),
-                    Icon(
+                    ListenableBuilder(
+                      listenable: agent,
+                      builder: (_, _) => PerformanceToggle(agent: agent),
+                    ),
+                    const SizedBox(width: 16),
+                    TIcon(
                       Icons.computer_outlined,
                       size: 15,
                       color: online > 0
@@ -1783,8 +1912,48 @@ class _ConsoleState extends State<Console> with WindowListener {
       builder: (_) =>
           TeacherSettingsDialog(agent: agent, selected: selected.toList()),
     );
+    // Look-and-feel choices made in Settings take effect right away.
+    if (mounted) {
+      setState(() {
+        view = agent.preferences['view'] as String? ?? view;
+        showOffline = agent.preferences['show_offline'] as bool? ?? showOffline;
+        sortMode = StudentSort.fromId(agent.preferences['sort']);
+        gridSize = (agent.preferences['grid_size'] as num? ?? gridSize)
+            .toDouble()
+            .clamp(180, 480);
+      });
+    }
     if (result != null) {
       await agent.configure(result.ip, result.port, result.overlay);
+    }
+  }
+
+  /// Console preference with a default (Settings → Danh sách & giám sát...).
+  T pref<T>(String key, T fallback) {
+    final value = agent.preferences[key];
+    if (value is num && fallback is int) return value.toInt() as T;
+    return value is T ? value : fallback;
+  }
+
+  /// Seconds without a new picture after which a computer is flagged.
+  int get staleMs => pref<int>('ui_stale_seconds', 10) * 1000;
+
+  /// What to show for a computer on its tile: name, address or both.
+  String get labelMode => pref<String>('ui_label_mode', 'both');
+
+  /// The main line on a tile for the chosen label mode.
+  String primaryLabel(Map<String, dynamic> r) =>
+      labelMode == 'ip' ? '${r['ip']}' : '${r['name']}';
+
+  void click(Map<String, dynamic> r) {
+    final id = r['id'] as String;
+    if (selectionMode) {
+      toggle(id);
+    } else if (pref<String>('ui_click', 'observe') == 'select') {
+      setState(() => selectionMode = true);
+      toggle(id);
+    } else {
+      inspect(r);
     }
   }
 
@@ -1805,7 +1974,7 @@ class _ConsoleState extends State<Console> with WindowListener {
     if (r['monitoring'] == 'unavailable') {
       return 'Chưa có ảnh màn hình';
     }
-    if ((r['thumbnail_age_ms'] as num? ?? 0) > 10000) {
+    if ((r['thumbnail_age_ms'] as num? ?? 0) > staleMs) {
       return 'Ảnh màn hình đã cũ';
     }
     return 'Online';
@@ -1816,9 +1985,16 @@ class _ConsoleState extends State<Console> with WindowListener {
     final internet = restrictedStudents(agent)['${r['id']}'];
     final locked = lockedIds.contains(r['id']);
     final clipboardBlocked = clipboardBlockedIds.contains(r['id']);
+    final appsBlocked = appsBlockedStudents(agent).contains('${r['id']}');
+    final evidence = evidenceCountFor(
+      (agent.state['tools'] as Map?) ?? const {},
+      '${r['id']}',
+    );
     final badge = badgeState(agent, '${r['id']}');
-    if (!locked &&
+    if (evidence == 0 &&
+        !locked &&
         !clipboardBlocked &&
+        !appsBlocked &&
         internet == null &&
         badge['enabled'] != true &&
         badge['status'] != 'error') {
@@ -1830,7 +2006,7 @@ class _ConsoleState extends State<Console> with WindowListener {
         if (badge['enabled'] == true || badge['status'] == 'error')
           Tooltip(
             message: badgeLabel(agent, '${r['id']}'),
-            child: Icon(
+            child: TIcon(
               Icons.visibility,
               size: 15,
               color: badge['status'] == 'applied'
@@ -1841,21 +2017,59 @@ class _ConsoleState extends State<Console> with WindowListener {
         if (internet != null)
           Tooltip(
             message: 'Internet: ${modeLabel(internet)}',
-            child: const Icon(
+            child: const TIcon(
               Icons.public_off,
               size: 15,
               color: Color(0xffb83b40),
             ),
           ),
+        if (evidence > 0)
+          Tooltip(
+            message:
+                'Có $evidence ảnh minh chứng học viên dùng website AI hôm nay — bấm để xem',
+            child: InkWell(
+              key: ValueKey('evidence-badge-${r['id']}'),
+              borderRadius: BorderRadius.circular(8),
+              onTap: () =>
+                  showEvidence(context, agent, studentId: '${r['id']}'),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 3),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.photo_camera,
+                      size: 14,
+                      color: Color(0xffc2410c),
+                    ),
+                    const SizedBox(width: 2),
+                    Text(
+                      '$evidence',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xffc2410c),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        if (appsBlocked)
+          const Tooltip(
+            message: 'Đang chặn ứng dụng trên máy này',
+            child: TIcon(Icons.block, size: 15, color: Color(0xffb83b40)),
+          ),
         if (locked)
           const Tooltip(
             message: 'Màn hình đang khóa',
-            child: Icon(Icons.lock, size: 15, color: Color(0xffdb8a22)),
+            child: TIcon(Icons.lock, size: 15, color: Color(0xffdb8a22)),
           ),
         if (clipboardBlocked)
           const Tooltip(
             message: 'Đã chặn clipboard',
-            child: Icon(
+            child: TIcon(
               Icons.content_paste_off,
               size: 15,
               color: Color(0xffdb8a22),
@@ -1878,14 +2092,14 @@ class _ConsoleState extends State<Console> with WindowListener {
     } else if (r['monitoring'] != 'paused' &&
         r['monitoring'] != 'observing' &&
         (r['monitoring'] == 'unavailable' ||
-            (r['thumbnail_age_ms'] as num? ?? 0) > 10000)) {
+            (r['thumbnail_age_ms'] as num? ?? 0) > staleMs)) {
       color = const Color(0xffdb8a22);
     } else {
       color = const Color(0xff2b9c55);
     }
     return Tooltip(
       message: status(r),
-      child: Icon(Icons.circle, size: 9, color: color),
+      child: TIcon(Icons.circle, size: 9, color: color),
     );
   }
 
@@ -1945,12 +2159,20 @@ class _ConsoleState extends State<Console> with WindowListener {
     return Material(
       color: selected.contains(id)
           ? const Color(0xffe1f0f2)
+          : aiHit(r)
+          ? const Color(0xfffff1e6)
           : r['online'] == true
           ? Colors.white
           : offlineSurface,
-      borderRadius: BorderRadius.circular(6),
+      borderRadius: aiHit(r) ? null : BorderRadius.circular(6),
+      shape: aiHit(r)
+          ? RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(6),
+              side: const BorderSide(color: Color(0x88c2410c)),
+            )
+          : null,
       child: InkWell(
-        onTap: () => selectionMode ? toggle(id) : inspect(r),
+        onTap: () => click(r),
         onSecondaryTapDown: (d) => collectMenu(r, d.globalPosition),
         borderRadius: BorderRadius.circular(6),
         child: SizedBox(
@@ -1967,13 +2189,25 @@ class _ConsoleState extends State<Console> with WindowListener {
               connectionDot(r),
               const SizedBox(width: 12),
               Expanded(
+                flex: 3,
                 child: Text(
-                  '${r['name']}',
+                  primaryLabel(r),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(fontWeight: FontWeight.w600),
                 ),
               ),
+              if (liveOf(r) case final live?)
+                Expanded(
+                  flex: 4,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    child: LiveActivity(
+                      summary: live,
+                      layout: LiveLayout.compact,
+                    ),
+                  ),
+                ),
               if (mediaHealthLabel(r).isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.only(right: 12),
@@ -1982,13 +2216,14 @@ class _ConsoleState extends State<Console> with WindowListener {
                     style: const TextStyle(fontSize: 11),
                   ),
                 ),
-              SizedBox(
-                width: 145,
-                child: Text(
-                  '${r['ip']}',
-                  style: const TextStyle(color: Colors.blueGrey),
+              if (labelMode == 'both')
+                SizedBox(
+                  width: 145,
+                  child: Text(
+                    '${r['ip']}',
+                    style: const TextStyle(color: Colors.blueGrey),
+                  ),
                 ),
-              ),
               moreButton(r),
             ],
           ),
@@ -2020,7 +2255,7 @@ class _ConsoleState extends State<Console> with WindowListener {
               : const Color(0xffc6cfd8),
           child: bytes == null
               ? const Center(
-                  child: Icon(
+                  child: TIcon(
                     Icons.desktop_windows_outlined,
                     size: 40,
                     color: Colors.blueGrey,
@@ -2045,7 +2280,7 @@ class _ConsoleState extends State<Console> with WindowListener {
       visualDensity: VisualDensity.compact,
       constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
       padding: const EdgeInsets.all(4),
-      icon: const Icon(Icons.more_vert, size: 18),
+      icon: const TIcon(Icons.more_vert, size: 18),
       onPressed: r['online'] == true
           ? () {
               final box = context.findRenderObject() as RenderBox;
@@ -2059,17 +2294,17 @@ class _ConsoleState extends State<Console> with WindowListener {
   );
 
   Widget recordingIndicator(Map<String, dynamic> r) {
-    if (!studentIsRecording(
-      (agent.state['tools'] as Map?) ?? const {},
-      '${r['id']}',
-    )) {
-      return const SizedBox.shrink();
-    }
-    return const Tooltip(
-      message: 'Đang ghi màn hình',
-      child: Padding(
+    final tools = (agent.state['tools'] as Map?) ?? const {};
+    final id = '${r['id']}';
+    if (!studentIsRecording(tools, id)) return const SizedBox.shrink();
+    final elapsed = recordingElapsedSeconds(tools, id);
+    return Tooltip(
+      message: elapsed == null
+          ? 'Đang ghi màn hình'
+          : 'Đang ghi màn hình • đã ghi ${recordingClock(elapsed)}',
+      child: const Padding(
         padding: EdgeInsets.symmetric(horizontal: 5),
-        child: Icon(Icons.fiber_manual_record, size: 10, color: Colors.red),
+        child: BlinkingRecordDot(),
       ),
     );
   }
@@ -2096,7 +2331,7 @@ class _ConsoleState extends State<Console> with WindowListener {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                '${r['name']}',
+                primaryLabel(r),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
@@ -2105,16 +2340,17 @@ class _ConsoleState extends State<Console> with WindowListener {
                   height: 1.15,
                 ),
               ),
-              Text(
-                '${r['ip']}',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: list ? 11 : 10,
-                  height: 1.15,
-                  color: Colors.blueGrey,
+              if (labelMode == 'both')
+                Text(
+                  '${r['ip']}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: list ? 11 : 10,
+                    height: 1.15,
+                    color: Colors.blueGrey,
+                  ),
                 ),
-              ),
               if (list && mediaHealthLabel(r).isNotEmpty)
                 Text(
                   mediaHealthLabel(r),
@@ -2136,18 +2372,26 @@ class _ConsoleState extends State<Console> with WindowListener {
       ],
     );
     return Card(
-      color: r['online'] == true ? null : offlineSurface,
+      color: aiHit(r)
+          ? const Color(0xfffff7f0)
+          : r['online'] == true
+          ? null
+          : offlineSurface,
       clipBehavior: Clip.antiAlias,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(14),
         side: BorderSide(
-          color: chosen ? const Color(0xff156b79) : const Color(0xffdfe5eb),
-          width: chosen ? 2 : 1,
+          color: chosen
+              ? const Color(0xff156b79)
+              : aiHit(r)
+              ? const Color(0xffc2410c)
+              : const Color(0xffdfe5eb),
+          width: chosen || aiHit(r) ? 2 : 1,
         ),
       ),
       child: InkWell(
         borderRadius: BorderRadius.circular(14),
-        onTap: () => selectionMode ? toggle(id) : inspect(r),
+        onTap: () => click(r),
         onSecondaryTapDown: (d) => collectMenu(r, d.globalPosition),
         child: list
             ? Row(
@@ -2156,18 +2400,60 @@ class _ConsoleState extends State<Console> with WindowListener {
                   // card's own clip rounds the corners.
                   SizedBox(width: 176, child: image(r, flat: true)),
                   const SizedBox(width: 14),
-                  Expanded(
-                    child: Padding(
-                      padding: const EdgeInsets.only(right: 12),
-                      child: title,
+                  if (liveOf(r) case final live?) ...[
+                    SizedBox(width: 230, child: title),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.only(right: 12),
+                        child: LiveActivity(
+                          summary: live,
+                          layout: LiveLayout.list,
+                        ),
+                      ),
                     ),
-                  ),
+                  ] else
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.only(right: 12),
+                        child: title,
+                      ),
+                    ),
                 ],
               )
             : Stack(
                 fit: StackFit.expand,
                 children: [
                   image(r, flushTop: true, crop: true),
+                  if (mediaNumbersLabel(r).isNotEmpty)
+                    Positioned(
+                      top: 6,
+                      right: 6,
+                      child: Tooltip(
+                        message:
+                            'Tốc độ khung hình hiển thị và tốc độ nhận tín hiệu',
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: const Color(0xcc1b2a36),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 2,
+                            ),
+                            child: Text(
+                              mediaNumbersLabel(r),
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: Colors.white,
+                                fontFeatures: [FontFeature.tabularFigures()],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
                   Positioned(
                     left: 0,
                     right: 0,
@@ -2178,7 +2464,20 @@ class _ConsoleState extends State<Console> with WindowListener {
                           : offlineSurface.withValues(alpha: 0.92),
                       child: Padding(
                         padding: const EdgeInsets.fromLTRB(6, 3, 6, 3),
-                        child: SizedBox(height: 28, child: title),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            SizedBox(height: 28, child: title),
+                            if (liveOf(r) case final live?)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 3),
+                                child: LiveActivity(
+                                  summary: live,
+                                  layout: LiveLayout.grid,
+                                ),
+                              ),
+                          ],
+                        ),
                       ),
                     ),
                   ),

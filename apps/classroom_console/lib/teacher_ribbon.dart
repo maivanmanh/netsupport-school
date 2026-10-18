@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'icon_tints.dart';
 
 /// Vietnamese UI strings for the Teacher main screen. Kept in one place so a
 /// later language switch only has to replace this table.
@@ -181,7 +182,13 @@ class _TabHeader extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(tab.icon, size: 16, color: selected ? _teal : Colors.blueGrey),
+          Icon(
+            tab.icon,
+            size: 16,
+            color: selected
+                ? IconTints.of(tab.icon)
+                : IconTints.of(tab.icon).withValues(alpha: 0.6),
+          ),
           const SizedBox(width: 6),
           Text(
             tab.title,
@@ -216,7 +223,7 @@ class _RibbonButton extends StatelessWidget {
           ? Icons.visibility
           : item.icon,
       size: 18,
-      color: color,
+      color: enabled ? IconTints.of(item.icon) : color,
     );
     if (item.badge > 0) {
       icon = Badge(

@@ -1,3 +1,4 @@
+import 'icon_tints.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
@@ -73,11 +74,20 @@ class _AppsWindowState extends State<AppsWindow> {
   // Which rows sort to the top: the selection as of the last load/apply, so
   // ticking a box does not make the row jump away from the cursor.
   Set<String> pinned = {};
-  String mode = _modeBlock;
-  bool enabled = false;
-  String baselineMode = _modeBlock;
   bool baselineEnabled = false;
   Set<String> baselineSelected = {};
+
+  /// Path rules, edited here and as last applied. They are a separate rule
+  /// from the program list: each tab applies on its own and sends the other
+  /// tab's *applied* state unchanged.
+  List<String> paths = [];
+  List<String> baselinePaths = [];
+  int tab = 0;
+  int? pathSelected;
+
+  /// A rule from the removed "only allow the ticked programs" mode is still in
+  /// force on the Students; it is replaced the next time the Teacher applies.
+  bool legacyAllowOnly = false;
   final search = TextEditingController();
   bool scanning = false, fetchingIcons = false, busy = false;
   int scanTotal = 0, scanDone = 0;
@@ -88,10 +98,8 @@ class _AppsWindowState extends State<AppsWindow> {
   bool loadedCache = false, firstEverScan = true, started = false;
   final jobs = <String>{};
 
-  bool get changed =>
-      enabled != baselineEnabled ||
-      mode != baselineMode ||
-      !setEquals(selected, baselineSelected);
+  bool get changed => !setEquals(selected, baselineSelected);
+  bool get pathsChanged => !listEquals(paths, baselinePaths);
 
   Map get caps =>
       (agent.state['tools'] as Map?)?['capabilities'] as Map? ?? const {};
@@ -134,35 +142,40 @@ class _AppsWindowState extends State<AppsWindow> {
 
   Future<void> loadAppliedPolicy() async {
     final response = await agent.request('app_policy_state');
-    if (!mounted || response['ok'] != true || changed) return;
+    if (!mounted || response['ok'] != true || changed || pathsChanged) return;
     final rule = (response['result'] as Map?)?['rule'];
     if (rule is! Map) return;
     final scope = rule['scope'];
     if (scope is List && !widget.studentIds.every(scope.contains)) return;
     final policy = rule['value'];
     if (policy is! Map) return;
-    setState(() {
-      enabled = policy['enabled'] == true;
-      mode = policy['mode'] == _modeAllowOnly ? _modeAllowOnly : _modeBlock;
-      selected = {for (final id in (policy['ids'] as List? ?? const [])) '$id'};
-      baselineEnabled = enabled;
-      baselineMode = mode;
-      baselineSelected = Set.of(selected);
-      pinned = Set.of(selected);
-    });
+    setState(() => loadPolicy(policy));
   }
 
   void applyPreferences() {
     final policy = agent.preferences['apps_policy'];
-    if (policy is Map) {
-      enabled = policy['enabled'] == true;
-      mode = policy['mode'] == _modeAllowOnly ? _modeAllowOnly : _modeBlock;
-      selected = {for (final id in (policy['ids'] as List? ?? const [])) '$id'};
-    }
-    baselineEnabled = enabled;
-    baselineMode = mode;
+    if (policy is Map) loadPolicy(policy);
+  }
+
+  /// Makes [policy] both the shown and the baseline state.
+  void loadPolicy(Map policy) {
+    final active = policy['enabled'] == true;
+    legacyAllowOnly = active && policy['mode'] == _modeAllowOnly;
+    selected = legacyAllowOnly
+        ? {}
+        : {for (final id in (policy['ids'] as List? ?? const [])) '$id'};
+    paths = [
+      for (final p in (policy['paths'] as List? ?? const []))
+        if ('$p'.trim().isNotEmpty) '$p'.trim(),
+    ];
+    baselineEnabled = active;
     baselineSelected = Set.of(selected);
+    baselinePaths = List.of(paths);
     pinned = Set.of(selected);
+    if (legacyAllowOnly) {
+      notice =
+          'Các máy đang áp dụng chế độ cũ “chỉ cho phép ứng dụng đã chọn”. Hãy đánh dấu các ứng dụng cần chặn rồi bấm Áp dụng để thay thế, hoặc bấm Gỡ hạn chế.';
+    }
   }
 
   // ---------------------------------------------------------------- cache
@@ -211,8 +224,11 @@ class _AppsWindowState extends State<AppsWindow> {
     if (started['ok'] != true || id == null) return null;
     jobs.add('$id');
     final deadline = DateTime.now().add(const Duration(seconds: 40));
+    var attempt = 0;
     while (mounted && gen == generation && DateTime.now().isBefore(deadline)) {
-      await Future<void>.delayed(const Duration(milliseconds: 600));
+      await Future<void>.delayed(
+        resultPollDelay(attempt++, const Duration(milliseconds: 600)),
+      );
       if (!mounted || gen != generation) break;
       final answer = await agent.request('fs_result', input: {'id': id});
       if (answer['ok'] != true) break;
@@ -395,14 +411,13 @@ class _AppsWindowState extends State<AppsWindow> {
     return 'Chưa nhận được xác nhận hoàn tất. Hãy kiểm tra các máy rồi thử lại.';
   }
 
+  /// Applies the program list. The path rules go along exactly as last applied.
   Future<void> apply({bool turnOff = false}) async {
     if (busy) return;
-    final enable = !turnOff && enabled;
-    if (!turnOff && enabled && selected.isEmpty) {
+    if (!turnOff && selected.isEmpty) {
       setState(
-        () => error = mode == _modeAllowOnly
-            ? 'Hãy đánh dấu ít nhất một ứng dụng được phép, hoặc gỡ hạn chế.'
-            : 'Hãy đánh dấu ít nhất một ứng dụng cần chặn, hoặc gỡ hạn chế.',
+        () => error =
+            'Hãy đánh dấu ít nhất một ứng dụng cần chặn, hoặc gỡ hạn chế.',
       );
       return;
     }
@@ -410,17 +425,54 @@ class _AppsWindowState extends State<AppsWindow> {
       for (final id in selected)
         if (inventory[id] != null) inventory[id]!.name,
     ]..sort();
+    await submit(
+      enable: !turnOff,
+      ids: selected,
+      pathList: baselinePaths,
+      title: turnOff ? 'Gỡ hạn chế ứng dụng?' : 'Áp dụng hạn chế ứng dụng?',
+      confirmLabel: turnOff ? 'Gỡ hạn chế' : 'Áp dụng',
+      destructive: !turnOff,
+      message: turnOff
+          ? 'Mọi hạn chế theo danh sách ứng dụng trên các máy đã chọn sẽ được gỡ.'
+          : '${names.length} ứng dụng được đánh dấu sẽ không chạy được trên các máy đã chọn và bản đang chạy bị đóng ngay. Hãy nhắc học viên lưu bài trước.',
+    );
+  }
+
+  /// Applies the path rules. The program list goes along as last applied.
+  Future<void> applyPaths() async {
+    if (busy || !pathsChanged) return;
+    final clearing = paths.isEmpty;
+    await submit(
+      enable: baselineEnabled,
+      ids: baselineSelected,
+      pathList: paths,
+      title: clearing
+          ? 'Gỡ chặn theo đường dẫn?'
+          : 'Áp dụng chặn theo đường dẫn?',
+      confirmLabel: clearing ? 'Gỡ chặn' : 'Áp dụng',
+      destructive: !clearing,
+      message: clearing
+          ? 'Mọi quy tắc chặn theo đường dẫn trên các máy đã chọn sẽ được gỡ.'
+          : '${paths.length} đường dẫn sẽ bị chặn khởi động trên các máy đã chọn; chương trình đang chạy trong đó bị đóng ngay. Hãy nhắc học viên lưu bài trước.',
+    );
+  }
+
+  Future<void> submit({
+    required bool enable,
+    required Set<String> ids,
+    required List<String> pathList,
+    required String title,
+    required String confirmLabel,
+    required String message,
+    required bool destructive,
+  }) async {
     final ok = await confirmDialog(
       context,
-      title: turnOff ? 'Gỡ hạn chế ứng dụng?' : 'Áp dụng hạn chế ứng dụng?',
+      title: title,
       icon: Icons.block_outlined,
-      destructive: !turnOff,
-      confirmLabel: turnOff ? 'Gỡ hạn chế' : 'Áp dụng',
-      message: turnOff
-          ? 'Mọi hạn chế ứng dụng trên các máy đã chọn sẽ được gỡ.'
-          : mode == _modeAllowOnly
-          ? 'Trên các máy đã chọn chỉ ${names.length} ứng dụng được đánh dấu mới chạy được; mọi ứng dụng khác đã cài đều bị chặn và đóng ngay. Hãy nhắc học viên lưu bài trước.'
-          : '${names.length} ứng dụng được đánh dấu sẽ không chạy được trên các máy đã chọn và bản đang chạy bị đóng ngay. Hãy nhắc học viên lưu bài trước.',
+      destructive: destructive,
+      confirmLabel: confirmLabel,
+      message: message,
     );
     if (!mounted || !ok) return;
     setState(() {
@@ -428,13 +480,16 @@ class _AppsWindowState extends State<AppsWindow> {
       error = null;
       skipped = [];
     });
+    final policy = {
+      'enabled': enable,
+      'mode': _modeBlock,
+      'ids': ids.toList(),
+      'paths': pathList,
+    };
     final result = await agent.request(
       'tool_app_policy',
       selected: widget.studentIds,
-      input: {
-        'class_wide': widget.classWide,
-        'policy': {'enabled': enable, 'mode': mode, 'ids': selected.toList()},
-      },
+      input: {'class_wide': widget.classWide, 'policy': policy},
       timeout: const Duration(seconds: 15),
     );
     if (!mounted) return;
@@ -448,13 +503,7 @@ class _AppsWindowState extends State<AppsWindow> {
     // Save the accepted selection before waiting for remote completion. Closing
     // this separate window during that wait must not discard its checkboxes.
     try {
-      await agent.savePreferences({
-        'apps_policy': {
-          'enabled': enable,
-          'mode': mode,
-          'ids': selected.toList(),
-        },
-      });
+      await agent.savePreferences({'apps_policy': policy});
     } catch (e) {
       if (mounted) {
         setState(() => error = 'Không lưu được lựa chọn ứng dụng: $e');
@@ -468,10 +517,10 @@ class _AppsWindowState extends State<AppsWindow> {
       busy = false;
       error = failure;
       if (failure == null) {
-        enabled = enable;
+        legacyAllowOnly = false;
         baselineEnabled = enable;
-        baselineMode = mode;
-        baselineSelected = Set.of(selected);
+        baselineSelected = Set.of(ids);
+        baselinePaths = List.of(pathList);
         pinned = Set.of(selected);
       }
       skipped = [
@@ -507,7 +556,6 @@ class _AppsWindowState extends State<AppsWindow> {
 
   @override
   Widget build(BuildContext context) {
-    final list = visible;
     final blocked = widget.studentIds
         .where(appsBlockedStudents(agent).contains)
         .length;
@@ -520,19 +568,20 @@ class _AppsWindowState extends State<AppsWindow> {
           ? 'Đang quét $scanDone/$scanTotal máy…'
           : '${widget.audience} · $blocked máy đang bị hạn chế',
       actions: [
-        IconButton(
-          tooltip: 'Quét lại các máy',
-          onPressed: scanning ? null : scan,
-          icon: scanning
-              ? const SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Icon(Icons.refresh, size: 20),
-        ),
+        if (tab == 0)
+          IconButton(
+            tooltip: 'Quét lại các máy',
+            onPressed: scanning ? null : scan,
+            icon: scanning
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const TIcon(Icons.refresh, size: 20),
+          ),
       ],
-      footer: _footer(canApply),
+      footer: tab == 0 ? _appsFooter(canApply) : _pathsFooter(canApply),
       child: Column(
         children: [
           if (scanning || fetchingIcons)
@@ -540,88 +589,550 @@ class _AppsWindowState extends State<AppsWindow> {
               value: scanning && scanTotal > 0 ? scanDone / scanTotal : null,
               minHeight: 2,
             ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(24, 14, 24, 10),
-            child: Row(
-              children: [
-                Expanded(
-                  child: SizedBox(
-                    height: 38,
-                    child: TextField(
-                      controller: search,
-                      onChanged: (_) => setState(() {}),
-                      style: const TextStyle(fontSize: 13),
-                      decoration: InputDecoration(
-                        hintText: 'Tìm ứng dụng',
-                        prefixIcon: const Icon(Icons.search, size: 18),
-                        filled: true,
-                        fillColor: Colors.white,
-                        contentPadding: EdgeInsets.zero,
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(10),
-                          borderSide: const BorderSide(color: _line),
-                        ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(10),
-                          borderSide: const BorderSide(color: _line),
-                        ),
+          _tabBar(),
+          Expanded(child: tab == 0 ? _appsTab() : _pathsTab()),
+        ],
+      ),
+    );
+  }
+
+  Widget _tabBar() => Container(
+    color: Colors.white,
+    padding: const EdgeInsets.symmetric(horizontal: 18),
+    decoration: null,
+    child: Row(
+      children: [
+        _tab(
+          0,
+          Icons.apps_outlined,
+          'Theo ứng dụng',
+          baselineEnabled ? baselineSelected.length : 0,
+        ),
+        _tab(
+          1,
+          Icons.folder_open_outlined,
+          'Theo đường dẫn',
+          baselinePaths.length,
+        ),
+        const Spacer(),
+      ],
+    ),
+  );
+
+  /// [applied] counts what is in force, so the badge reads as "đang chặn".
+  Widget _tab(int index, IconData icon, String label, int applied) {
+    final on = tab == index;
+    const brand = Color(0xff156b79);
+    return InkWell(
+      onTap: () => setState(() => tab = index),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(8, 11, 8, 9),
+        margin: const EdgeInsets.only(right: 14),
+        decoration: BoxDecoration(
+          border: Border(
+            bottom: BorderSide(
+              color: on ? brand : Colors.transparent,
+              width: 2.5,
+            ),
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TIcon(icon, size: 17, color: on ? brand : Colors.blueGrey),
+            const SizedBox(width: 7),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 13.5,
+                fontWeight: on ? FontWeight.w700 : FontWeight.w500,
+                color: on ? brand : Colors.blueGrey.shade700,
+              ),
+            ),
+            if (applied > 0) _pill('$applied', const Color(0xffb83b40)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ------------------------------------------------------- tab 1: programs
+
+  Widget _appsTab() {
+    final list = visible;
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(24, 14, 24, 10),
+          child: Row(
+            children: [
+              Expanded(
+                child: SizedBox(
+                  height: 38,
+                  child: TextField(
+                    controller: search,
+                    onChanged: (_) => setState(() {}),
+                    style: const TextStyle(fontSize: 13),
+                    decoration: InputDecoration(
+                      hintText: 'Tìm ứng dụng',
+                      prefixIcon: const TIcon(Icons.search, size: 18),
+                      filled: true,
+                      fillColor: Colors.white,
+                      contentPadding: EdgeInsets.zero,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: const BorderSide(color: _line),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: const BorderSide(color: _line),
                       ),
                     ),
                   ),
                 ),
-                const SizedBox(width: 14),
-                Text(
-                  'Đã chọn ${selected.length} · ${inventory.length} ứng dụng',
-                  style: const TextStyle(
-                    fontSize: 12.5,
+              ),
+              const SizedBox(width: 14),
+              Text(
+                'Đã chọn ${selected.length} · ${inventory.length} ứng dụng',
+                style: const TextStyle(fontSize: 12.5, color: AppDialog.muted),
+              ),
+            ],
+          ),
+        ),
+        if (notice != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 0, 24, 10),
+            child: InlineNotice(notice!, tone: AppTone.warning),
+          ),
+        Expanded(
+          child: inventory.isEmpty && scanning
+              ? const Center(child: CircularProgressIndicator())
+              : Container(
+                  margin: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+                  clipBehavior: Clip.antiAlias,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: _line),
+                  ),
+                  child: list.isEmpty
+                      ? const DialogEmpty(
+                          icon: Icons.apps_outlined,
+                          title: 'Không có ứng dụng nào để hiển thị',
+                        )
+                      : ListView.separated(
+                          itemCount: list.length,
+                          separatorBuilder: (_, _) =>
+                              const Divider(height: 1, color: _line),
+                          itemBuilder: (_, i) => _row(list[i]),
+                        ),
+                ),
+        ),
+      ],
+    );
+  }
+
+  // -------------------------------------------------------- tab 2: paths
+
+  static final _driveRoot = RegExp(r'^[a-z]:[\\/]*$', caseSensitive: false);
+  static final _systemDir = RegExp(
+    r'^[a-z]:[\\/]+windows([\\/]|$)',
+    caseSensitive: false,
+  );
+
+  /// Operating-system folders that may not be blocked as a whole (their
+  /// subfolders may). The Student enforces its own, fuller list; this only
+  /// tells the Teacher straight away, without listing anything.
+  static final _guardedDir = RegExp(
+    r'^(?:[a-z]:[\\/]+(?:users|program files|program files \(x86\)|programdata|recovery|boot|\$recycle\.bin|system volume information|perflogs|documents and settings)|%(?:programfiles|programfiles\(x86\)|programw6432|programdata|systemdrive|homedrive|userprofile|public)%)[\\/]*$',
+    caseSensitive: false,
+  );
+  static final _windowsEnv = RegExp(
+    r'^%(?:windir|systemroot)%(?:[\\/]|$)',
+    caseSensitive: false,
+  );
+
+  /// Shape check mirrored on every Student; returns what to tell the Teacher.
+  String? pathProblem(String raw, {String? except}) {
+    final text = raw.trim();
+    if (text.isEmpty) return 'Hãy nhập đường dẫn.';
+    if (text.length > 300) return 'Đường dẫn quá dài (tối đa 300 ký tự).';
+    if (RegExp(r'["<>|*?]|[\x00-\x1f]').hasMatch(text)) {
+      return 'Đường dẫn có ký tự Windows không cho phép: " < > | * ?';
+    }
+    final full =
+        RegExp(r'^[a-zA-Z]:[\\/]').hasMatch(text) ||
+        text.startsWith(r'\\') ||
+        text.startsWith('%');
+    if (!full) {
+      return r'Dùng đường dẫn đầy đủ, ví dụ C:\Games hoặc C:\Tools\app.exe.';
+    }
+    if (_driveRoot.hasMatch(text)) return 'Không thể chặn cả ổ đĩa.';
+    if (_systemDir.hasMatch(text) ||
+        _windowsEnv.hasMatch(text) ||
+        _guardedDir.hasMatch(text)) {
+      return 'Không thể chặn thư mục hệ thống Windows.';
+    }
+    if (text.split(RegExp(r'[\\/]')).contains('..')) {
+      return 'Không dùng “..” trong đường dẫn.';
+    }
+    final key = _pathKey(text);
+    final dup = paths.any((p) => p != except && _pathKey(p) == key);
+    return dup ? 'Đường dẫn này đã có trong danh sách.' : null;
+  }
+
+  static String _pathKey(String p) => p
+      .trim()
+      .replaceAll('/', r'\')
+      .replaceAll(RegExp(r'\\+$'), '')
+      .toLowerCase();
+
+  static bool _isFile(String p) => p.trim().toLowerCase().endsWith('.exe');
+
+  /// New (several lines allowed) or Edit (one line) in Windows-environment style.
+  Future<void> editPath({int? index}) async {
+    final editing = index != null;
+    final original = editing ? paths[index] : null;
+    final c = TextEditingController(text: original ?? '');
+    final result = await showDialog<List<String>>(
+      context: context,
+      builder: (context) => AppDialog(
+        icon: editing ? Icons.edit_outlined : Icons.add_circle_outline,
+        title: editing ? 'Sửa đường dẫn' : 'Thêm đường dẫn',
+        subtitle: 'Đường dẫn trên máy học viên.',
+        width: 560,
+        actions: [
+          AppDialog.cancel(context),
+          ListenableBuilder(
+            listenable: c,
+            builder: (context, _) {
+              final lines = _lines(c.text);
+              final ok =
+                  lines.isNotEmpty &&
+                  lines.every(
+                    (l) => pathProblem(l, except: original) == null,
+                  ) &&
+                  lines.map(_pathKey).toSet().length == lines.length &&
+                  (!editing || c.text.trim() != original);
+              return AppDialog.primary(
+                onPressed: ok ? () => Navigator.pop(context, lines) : null,
+                icon: Icons.check,
+                label: editing ? 'Lưu' : 'Thêm',
+              );
+            },
+          ),
+        ],
+        child: ListenableBuilder(
+          listenable: c,
+          builder: (context, _) {
+            final lines = _lines(c.text);
+            final problems = [
+              for (final l in lines)
+                if (pathProblem(l, except: original) != null)
+                  pathProblem(l, except: original)!,
+            ];
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: c,
+                  autofocus: true,
+                  minLines: editing ? 1 : 3,
+                  maxLines: editing ? 1 : 6,
+                  style: const TextStyle(fontFamily: 'Consolas', fontSize: 13),
+                  decoration: InputDecoration(
+                    labelText: editing ? 'Đường dẫn' : 'Mỗi dòng một đường dẫn',
+                    hintText: r'C:\Games\Launcher.exe   hoặc   C:\Games',
+                    errorText: problems.isEmpty ? null : problems.first,
+                    errorMaxLines: 2,
+                  ),
+                  onSubmitted: editing
+                      ? (_) {
+                          if (lines.length == 1 && problems.isEmpty) {
+                            Navigator.pop(context, lines);
+                          }
+                        }
+                      : null,
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  'Tệp .exe: chặn chương trình đó. Thư mục: chặn mọi .exe trong thư mục và các thư mục con. Có thể dùng biến như %USERPROFILE%\\Downloads.',
+                  style: TextStyle(
+                    fontSize: 12,
+                    height: 1.4,
                     color: AppDialog.muted,
                   ),
                 ),
               ],
+            );
+          },
+        ),
+      ),
+    );
+    disposeAfterClose(c);
+    if (result == null || !mounted) return;
+    setState(() {
+      error = null;
+      if (editing) {
+        paths[index] = result.first;
+        pathSelected = index;
+      } else {
+        paths.addAll(result);
+        pathSelected = paths.length - 1;
+      }
+    });
+  }
+
+  static List<String> _lines(String text) => [
+    for (final l in text.split(RegExp(r'[\r\n]+')))
+      if (l.trim().isNotEmpty) l.trim(),
+  ];
+
+  void deletePath(int index) => setState(() {
+    paths.removeAt(index);
+    pathSelected = paths.isEmpty ? null : index.clamp(0, paths.length - 1);
+    error = null;
+  });
+
+  Widget _pathsTab() {
+    final sel = pathSelected;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 14, 24, 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Chặn khởi động theo vị trí của tệp, độc lập với danh sách ứng dụng. Tệp .exe cụ thể hoặc cả thư mục (gồm thư mục con).',
+            style: TextStyle(
+              fontSize: 12.5,
+              height: 1.4,
+              color: AppDialog.muted,
             ),
           ),
-          if (notice != null)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(24, 0, 24, 10),
-              child: InlineNotice(notice!, tone: AppTone.warning),
-            ),
+          const SizedBox(height: 10),
           Expanded(
-            child: inventory.isEmpty && scanning
-                ? const Center(child: CircularProgressIndicator())
-                : Container(
-                    margin: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(
+                  child: Container(
                     clipBehavior: Clip.antiAlias,
                     decoration: BoxDecoration(
                       color: Colors.white,
                       borderRadius: BorderRadius.circular(12),
                       border: Border.all(color: _line),
                     ),
-                    child: list.isEmpty
+                    child: paths.isEmpty
                         ? const DialogEmpty(
-                            icon: Icons.apps_outlined,
-                            title: 'Không có ứng dụng nào để hiển thị',
+                            icon: Icons.folder_off_outlined,
+                            title: 'Chưa có đường dẫn nào bị chặn',
                           )
                         : ListView.separated(
-                            itemCount: list.length,
+                            itemCount: paths.length,
                             separatorBuilder: (_, _) =>
                                 const Divider(height: 1, color: _line),
-                            itemBuilder: (_, i) => _row(list[i]),
+                            itemBuilder: (_, i) => _pathRow(i),
                           ),
                   ),
+                ),
+                const SizedBox(width: 12),
+                SizedBox(
+                  width: 112,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      FilledButton.tonalIcon(
+                        onPressed: busy ? null : () => editPath(),
+                        icon: const TIcon(Icons.add, size: 17),
+                        label: const Text('Mới…'),
+                      ),
+                      const SizedBox(height: 8),
+                      OutlinedButton.icon(
+                        onPressed: busy || sel == null
+                            ? null
+                            : () => editPath(index: sel),
+                        icon: const TIcon(Icons.edit_outlined, size: 16),
+                        label: const Text('Sửa…'),
+                      ),
+                      const SizedBox(height: 8),
+                      OutlinedButton.icon(
+                        onPressed: busy || sel == null
+                            ? null
+                            : () => deletePath(sel),
+                        icon: const TIcon(Icons.delete_outline, size: 17),
+                        label: const Text('Xóa'),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
           ),
         ],
       ),
     );
   }
 
+  Widget _pathRow(int i) {
+    final p = paths[i];
+    final on = pathSelected == i;
+    final isNew = !baselinePaths.contains(p);
+    // A raw pointer listener selects the instant the row is pressed; a tap or
+    // double-tap recognizer would hold the selection back until the double-tap
+    // window had passed.
+    return Listener(
+      onPointerDown: (_) => setState(() => pathSelected = i),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onDoubleTap: busy ? null : () => editPath(index: i),
+        child: Container(
+          color: on ? const Color(0xffe3eef2) : null,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          child: Row(
+            children: [
+              TIcon(
+                _isFile(p) ? Icons.apps_outlined : Icons.folder_outlined,
+                size: 19,
+                color: Colors.blueGrey,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  p,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontFamily: 'Consolas', fontSize: 13),
+                ),
+              ),
+              if (isNew) _pill('CHƯA ÁP DỤNG', const Color(0xffb86b22)),
+              _pill(_isFile(p) ? 'tệp' : 'thư mục', Colors.blueGrey),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // --------------------------------------------------------------- footers
+
+  Widget _notices() => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      if (error != null)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: InlineNotice(error!),
+        ),
+      if (skipped.isNotEmpty)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: InlineNotice(
+            'Chưa áp dụng cho: ${skipped.map((s) => s['name']!.isEmpty ? s['ip'] : s['name']).join(', ')} '
+            '(cần Student bản mới chạy bằng quyền quản trị trên Windows).',
+            tone: AppTone.warning,
+          ),
+        ),
+    ],
+  );
+
+  /// One line: what will happen on the left, the actions on the right.
+  Widget _bar({
+    required String summary,
+    required bool pending,
+    required List<Widget> buttons,
+  }) => Row(
+    children: [
+      Expanded(
+        child: Row(
+          children: [
+            Flexible(
+              child: Text(
+                summary,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 12.5,
+                  height: 1.35,
+                  color: AppDialog.muted,
+                ),
+              ),
+            ),
+            if (pending) _pill('CHƯA ÁP DỤNG', const Color(0xffb86b22)),
+          ],
+        ),
+      ),
+      const SizedBox(width: 14),
+      for (var i = 0; i < buttons.length; i++) ...[
+        if (i > 0) const SizedBox(width: 8),
+        buttons[i],
+      ],
+    ],
+  );
+
+  Widget _appsFooter(bool canApply) {
+    final count = selected.length;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _notices(),
+        _bar(
+          summary: count == 0
+              ? 'Đánh dấu ứng dụng cần chặn trên các máy đã chọn.'
+              : '$count ứng dụng được đánh dấu sẽ không thể mở.',
+          pending: baselineEnabled && changed,
+          buttons: [
+            if (baselineEnabled)
+              AppDialog.secondary(
+                onPressed: busy ? null : () => apply(turnOff: true),
+                label: 'Gỡ hạn chế',
+              ),
+            AppDialog.primary(
+              // With no restriction in force, Apply needs something to restrict;
+              // with one in force it needs an actual edit (reverting disables it).
+              onPressed:
+                  canApply && (baselineEnabled ? changed : selected.isNotEmpty)
+                  ? apply
+                  : null,
+              icon: Icons.lock_outline,
+              busy: busy,
+              label: busy ? 'Đang áp dụng…' : 'Áp dụng',
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _pathsFooter(bool canApply) => Column(
+    mainAxisSize: MainAxisSize.min,
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      _notices(),
+      _bar(
+        summary: paths.isEmpty
+            ? 'Không chặn đường dẫn nào.'
+            : '${paths.length} đường dẫn bị chặn khởi động.',
+        pending: pathsChanged,
+        buttons: [
+          AppDialog.primary(
+            onPressed: canApply && pathsChanged ? applyPaths : null,
+            icon: Icons.lock_outline,
+            busy: busy,
+            label: busy ? 'Đang áp dụng…' : 'Áp dụng',
+          ),
+        ],
+      ),
+    ],
+  );
+
   Widget _row(AppEntry e) {
     final checked = selected.contains(e.id);
     final controllable = e.executables > 0;
     final isNew = newIds.contains(e.id);
-    // What the current selection would block: the ticked ones when blocking,
-    // everything else controllable when only the ticked ones are allowed.
-    final blockedByDraft =
-        controllable && (mode == _modeBlock ? checked : !checked);
+    final blockedByDraft = controllable && checked;
     final detail = [
       if (e.publisher.isNotEmpty) e.publisher,
       if (e.version.isNotEmpty) 'v${e.version}',
@@ -732,83 +1243,6 @@ class _AppsWindowState extends State<AppsWindow> {
       color: Colors.blueGrey.withValues(alpha: 0.12),
       borderRadius: BorderRadius.circular(8),
     ),
-    child: const Icon(Icons.apps, size: 18, color: Colors.blueGrey),
-  );
-
-  Widget _footer(bool canApply) => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      if (error != null)
-        Padding(
-          padding: const EdgeInsets.only(bottom: 8),
-          child: InlineNotice(error!),
-        ),
-      if (skipped.isNotEmpty)
-        Padding(
-          padding: const EdgeInsets.only(bottom: 8),
-          child: InlineNotice(
-            'Chưa áp dụng cho: ${skipped.map((s) => s['name']!.isEmpty ? s['ip'] : s['name']).join(', ')} '
-            '(cần Student bản mới chạy bằng quyền quản trị trên Windows).',
-            tone: AppTone.warning,
-          ),
-        ),
-      Wrap(
-        spacing: 14,
-        runSpacing: 8,
-        crossAxisAlignment: WrapCrossAlignment.center,
-        children: [
-          SegmentedButton<String>(
-            showSelectedIcon: false,
-            segments: const [
-              ButtonSegment(
-                value: _modeBlock,
-                icon: Icon(Icons.block, size: 16),
-                label: Text('Chặn ứng dụng đã chọn'),
-              ),
-              ButtonSegment(
-                value: _modeAllowOnly,
-                icon: Icon(Icons.verified_outlined, size: 16),
-                label: Text('Chỉ cho phép ứng dụng đã chọn'),
-              ),
-            ],
-            selected: {mode},
-            onSelectionChanged: (v) => setState(() {
-              mode = v.first;
-              enabled = true;
-            }),
-          ),
-          ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 300),
-            child: Text(
-              mode == _modeBlock
-                  ? 'Các ứng dụng được chọn không thể mở.'
-                  : 'Chỉ các ứng dụng được chọn mới mở được; mọi ứng dụng đã cài khác bị chặn.',
-              style: const TextStyle(
-                fontSize: 12,
-                height: 1.35,
-                color: AppDialog.muted,
-              ),
-            ),
-          ),
-          if (baselineEnabled)
-            AppDialog.secondary(
-              onPressed: busy ? null : () => apply(turnOff: true),
-              label: 'Gỡ hạn chế',
-            ),
-          AppDialog.primary(
-            onPressed: canApply && (changed || !baselineEnabled)
-                ? () {
-                    enabled = true;
-                    apply();
-                  }
-                : null,
-            icon: Icons.lock_outline,
-            busy: busy,
-            label: busy ? 'Đang áp dụng…' : 'Áp dụng',
-          ),
-        ],
-      ),
-    ],
+    child: const TIcon(Icons.apps, size: 18, color: Colors.blueGrey),
   );
 }

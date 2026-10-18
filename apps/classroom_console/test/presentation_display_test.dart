@@ -50,6 +50,9 @@ void main() {
         expect(field, findsOneWidget);
         final state = tester.state<FormFieldState<bool>>(field);
         expect(state.value, savedMode ?? false);
+        // The page now has a preset card above it; bring the field into view.
+        await tester.ensureVisible(field);
+        await tester.pumpAndSettle();
         await tester.tap(field);
         await tester.pumpAndSettle();
         final opposite = !(savedMode ?? false);

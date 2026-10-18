@@ -32,6 +32,16 @@ Future<Directory> existingMacConsoleDirectory(
   return suggested;
 }
 
+/// Delay before the next poll of a background job result. Starts short so a job
+/// that finishes quickly is shown at once, then backs off to [ceiling] so a slow
+/// Student never costs more requests than the old fixed interval did.
+Duration resultPollDelay(int attempt, Duration ceiling) {
+  final ms = 40 * (1 << attempt.clamp(0, 6));
+  return Duration(
+    milliseconds: ms < ceiling.inMilliseconds ? ms : ceiling.inMilliseconds,
+  );
+}
+
 class Agent extends ChangeNotifier {
   Agent(this.args, {this.closeApplication});
   final List<String> args;
@@ -674,13 +684,23 @@ class Agent extends ChangeNotifier {
   /// Human-readable failure of a [request] result.
   static String failure(Map<String, dynamic> result) {
     final detail = (result['result'] as Map?)?['error_detail'];
-    return '${detail ?? result['error'] ?? 'Operation failed'}';
+    final text = '${detail ?? result['error'] ?? ''}';
+    // Raw transport errors are meaningless to a Teacher; say what happened and
+    // what to do. Specific Student-supplied details pass through unchanged.
+    if (text.contains('TimeoutException')) {
+      return 'Hết thời gian chờ phản hồi. Máy học viên có thể đang bận, mạng chậm hoặc đã mất kết nối.';
+    }
+    if (text == 'Student is offline') return 'Máy học viên đang offline.';
+    if (text.contains('not connected')) {
+      return 'Chưa kết nối với chương trình giảng viên. Hãy thử lại sau giây lát.';
+    }
+    return text.isEmpty ? 'Thao tác không thành công. Hãy thử lại.' : text;
   }
 
   /// Opens (or focuses) the two-panel file window for one Student.
   Future<void> openFiles(Map<String, dynamic> row) async {
     if (row['online'] != true) {
-      error = 'Student is offline';
+      error = 'Máy học viên đang offline.';
       notifyListeners();
       return;
     }
@@ -696,7 +716,7 @@ class Agent extends ChangeNotifier {
   /// Opens (or focuses) the dedicated Activity window for one Student.
   Future<void> openActivity(Map<String, dynamic> row) async {
     if (row['online'] != true) {
-      error = 'Student is offline';
+      error = 'Máy học viên đang offline.';
       notifyListeners();
       return;
     }
@@ -717,7 +737,7 @@ class Agent extends ChangeNotifier {
 
   Future<void> openObserve(Map<String, dynamic> row) async {
     if (row['online'] != true) {
-      error = 'Student is offline';
+      error = 'Máy học viên đang offline.';
       notifyListeners();
       return;
     }
@@ -862,6 +882,13 @@ class Agent extends ChangeNotifier {
     }
   }
 
+  /// Stores new settings and applies them to the running Teacher at once, with
+  /// no restart. Only for settings the Teacher can take while running.
+  Future<void> applySettings(Map<String, dynamic> overlay) async {
+    await storeApply('config', {'overlay': overlay});
+    await commandChecked('settings_apply', const [], const {});
+  }
+
   Future<void> configure(
     String ip,
     int port, [
@@ -881,6 +908,11 @@ class Agent extends ChangeNotifier {
           'diagnostics',
           'observe',
           'tools',
+          'performance',
+          'recording',
+          'class',
+          'activity',
+          'transfer',
         ])
           if (settings[section] is Map) section: settings[section],
       };

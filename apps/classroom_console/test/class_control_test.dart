@@ -10,6 +10,19 @@ class ClassControlAgent extends Agent {
   ClassControlAgent() : super([]);
   @override
   bool get connected => true;
+
+  /// Observe only goes live for an online Student; default the fixture's one.
+  @override
+  List<Map<String, dynamic>> get students {
+    final rows = super.students;
+    final id = (state['observe'] as Map?)?['id'];
+    return rows.isNotEmpty || id == null
+        ? rows
+        : [
+            {'id': id, 'online': true},
+          ];
+  }
+
   @override
   Future<void> command(
     String action, [

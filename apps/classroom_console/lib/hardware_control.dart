@@ -1,3 +1,4 @@
+import 'icon_tints.dart';
 import 'package:flutter/material.dart';
 import 'agent.dart';
 import 'app_dialog.dart';
@@ -175,7 +176,7 @@ class _HardwareControlWindowState extends State<HardwareControlWindow> {
                                   ).withValues(alpha: 0.1),
                                   borderRadius: BorderRadius.circular(10),
                                 ),
-                                child: Icon(
+                                child: TIcon(
                                   entry.value.$3,
                                   color: const Color(0xff156b79),
                                   size: 24,
@@ -260,7 +261,7 @@ class _HardwareControlWindowState extends State<HardwareControlWindow> {
                                       return ListTile(
                                         dense: true,
                                         contentPadding: EdgeInsets.zero,
-                                        leading: Icon(
+                                        leading: TIcon(
                                           status == 'applied'
                                               ? Icons.check_circle_outline
                                               : status == 'failed'

@@ -1,3 +1,4 @@
+import 'icon_tints.dart';
 import 'dart:async';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
@@ -74,7 +75,7 @@ class _StudentFileDropState extends State<StudentFileDrop> {
             ),
             FilledButton.icon(
               onPressed: () => Navigator.pop(context, true),
-              icon: const Icon(Icons.send_outlined, size: 16),
+              icon: const TIcon(Icons.send_outlined, size: 16),
               label: const Text('Send'),
             ),
           ],
@@ -134,7 +135,7 @@ class _StudentFileDropState extends State<StudentFileDrop> {
                 child: hovering
                     ? const Center(
                         child: Chip(
-                          avatar: Icon(Icons.file_upload_outlined, size: 16),
+                          avatar: TIcon(Icons.file_upload_outlined, size: 16),
                           label: Text('Drop to send…'),
                         ),
                       )

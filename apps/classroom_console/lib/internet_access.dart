@@ -1,7 +1,10 @@
+import 'icon_tints.dart';
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'agent.dart';
 import 'app_dialog.dart';
+import 'app_icons.dart';
 import 'window_shell.dart';
 import 'website_dependencies.dart';
 
@@ -150,10 +153,55 @@ class _InternetWindowState extends State<InternetWindow> {
   int lease = 240;
   bool busy = false;
   bool applied = false;
+
+  /// Signature of the policy last confirmed for these Students in this window.
+  String? lastApplied;
   String? error;
   List<Map<String, String>> skipped = [];
 
   Agent get agent => widget.agent;
+
+  /// Same rules `apply` would send for the current editor contents.
+  List<String> currentRules() =>
+      (mode == 'allow_only'
+              ? effectiveWebsiteRules(text.text, current?.groups ?? [])
+              : text.text.split('\n'))
+          .map((l) => l.trim())
+          .where((l) => l.isNotEmpty)
+          .toList();
+
+  static String policySignature(String mode, List<String> rules) =>
+      jsonEncode([mode, rules]);
+  String get signature => policySignature(
+    mode,
+    mode == 'allow_only' || mode == 'block_only' ? currentRules() : const [],
+  );
+
+  String get scopeKey => widget.classWide
+      ? 'class'
+      : (List.of(widget.studentIds)..sort()).join(',');
+  bool get targetsRestricted {
+    final restricted = restrictedStudents(agent);
+    return widget.studentIds.any(restricted.containsKey);
+  }
+
+  Map get storedPolicies =>
+      agent.preferences['internet_applied'] as Map? ?? const {};
+
+  /// What is in force now for these Students, or null when it is not known.
+  String? get baselineSignature {
+    if (lastApplied != null) return lastApplied;
+    if (!targetsRestricted) return policySignature('open', const []);
+    final stored = storedPolicies[scopeKey];
+    return stored is String ? stored : null;
+  }
+
+  /// Apply is only useful when the editor differs from what is already in force.
+  bool get changed {
+    final baseline = baselineSignature;
+    return baseline == null || signature != baseline;
+  }
+
   bool get listMode => mode == 'allow_only' || mode == 'block_only';
   SiteList? get current {
     for (final l in lists) {
@@ -223,6 +271,15 @@ class _InternetWindowState extends State<InternetWindow> {
       lease = (last['lease'] as num?)?.toInt() ?? lease;
       listId = last['list'] as String?;
     }
+    // Open on what is actually in force, so nothing looks pending until the
+    // Teacher changes something.
+    if (!targetsRestricted) {
+      mode = 'open';
+    } else if (storedPolicies[scopeKey] case final String stored) {
+      try {
+        mode = '${(jsonDecode(stored) as List).first}';
+      } catch (_) {}
+    }
     if (current == null) listId = lists.isEmpty ? null : lists.first.id;
     text.text = current?.rules ?? '';
   }
@@ -274,20 +331,29 @@ class _InternetWindowState extends State<InternetWindow> {
         width: 440,
         actions: [
           AppDialog.cancel(context),
-          AppDialog.primary(
-            onPressed: () => Navigator.pop(context, c.text),
-            label: 'OK',
+          ListenableBuilder(
+            listenable: c,
+            builder: (context, _) => AppDialog.primary(
+              // A new or renamed list needs a name that is not just the old one.
+              onPressed:
+                  c.text.trim().isEmpty || c.text.trim() == initial.trim()
+                  ? null
+                  : () => Navigator.pop(context, c.text),
+              label: 'OK',
+            ),
           ),
         ],
         child: TextField(
           controller: c,
           autofocus: true,
           decoration: const InputDecoration(labelText: 'Tên danh sách'),
-          onSubmitted: (v) => Navigator.pop(context, v),
+          onSubmitted: (v) => v.trim().isEmpty || v.trim() == initial.trim()
+              ? null
+              : Navigator.pop(context, v),
         ),
       ),
     );
-    c.dispose();
+    disposeAfterClose(c);
     final trimmed = name?.trim() ?? '';
     return trimmed.isEmpty ? null : trimmed;
   }
@@ -366,10 +432,15 @@ class _InternetWindowState extends State<InternetWindow> {
         width: 560,
         actions: [
           AppDialog.cancel(context),
-          AppDialog.primary(
-            onPressed: () => Navigator.pop(context, c.text),
-            icon: Icons.check,
-            label: 'Lưu',
+          ListenableBuilder(
+            listenable: c,
+            builder: (context, _) => AppDialog.primary(
+              onPressed: c.text.trim() == browserPath.trim()
+                  ? null
+                  : () => Navigator.pop(context, c.text),
+              icon: Icons.check,
+              label: 'Lưu',
+            ),
           ),
         ],
         child: TextField(
@@ -383,7 +454,7 @@ class _InternetWindowState extends State<InternetWindow> {
         ),
       ),
     );
-    c.dispose();
+    disposeAfterClose(c);
     if (path == null || !mounted) return;
     setState(() => browserPath = path.trim());
     await saveLists();
@@ -471,13 +542,8 @@ class _InternetWindowState extends State<InternetWindow> {
 
   Future<void> apply({bool closeAfter = true}) async {
     if (busy || scanningNow) return;
-    final rules =
-        (mode == 'allow_only'
-                ? effectiveWebsiteRules(text.text, current?.groups ?? [])
-                : text.text.split('\n'))
-            .map((l) => l.trim())
-            .where((l) => l.isNotEmpty)
-            .toList();
+    final rules = currentRules();
+    final sent = signature;
     if (listMode && rules.every((l) => l.startsWith('#'))) {
       setState(() => error = 'Hãy thêm ít nhất một trang vào danh sách.');
       return;
@@ -509,7 +575,13 @@ class _InternetWindowState extends State<InternetWindow> {
       return;
     }
     final skippedList = (result['result'] as Map?)?['skipped'];
+    unawaited(
+      agent.savePreferences({
+        'internet_applied': {...storedPolicies, scopeKey: sent},
+      }),
+    );
     setState(() {
+      lastApplied = sent;
       busy = false;
       applied = closeAfter;
       if (!closeAfter) scanNotice = 'Đã lưu nhóm website và gửi chính sách.';
@@ -613,7 +685,7 @@ class _InternetWindowState extends State<InternetWindow> {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.check_circle, size: 17, color: Color(0xff1f7a4d)),
+                  TIcon(Icons.check_circle, size: 17, color: Color(0xff1f7a4d)),
                   SizedBox(width: 6),
                   Text(
                     'Đã áp dụng',
@@ -635,11 +707,17 @@ class _InternetWindowState extends State<InternetWindow> {
             },
           ),
           const SizedBox(width: 8),
-          AppDialog.primary(
-            onPressed: busy || applied || scanningNow ? null : () => apply(),
-            icon: Icons.check,
-            busy: busy,
-            label: busy ? 'Đang áp dụng…' : 'Áp dụng',
+          ListenableBuilder(
+            // The rules editor is a controller, not setState-driven.
+            listenable: text,
+            builder: (context, _) => AppDialog.primary(
+              onPressed: busy || applied || scanningNow || !changed
+                  ? null
+                  : () => apply(),
+              icon: Icons.check,
+              busy: busy,
+              label: busy ? 'Đang áp dụng…' : 'Áp dụng',
+            ),
           ),
         ],
       ),
@@ -700,7 +778,7 @@ class _ModeTile extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Icon(
+          TIcon(
             mode.icon,
             size: 20,
             color: selected ? mode.color : Colors.blueGrey,
@@ -739,7 +817,7 @@ class _SimpleModePanel extends StatelessWidget {
             color: mode.color.withValues(alpha: 0.12),
             shape: BoxShape.circle,
           ),
-          child: Icon(mode.icon, size: 34, color: mode.color),
+          child: TIcon(mode.icon, size: 34, color: mode.color),
         ),
         const SizedBox(height: 18),
         Text(
@@ -774,7 +852,7 @@ class _ListEditor extends StatelessWidget {
     children: [
       Row(
         children: [
-          Icon(mode.icon, size: 17, color: mode.color),
+          TIcon(mode.icon, size: 17, color: mode.color),
           const SizedBox(width: 8),
           Text(
             mode.label,
@@ -811,26 +889,26 @@ class _ListEditor extends StatelessWidget {
           ),
           IconButton(
             tooltip: 'Danh sách mới',
-            icon: const Icon(Icons.add),
+            icon: const TIcon(Icons.add),
             onPressed: state.scanningNow ? null : state.newList,
           ),
           IconButton(
             tooltip: 'Đổi tên',
-            icon: const Icon(Icons.edit_outlined),
+            icon: const TIcon(Icons.edit_outlined),
             onPressed: state.current == null || state.scanningNow
                 ? null
                 : state.rename,
           ),
           IconButton(
             tooltip: 'Xóa danh sách',
-            icon: const Icon(Icons.delete_outline),
+            icon: const TIcon(Icons.delete_outline),
             onPressed: state.current == null || state.scanningNow
                 ? null
                 : state.delete,
           ),
           PopupMenuButton<String>(
             tooltip: 'Thêm bộ trang có sẵn',
-            icon: const Icon(Icons.playlist_add),
+            icon: const TIcon(Icons.playlist_add),
             onSelected: state.scanningNow ? null : state.addPreset,
             itemBuilder: (_) => [
               for (final p in _presets.keys)
@@ -905,7 +983,7 @@ class _WebsiteGroups extends StatelessWidget {
                       labelText: 'Website cần cho phép',
                       hintText: 'https://flutter.dev',
                       isDense: true,
-                      suffixIcon: Icon(Icons.arrow_drop_down),
+                      suffixIcon: TIcon(Icons.arrow_drop_down),
                     ),
                     onSubmitted: (_) => state.allowWebsite(),
                   ),
@@ -935,7 +1013,7 @@ class _WebsiteGroups extends StatelessWidget {
                           return ListTile(
                             dense: true,
                             selected: highlighted,
-                            leading: const Icon(Icons.language, size: 19),
+                            leading: SiteIcon(url: item.group.url, size: 22),
                             title: Text(
                               item.group.url,
                               maxLines: 1,
@@ -945,7 +1023,7 @@ class _WebsiteGroups extends StatelessWidget {
                               'Đã lưu trong ${item.list.name} · '
                               '${item.group.dependencies.length} tên miền phụ thuộc',
                             ),
-                            trailing: const Icon(Icons.check_circle_outline),
+                            trailing: const TIcon(Icons.check_circle_outline),
                             onTap: () => onSelected(item),
                           );
                         },
@@ -959,7 +1037,7 @@ class _WebsiteGroups extends StatelessWidget {
           const SizedBox(width: 8),
           FilledButton.icon(
             onPressed: state.scanningNow ? null : state.allowWebsite,
-            icon: const Icon(Icons.add_link, size: 18),
+            icon: const TIcon(Icons.add_link, size: 18),
             label: Text(
               state.findSavedWebsite(state.website.text) == null
                   ? 'Cho phép website'
@@ -969,7 +1047,7 @@ class _WebsiteGroups extends StatelessWidget {
           IconButton(
             tooltip: 'Cấu hình Chrome / Edge',
             onPressed: state.scanningNow ? null : state.configureBrowser,
-            icon: const Icon(Icons.settings_outlined, size: 19),
+            icon: const TIcon(Icons.settings_outlined, size: 19),
           ),
         ],
       ),
@@ -1024,7 +1102,7 @@ class _WebsiteGroups extends StatelessWidget {
                 child: ExpansionTile(
                   key: ValueKey(g.url),
                   tilePadding: const EdgeInsets.symmetric(horizontal: 10),
-                  leading: const Icon(Icons.language, color: _teal, size: 21),
+                  leading: SiteIcon(url: g.url, size: 24),
                   title: Text(
                     g.host,
                     style: const TextStyle(
@@ -1096,14 +1174,14 @@ class _WebsiteGroups extends StatelessWidget {
                                     await state.apply(closeAfter: false);
                                   }
                                 },
-                          icon: const Icon(Icons.refresh, size: 16),
+                          icon: const TIcon(Icons.refresh, size: 16),
                           label: const Text('Quét lại'),
                         ),
                         TextButton.icon(
                           onPressed: state.scanningNow
                               ? null
                               : () => state.removeGroup(g),
-                          icon: const Icon(Icons.delete_outline, size: 16),
+                          icon: const TIcon(Icons.delete_outline, size: 16),
                           label: const Text('Xóa'),
                         ),
                       ],

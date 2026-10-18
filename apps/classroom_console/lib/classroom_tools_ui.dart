@@ -1,3 +1,4 @@
+import 'icon_tints.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -65,7 +66,15 @@ class ToolActivity extends ChangeNotifier {
   final _hidden = <String>{};
   final _timers = <String, Timer>{};
 
-  static const maxReplies = 300;
+  /// Console preferences (Settings → Thông báo); the numbers are the defaults.
+  int _pref(String key, int fallback) {
+    final v = agent.preferences[key];
+    return v is num ? v.toInt() : fallback;
+  }
+
+  int get okSeconds => _pref('ui_toast_ok_seconds', 5);
+  int get errorSeconds => _pref('ui_toast_error_seconds', 10);
+  int get maxReplies => _pref('ui_max_replies', 300);
 
   List<Map<String, dynamic>> get jobs =>
       ((agent.state['tools'] as Map? ?? const {})['jobs'] as List? ?? const [])
@@ -140,8 +149,16 @@ class ToolActivity extends ChangeNotifier {
         final failed = targets.any(
           (t) => t['status'] == 'error' || t['status'] == 'cancelled',
         );
-        if (!failed) {
-          _timers[id] = Timer(const Duration(seconds: 5), () => hide(id));
+        // A failed transfer stays (it offers a retry); everything else is only
+        // information and goes away by itself: 5 s when it worked, 10 s when
+        // it did not, enough to read a short line.
+        final retryable =
+            failed && (job['kind'] == 'file' || job['kind'] == 'update');
+        if (!retryable) {
+          _timers[id] = Timer(
+            Duration(seconds: failed ? errorSeconds : okSeconds),
+            () => hide(id),
+          );
         }
       }
     }
@@ -160,6 +177,22 @@ class ToolActivity extends ChangeNotifier {
       disconnects.insert(0, Map<String, dynamic>.from(a as Map));
       unreadDisconnects++;
       changed = true;
+    }
+    // A Student that comes back updates its own entry instead of adding a
+    // second one: the entry then shows both when it dropped and when it returned.
+    final connected = {
+      for (final id
+          in ((agent.state['tools'] as Map? ?? const {})['ready'] as List? ??
+              const []))
+        '$id',
+    };
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    for (final entry in disconnects) {
+      if (entry['reconnected_ms'] == null &&
+          connected.contains('${entry['student']}')) {
+        entry['reconnected_ms'] = nowMs;
+        changed = true;
+      }
     }
     if (changed) notifyListeners();
   }
@@ -180,6 +213,16 @@ class ToolActivity extends ChangeNotifier {
     _timers.remove(jobId)?.cancel();
     _hidden.add(jobId);
     if (finished.remove(jobId)) notifyListeners();
+  }
+
+  void hideAll(Iterable<String> ids) {
+    var any = false;
+    for (final id in ids.toList()) {
+      _timers.remove(id)?.cancel();
+      _hidden.add(id);
+      any = finished.remove(id) || any;
+    }
+    if (any) notifyListeners();
   }
 
   void dismissToast() {
@@ -210,10 +253,12 @@ class ToolActivity extends ChangeNotifier {
   }
 }
 
-const _card = Color(0xff172b38);
-const _muted = Color(0xffc7d4dc);
-const _accent = Color(0xff7dd3dc);
-const _warn = Color(0xffffc1a8);
+// Same light look as the rest of the Teacher console.
+const _ink = Color(0xff1b2a36);
+const _muted = Color(0xff5c6b78);
+const _accent = Color(0xff156b79);
+const _good = Color(0xff1f7a4d);
+const _warn = Color(0xffb83b40);
 
 /// Stack of compact cards: file progress, one-shot results and a single
 /// aggregated reply toast (never one popup per reply).
@@ -253,9 +298,7 @@ class ClassroomToolsOverlay extends StatelessWidget {
               activity: activity,
               agent: agent,
             ),
-          for (final id in activity.finished.take(2))
-            if (byId[id] != null)
-              _FinishedCard(job: byId[id]!, activity: activity, agent: agent),
+          ..._finishedGroups(activity, byId, agent),
           if (activity.toast.isNotEmpty)
             _ReplyToast(activity: activity, onOpen: onOpenReplies),
         ];
@@ -273,22 +316,125 @@ class ClassroomToolsOverlay extends StatelessWidget {
   }
 }
 
+/// What operation a finished job was, in words a Teacher recognises.
+String _finishedTitle(Map<String, dynamic> job, bool failed) {
+  final name = '${job['name'] ?? ''}';
+  switch ('${job['kind']}') {
+    case 'update':
+      return failed
+          ? 'Cập nhật học viên thất bại'
+          : 'Học viên đã cập nhật và kết nối lại';
+    case 'file':
+      return failed
+          ? 'Không gửi được ${name.isEmpty ? 'tệp' : name}'
+          : 'Đã gửi ${name.isEmpty ? 'tệp' : name}';
+    case 'launch':
+      return 'Không chạy được ${name.isEmpty ? 'chương trình' : name}';
+    case 'app_policy':
+      return 'Không áp dụng được chặn ứng dụng';
+    case 'vscode_policy':
+      return 'Không áp dụng được chính sách VS Code';
+    case 'copilot_policy':
+      return 'Không áp dụng được chặn Copilot';
+    case 'message':
+      return 'Tin nhắn chưa được chuyển';
+    default:
+      return 'Thao tác chưa hoàn tất';
+  }
+}
+
+/// Student-side errors are English; say them the way the Teacher reads them.
+String _friendlyError(String error) {
+  const known = {
+    'System folders cannot be blocked':
+        'Không thể chặn thư mục hệ thống Windows',
+    'The Classroom program folder cannot be blocked':
+        'Không thể chặn thư mục của Classroom',
+    'Student is offline': 'Máy học viên đang offline',
+  };
+  for (final entry in known.entries) {
+    if (error.startsWith(entry.key)) {
+      return entry.value + error.substring(entry.key.length);
+    }
+  }
+  return error;
+}
+
+/// Finished jobs with the same outcome become one card ("×3"), and at most
+/// three cards are shown, so one dismissal is never answered by another
+/// identical card taking its place.
+List<Widget> _finishedGroups(
+  ToolActivity activity,
+  Map<String, Map<String, dynamic>> byId,
+  Agent agent,
+) {
+  final groups = <String, List<Map<String, dynamic>>>{};
+  for (final id in activity.finished) {
+    final job = byId[id];
+    if (job == null) continue;
+    final targets = ToolActivity.targetsOf(job);
+    final failed = targets.any(
+      (t) => t['status'] == 'error' || t['status'] == 'cancelled',
+    );
+    final firstError = targets
+        .map((t) => '${t['error'] ?? ''}')
+        .firstWhere((e) => e.isNotEmpty, orElse: () => '');
+    final key = '${_finishedTitle(job, failed)}|$failed|$firstError';
+    groups.putIfAbsent(key, () => []).add(job);
+  }
+  final shown = groups.values.take(3).toList();
+  return [
+    for (final jobs in shown)
+      _FinishedCard(jobs: jobs, activity: activity, agent: agent),
+    if (groups.length > 1)
+      Align(
+        alignment: Alignment.centerRight,
+        child: TextButton(
+          onPressed: () => activity.hideAll(activity.finished),
+          style: TextButton.styleFrom(
+            foregroundColor: _muted,
+            visualDensity: VisualDensity.compact,
+          ),
+          child: Text('Ẩn tất cả (${groups.length})'),
+        ),
+      ),
+  ];
+}
+
 class _Card extends StatelessWidget {
-  const _Card({required this.children});
+  const _Card({required this.children, this.accent = _accent});
   final List<Widget> children;
+
+  /// Colour of the stripe on the left edge: what kind of message this is.
+  final Color accent;
   @override
   Widget build(BuildContext context) => Material(
-    elevation: 8,
-    color: _card,
-    borderRadius: BorderRadius.circular(12),
+    elevation: 6,
+    shadowColor: Colors.black45,
+    color: Colors.white,
+    clipBehavior: Clip.antiAlias,
+    shape: RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(12),
+      side: const BorderSide(color: Color(0xffdde3e8)),
+    ),
     child: SizedBox(
-      width: 340,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 10, 6, 10),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: children,
+      width: 360,
+      child: IntrinsicHeight(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Container(width: 4, color: accent),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 6, 10),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: children,
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     ),
@@ -303,24 +449,30 @@ Widget _header(
   Color color = _accent,
 }) => Row(
   children: [
-    Icon(icon, color: color, size: 18),
+    TIcon(icon, color: color, size: 19),
     const SizedBox(width: 8),
     Expanded(
       child: Text(
         title,
-        maxLines: 1,
+        maxLines: 2,
         overflow: TextOverflow.ellipsis,
         style: const TextStyle(
-          color: Colors.white,
-          fontWeight: FontWeight.w600,
+          color: _ink,
+          fontSize: 13.5,
+          fontWeight: FontWeight.w700,
         ),
       ),
     ),
-    IconButton(
-      visualDensity: VisualDensity.compact,
-      tooltip: tooltip,
-      onPressed: onClose,
-      icon: const Icon(Icons.close, size: 17, color: Colors.white70),
+    // A generous target: this is clicked once and must register the first time.
+    SizedBox(
+      width: 36,
+      height: 36,
+      child: IconButton(
+        padding: EdgeInsets.zero,
+        tooltip: tooltip,
+        onPressed: onClose,
+        icon: const TIcon(Icons.close, size: 18, color: _muted),
+      ),
     ),
   ],
 );
@@ -331,7 +483,7 @@ Widget _line(String text, {Color color = _muted, int maxLines = 1}) => Padding(
     text,
     maxLines: maxLines,
     overflow: TextOverflow.ellipsis,
-    style: TextStyle(color: color, fontSize: 11),
+    style: TextStyle(color: color, fontSize: 12, height: 1.3),
   ),
 );
 
@@ -348,7 +500,7 @@ class _PreparingCard extends StatelessWidget {
     children: [
       Text(
         'Đang chuẩn bị tệp…',
-        style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+        style: TextStyle(color: _ink, fontWeight: FontWeight.w700),
       ),
       SizedBox(height: 10),
       Padding(
@@ -408,8 +560,8 @@ class _FileProgressCard extends StatelessWidget {
                 : (done / maximum).clamp(0.0, 1.0),
             minHeight: 5,
             borderRadius: BorderRadius.circular(8),
-            backgroundColor: Colors.white24,
-            color: const Color(0xff55c2cc),
+            backgroundColor: const Color(0xffe3eaee),
+            color: _accent,
           ),
         ),
         _line(
@@ -429,59 +581,58 @@ class _FileProgressCard extends StatelessWidget {
 
 class _FinishedCard extends StatelessWidget {
   const _FinishedCard({
-    required this.job,
+    required this.jobs,
     required this.activity,
     required this.agent,
   });
-  final Map<String, dynamic> job;
+
+  /// Jobs with the same outcome, newest first; the first speaks for all.
+  final List<Map<String, dynamic>> jobs;
   final ToolActivity activity;
   final Agent agent;
 
   @override
   Widget build(BuildContext context) {
+    final job = jobs.first;
     final id = '${job['id']}';
-    final targets = ToolActivity.targetsOf(job);
-    final failed = targets
-        .where((t) => t['status'] == 'error' || t['status'] == 'cancelled')
-        .toList();
+    final allTargets = [for (final j in jobs) ...ToolActivity.targetsOf(j)];
+    final seen = <String>{};
+    final failed = [
+      for (final t in allTargets)
+        if ((t['status'] == 'error' || t['status'] == 'cancelled') &&
+            seen.add('${t['id']}|${t['error']}'))
+          t,
+    ];
     final isFile = (job['kind'] == 'file' || job['kind'] == 'update');
+    final targets = ToolActivity.targetsOf(job);
     final skipped = targets.where((t) => t['status'] == 'skipped').length;
     final ok = targets.length - failed.length;
-    final title = job['kind'] == 'update'
-        ? (failed.isEmpty
-              ? 'Học viên đã cập nhật và kết nối lại'
-              : 'Cập nhật học viên thất bại')
-        : isFile
-        ? (failed.isEmpty
-              ? 'Đã gửi ${job['name'] ?? 'tệp'}'
-              : 'Không gửi được ${job['name'] ?? 'tệp'}')
-        : job['kind'] == 'launch'
-        ? 'Không chạy được ${job['name'] ?? 'chương trình'}'
-        : 'Tin nhắn chưa được chuyển';
+    final title = _finishedTitle(job, failed.isNotEmpty);
     return _Card(
+      accent: failed.isEmpty ? _good : _warn,
       children: [
         _header(
           failed.isEmpty ? Icons.check_circle_outline : Icons.error_outline,
-          title,
-          color: failed.isEmpty ? _accent : _warn,
+          jobs.length > 1 ? '$title  ×${jobs.length}' : title,
+          color: failed.isEmpty ? _good : _warn,
           tooltip: 'Ẩn',
-          onClose: () => activity.hide(id),
+          onClose: () => activity.hideAll([for (final j in jobs) '${j['id']}']),
         ),
         if (isFile)
           _line(
-            '$ok/${targets.length} students'
-            '${skipped > 0 ? ' · $skipped already had it' : ''}',
+            '$ok/${targets.length} máy'
+            '${skipped > 0 ? ' · $skipped máy đã có sẵn' : ''}',
           ),
         for (final t in failed.take(3))
           _line(
             '${_who(activity, '${t['id']}')}: '
-            '${'${t['error'] ?? ''}'.isEmpty ? t['status'] : t['error']}',
+            '${_friendlyError('${t['error'] ?? ''}'.isEmpty ? '${t['status']}' : '${t['error']}')}',
             color: _warn,
-            maxLines: 2,
+            maxLines: 3,
           ),
         if (failed.length > 3)
           _line('+ ${failed.length - 3} máy nữa', color: _warn),
-        if (isFile && failed.isNotEmpty)
+        if (isFile && failed.isNotEmpty && jobs.length == 1)
           Align(
             alignment: Alignment.centerRight,
             child: TextButton.icon(
@@ -489,10 +640,10 @@ class _FinishedCard extends StatelessWidget {
                 activity.hide(id);
                 agent.command('tool_retry', const [], {'id': id});
               },
-              icon: const Icon(Icons.refresh, size: 15),
+              icon: const TIcon(Icons.refresh, size: 15),
               label: Text('Thử lại ${failed.length} máy'),
               style: TextButton.styleFrom(
-                foregroundColor: const Color(0xff91e1e7),
+                foregroundColor: _accent,
                 visualDensity: VisualDensity.compact,
               ),
             ),
@@ -501,6 +652,10 @@ class _FinishedCard extends StatelessWidget {
     );
   }
 }
+
+/// "name (ip)", or just the name when there is no separate address.
+String _replier(StudentReply r) =>
+    r.ip.isEmpty || r.ip == r.name ? r.name : '${r.name} (${r.ip})';
 
 class _ReplyToast extends StatelessWidget {
   const _ReplyToast({required this.activity, this.onOpen});
@@ -515,41 +670,53 @@ class _ReplyToast extends StatelessWidget {
         _header(
           Icons.mark_chat_unread_outlined,
           items.length == 1
-              ? 'Phản hồi từ ${items.first.name}'
+              ? 'Phản hồi từ ${_replier(items.first)}'
               : '${items.length} phản hồi mới',
           tooltip: 'Ẩn',
           onClose: activity.dismissToast,
         ),
-        for (final r in items.take(3))
+        // One reply: the title already names the computer, so show only the text.
+        if (items.length == 1)
           Padding(
             padding: const EdgeInsets.only(top: 6, right: 8),
-            child: Text.rich(
-              TextSpan(
-                children: [
-                  TextSpan(
-                    text: r.ip.isEmpty || r.ip == r.name
-                        ? '${r.name}: '
-                        : '${r.name} (${r.ip}): ',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  TextSpan(text: r.text),
-                ],
-              ),
-              maxLines: 2,
+            child: Text(
+              items.first.text,
+              maxLines: 4,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: _muted, fontSize: 11),
+              style: const TextStyle(color: _ink, fontSize: 13, height: 1.35),
             ),
-          ),
+          )
+        else
+          for (final r in items.take(3))
+            Padding(
+              padding: const EdgeInsets.only(top: 6, right: 8),
+              child: Text.rich(
+                TextSpan(
+                  children: [
+                    TextSpan(
+                      text: r.ip.isEmpty || r.ip == r.name
+                          ? '${r.name}: '
+                          : '${r.name} (${r.ip}): ',
+                      style: const TextStyle(
+                        color: _ink,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    TextSpan(text: r.text),
+                  ],
+                ),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: _muted, fontSize: 12),
+              ),
+            ),
         if (items.length > 3) _line('+ ${items.length - 3} more'),
         Align(
           alignment: Alignment.centerRight,
           child: TextButton(
             onPressed: onOpen,
             style: TextButton.styleFrom(
-              foregroundColor: const Color(0xff91e1e7),
+              foregroundColor: _accent,
               visualDensity: VisualDensity.compact,
             ),
             child: const Text('Xem tất cả phản hồi'),
@@ -590,17 +757,10 @@ Future<void> showRepliesDialog(BuildContext context, ToolActivity activity) {
               onPressed: activity.replies.isEmpty
                   ? null
                   : activity.clearReplies,
-              icon: const Icon(Icons.delete_sweep_outlined, size: 18),
+              icon: const TIcon(Icons.delete_sweep_outlined, size: 18),
               label: const Text('Xóa tất cả'),
             ),
           ),
-          actions: [
-            AppDialog.primary(
-              onPressed: () => Navigator.pop(context),
-              icon: Icons.check,
-              label: 'Đóng',
-            ),
-          ],
           child: activity.replies.isEmpty
               ? const DialogEmpty(
                   icon: Icons.mark_chat_unread_outlined,
@@ -629,7 +789,7 @@ Future<void> showRepliesDialog(BuildContext context, ToolActivity activity) {
                       for (final r in entry.value)
                         ListTile(
                           dense: true,
-                          leading: const Icon(Icons.computer, size: 20),
+                          leading: const TIcon(Icons.computer, size: 20),
                           title: Text(
                             r.ip.isEmpty || r.ip == r.name
                                 ? r.name
@@ -673,7 +833,8 @@ Future<void> showDisconnectsDialog(
           icon: Icons.link_off,
           tone: AppTone.danger,
           title: 'Cảnh báo mất kết nối (${activity.disconnects.length})',
-          subtitle: 'Các máy bị mất kết nối khi đang bật theo dõi hoạt động.',
+          subtitle:
+              'Các máy bị mất kết nối khi đang bật theo dõi hoạt động. Máy kết nối lại sẽ được cập nhật ngay trên dòng của nó.',
           width: 520,
           height: 340,
           scrollable: false,
@@ -684,17 +845,10 @@ Future<void> showDisconnectsDialog(
               onPressed: activity.disconnects.isEmpty
                   ? null
                   : activity.clearDisconnects,
-              icon: const Icon(Icons.delete_sweep_outlined, size: 18),
+              icon: const TIcon(Icons.delete_sweep_outlined, size: 18),
               label: const Text('Xóa tất cả'),
             ),
           ),
-          actions: [
-            AppDialog.primary(
-              onPressed: () => Navigator.pop(context),
-              icon: Icons.check,
-              label: 'Đóng',
-            ),
-          ],
           child: activity.disconnects.isEmpty
               ? const DialogEmpty(
                   icon: Icons.wifi_tethering,
@@ -707,27 +861,70 @@ Future<void> showDisconnectsDialog(
                   itemBuilder: (_, i) {
                     final a = activity.disconnects[i];
                     final id = '${a['student']}';
-                    final ms = (a['unix_ms'] as num?)?.toInt() ?? 0;
+                    final lostMs = (a['unix_ms'] as num?)?.toInt() ?? 0;
+                    final backMs = (a['reconnected_ms'] as num?)?.toInt();
+                    final back = backMs != null;
+                    final color = back
+                        ? const Color(0xff1f7a4d)
+                        : const Color(0xffb83b40);
+                    String at(int ms) =>
+                        _time(DateTime.fromMillisecondsSinceEpoch(ms));
                     return ListTile(
                       dense: true,
-                      leading: const Icon(
-                        Icons.link_off,
-                        size: 20,
-                        color: Color(0xffb83b40),
-                      ),
-                      title: Text(
-                        activity.nameOf(id),
-                        style: const TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                      subtitle: Text(activity.ipOf(id)),
-                      trailing: Text(
-                        ms == 0
-                            ? ''
-                            : _time(DateTime.fromMillisecondsSinceEpoch(ms)),
-                        style: const TextStyle(
-                          fontSize: 11,
-                          color: AppDialog.muted,
+                      isThreeLine: true,
+                      leading: Tooltip(
+                        message: back
+                            ? 'Đã mất kết nối và đã kết nối lại'
+                            : 'Đang mất kết nối',
+                        child: TIcon(
+                          back ? Icons.link : Icons.link_off,
+                          size: 22,
+                          color: color,
                         ),
+                      ),
+                      title: Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              activity.nameOf(id),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 1,
+                            ),
+                            decoration: BoxDecoration(
+                              color: color.withValues(alpha: 0.10),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Text(
+                              back ? 'Đã kết nối lại' : 'Đang mất kết nối',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: color,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      subtitle: Text(
+                        [
+                          activity.ipOf(id),
+                          if (lostMs != 0) 'Mất kết nối lúc ${at(lostMs)}',
+                          if (back)
+                            'Kết nối lại lúc ${at(backMs)}'
+                                '${lostMs == 0 ? '' : ' (sau ${disconnectGap(backMs - lostMs)})'}'
+                          else
+                            'Chưa kết nối lại',
+                        ].join('\n'),
                       ),
                     );
                   },
@@ -736,6 +933,21 @@ Future<void> showDisconnectsDialog(
       },
     ),
   );
+}
+
+/// "5 giây", "2 phút 5 giây", "1 giờ 2 phút": how long a Student was away.
+String disconnectGap(int milliseconds) {
+  final seconds = (milliseconds / 1000).round();
+  if (seconds < 1) return 'dưới 1 giây';
+  if (seconds < 60) return '$seconds giây';
+  final minutes = seconds ~/ 60;
+  if (minutes < 60) {
+    final rest = seconds % 60;
+    return rest == 0 ? '$minutes phút' : '$minutes phút $rest giây';
+  }
+  final hours = minutes ~/ 60;
+  final rest = minutes % 60;
+  return rest == 0 ? '$hours giờ' : '$hours giờ $rest phút';
 }
 
 String _time(DateTime t) =>

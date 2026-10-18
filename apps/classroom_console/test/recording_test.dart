@@ -1,3 +1,4 @@
+import 'package:classroom_console/live_activity.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
@@ -28,6 +29,7 @@ class RecordingAgent extends Agent {
 }
 
 void main() {
+  setUpAll(() => BlinkingRecordDot.animated = false);
   test(
     'offline and stale reports are never presented as fresh recording status',
     () {
@@ -105,7 +107,7 @@ void main() {
     },
   );
   testWidgets(
-    'selected Start, session Stop and closing dialog have distinct effects',
+    'the manager has no bulk Start; session Stop and closing have distinct effects',
     (tester) async {
       tester.view.physicalSize = const Size(1200, 900);
       tester.view.devicePixelRatio = 1;
@@ -137,7 +139,7 @@ void main() {
         MaterialApp(
           home: Builder(
             builder: (context) => TextButton(
-              onPressed: () => showRecordings(context, agent, ['a', 'b']),
+              onPressed: () => showRecordings(context, agent, const []),
               child: const Text('Open'),
             ),
           ),
@@ -145,20 +147,20 @@ void main() {
       );
       await tester.tap(find.text('Open'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Ghi 2 máy đã chọn'));
-      await tester.pumpAndSettle();
-      expect(agent.calls.first, {
-        'action': 'recording_start',
-        'selected': ['a', 'b'],
-        'input': null,
-      });
+      // Recording is started per computer (right-click), never in bulk from here.
+      expect(find.textContaining('máy đã chọn'), findsNothing);
+      expect(find.textContaining('nhấp chuột phải'), findsOneWidget);
+      expect(agent.calls, isEmpty);
+      // A session that is still capturing can be stopped but not deleted:
+      // there is no delete button until it has moved to History.
+      expect(find.byIcon(Icons.delete_outline), findsNothing);
       await tester.tap(find.text('Dừng ghi'));
       await tester.pumpAndSettle();
       expect(agent.calls.last['action'], 'recording_stop');
       expect(agent.calls.last['input'], {'id': 's1'});
-      await tester.tap(find.text('Đóng'));
+      await tester.tap(find.byTooltip('Đóng'));
       await tester.pumpAndSettle();
-      expect(agent.calls.length, 2);
+      expect(agent.calls.length, 1);
       expect(tester.takeException(), isNull);
       agent.dispose();
     },
@@ -203,6 +205,9 @@ void main() {
         ],
       };
       agent.state = {
+        'students': [
+          {'id': 'a', 'name': 'PC Alpha', 'ip': '10.0.55.11', 'online': false},
+        ],
         'tools': {
           'recordings': [session, old],
         },
@@ -226,6 +231,8 @@ void main() {
       await tester.tap(find.text('Open'));
       await tester.pumpAndSettle();
       expect(find.text('Chờ tải về'), findsOneWidget);
+      // The card names the computer with its address (from the roster).
+      expect(find.text('PC Alpha (10.0.55.11)'), findsOneWidget);
       expect(find.text('Offline • Trạng thái gần nhất'), findsOneWidget);
       expect(find.text('Dừng ghi'), findsNothing);
       expect(find.text('PC History'), findsNothing);
@@ -236,17 +243,123 @@ void main() {
       report['queued_chunks'] = 0;
       agent.notifyListeners();
       await tester.pumpAndSettle();
+      // While the dialog stays open the finished session does not jump to
+      // History; it stays where the teacher was looking, now marked complete.
+      expect(find.text('Đang ghi / chờ tải (1)'), findsOneWidget);
+      expect(find.byTooltip('Đã hoàn tất'), findsOneWidget);
+      expect(find.byIcon(Icons.delete_outline), findsNothing);
+      // Reopening the dialog files it under History, as a status icon only.
+      await tester.tap(find.byTooltip('Đóng'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Open'));
+      await tester.pumpAndSettle();
       expect(find.text('Đang ghi / chờ tải (0)'), findsOneWidget);
       await tester.tap(find.text('Lịch sử (2)'));
       await tester.pumpAndSettle();
-      expect(find.text('PC Alpha'), findsOneWidget);
-      expect(find.text('Đã hoàn tất'), findsOneWidget);
+      expect(find.text('PC Alpha (10.0.55.11)'), findsOneWidget);
+      expect(find.byTooltip('Đã hoàn tất'), findsOneWidget);
+      expect(find.byTooltip('Kết thúc • Có lỗi khi ghi'), findsOneWidget);
+      expect(find.text('Đã hoàn tất'), findsNothing);
       expect(find.text('Capture failed'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.binding.setSurfaceSize(const Size(740, 520));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
-      await tester.tap(find.text('Đóng'));
+      await tester.tap(find.byTooltip('Đóng'));
+      await tester.pumpAndSettle();
+      agent.dispose();
+    },
+  );
+
+  testWidgets(
+    'the first seconds are calm; only a long silence or a real fault is red',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1100, 850));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final agent = RecordingAgent();
+      final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      Map session(int created) => {
+        'id': 's',
+        'created': created,
+        'deadline': created + 3600,
+        'stop': false,
+        'folder': '/Desktop/S',
+        'targets': [
+          {
+            'id': 'a',
+            'name': 'PC A',
+            'online': true,
+            'stale': true,
+            'received': 0,
+            'report': {'phase': 'pending'},
+          },
+        ],
+      };
+      agent.state = {
+        'tools': {
+          'recordings': [session(now - 3)],
+        },
+      };
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (context) => TextButton(
+              onPressed: () => showRecordings(context, agent, const []),
+              child: const Text('Open'),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('Open'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('báo tiến độ đầu tiên'), findsOneWidget);
+      expect(find.text('Chưa có trạng thái mới'), findsNothing);
+      expect(find.textContaining('Chưa nhận được phản hồi'), findsNothing);
+      // No delete button while capturing; the stop time is shown.
+      expect(find.byIcon(Icons.delete_outline), findsNothing);
+      expect(find.textContaining('Tự động dừng lúc'), findsOneWidget);
+
+      // After a minute of silence it is reported as a problem.
+      agent.state = {
+        'tools': {
+          'recordings': [session(now - 90)],
+        },
+      };
+      agent.notifyListeners();
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Chưa nhận được phản hồi'), findsOneWidget);
+
+      // A live recording shows its running time.
+      agent.state = {
+        'tools': {
+          'recordings': [
+            {
+              ...session(now - 90),
+              'targets': [
+                {
+                  'id': 'a',
+                  'name': 'PC A',
+                  'online': true,
+                  'stale': false,
+                  'received': 0,
+                  'report': {
+                    'phase': 'recording',
+                    'elapsed_seconds': 83,
+                    'fps': 24.0,
+                    'width': 1280,
+                    'height': 720,
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      };
+      agent.notifyListeners();
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Chưa nhận được phản hồi'), findsNothing);
+      expect(find.textContaining('1:23'), findsOneWidget);
+      await tester.tap(find.byTooltip('Đóng'));
       await tester.pumpAndSettle();
       agent.dispose();
     },
@@ -297,12 +410,92 @@ void main() {
         },
       ],
     );
-    expect(find.text('Ghi mới: PC B'), findsOneWidget);
-    await tester.tap(find.text('Đóng'));
+    expect(find.text('Đang bắt đầu ghi: PC B'), findsOneWidget);
+    await tester.tap(find.byTooltip('Đóng'));
     await tester.pumpAndSettle();
     expect(agent.calls.where((c) => c['action'] == 'recording_stop'), isEmpty);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
     agent.dispose();
   });
+
+  testWidgets(
+    'a finished session can be deleted after a confirmation, in both tabs',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1100, 850));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final agent = RecordingAgent();
+      agent.state = {
+        'tools': {
+          'recordings': [
+            {
+              'id': 'waiting',
+              'stop': true,
+              'folder': '/Desktop/Waiting',
+              'targets': [
+                {
+                  'id': 'a',
+                  'name': 'PC Waiting',
+                  'online': false,
+                  'received': 1,
+                  'report': {
+                    'phase': 'stopped',
+                    'completed_chunks': 2,
+                    'queued_chunks': 1,
+                  },
+                },
+              ],
+            },
+            {
+              'id': 'done',
+              'stop': true,
+              'folder': '/Desktop/Done',
+              'targets': [
+                {
+                  'id': 'b',
+                  'name': 'PC Done',
+                  'online': false,
+                  'received': 3,
+                  'report': {'phase': 'stopped', 'completed_chunks': 3},
+                },
+              ],
+            },
+          ],
+        },
+      };
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (context) => TextButton(
+              onPressed: () => showRecordings(context, agent, const []),
+              child: const Text('Open'),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('Open'));
+      await tester.pumpAndSettle();
+      // A session that is still capturing or waiting for upload cannot be
+      // deleted, so the first tab offers no delete button at all.
+      expect(find.byIcon(Icons.delete_outline), findsNothing);
+      // History tab.
+      await tester.tap(find.text('Lịch sử (1)'));
+      await tester.pumpAndSettle();
+      // Cancelling the confirmation deletes nothing.
+      await tester.tap(find.byIcon(Icons.delete_outline));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('3 đoạn video MP4'), findsOneWidget);
+      await tester.tap(find.text('Hủy'));
+      await tester.pumpAndSettle();
+      expect(agent.calls, isEmpty);
+      await tester.tap(find.byIcon(Icons.delete_outline));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('3 đoạn video MP4'), findsOneWidget);
+      await tester.tap(find.text('Xóa').last);
+      await tester.pumpAndSettle();
+      expect(agent.calls.last['input'], {'id': 'done'});
+      expect(tester.takeException(), isNull);
+      agent.dispose();
+    },
+  );
 }

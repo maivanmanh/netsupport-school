@@ -1,6 +1,8 @@
+import 'icon_tints.dart';
 import 'package:flutter/material.dart';
 import 'agent.dart';
 import 'app_dialog.dart';
+import 'app_icons.dart';
 
 Future<void> showWebsiteDialog(
   BuildContext context,
@@ -160,7 +162,7 @@ class _WebsiteDialogState extends State<_WebsiteDialog> {
         decoration: InputDecoration(
           labelText: 'Địa chỉ website',
           hintText: 'https://example.com',
-          prefixIcon: const Icon(Icons.link),
+          prefixIcon: const TIcon(Icons.link),
           helperText: 'Nhập địa chỉ hoặc chọn một gợi ý đã lưu.',
         ),
       ),
@@ -185,7 +187,7 @@ class _WebsiteDialogState extends State<_WebsiteDialog> {
                   dense: true,
                   selected: AutocompleteHighlightedOption.of(context) == index,
                   selectedTileColor: const Color(0xffe4f1f2),
-                  leading: const Icon(Icons.history, size: 18),
+                  leading: const TIcon(Icons.history, size: 18),
                   title: Text(
                     url,
                     maxLines: 1,
@@ -228,7 +230,7 @@ class _WebsiteDialogState extends State<_WebsiteDialog> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(
+          TIcon(
             failed.isEmpty ? Icons.check_circle_outline : Icons.error_outline,
             size: 20,
             color: failed.isEmpty
@@ -272,7 +274,6 @@ class _WebsiteDialogState extends State<_WebsiteDialog> {
     subtitle: 'Mở trong trình duyệt mặc định của từng máy học viên.',
     width: 620,
     actions: [
-      AppDialog.cancel(context, label: 'Đóng'),
       AppDialog.primary(
         onPressed: () => open(),
         icon: Icons.open_in_browser,
@@ -291,7 +292,7 @@ class _WebsiteDialogState extends State<_WebsiteDialog> {
           ),
           child: Row(
             children: [
-              const Icon(Icons.computer_outlined, size: 18),
+              const TIcon(Icons.computer_outlined, size: 18),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
@@ -333,11 +334,7 @@ class _WebsiteDialogState extends State<_WebsiteDialog> {
                           horizontal: 12,
                         ),
                         dense: true,
-                        leading: const Icon(
-                          Icons.public,
-                          size: 20,
-                          color: Color(0xff237477),
-                        ),
+                        leading: SiteIcon(url: recent[index], size: 22),
                         title: Text(
                           recent[index],
                           maxLines: 1,
@@ -350,7 +347,7 @@ class _WebsiteDialogState extends State<_WebsiteDialog> {
                         onTap: busy ? null : () => open(recent[index]),
                         trailing: IconButton(
                           tooltip: 'Xóa khỏi danh sách gần đây',
-                          icon: const Icon(Icons.close, size: 17),
+                          icon: const TIcon(Icons.close, size: 17),
                           onPressed: busy ? null : () => remove(recent[index]),
                         ),
                       ),

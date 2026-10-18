@@ -87,11 +87,6 @@ Future<void> collectDiagnostics(
                   }
                 },
               ),
-            AppDialog.primary(
-              onPressed: () => Navigator.pop(context),
-              icon: Icons.check,
-              label: 'Đóng',
-            ),
           ],
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,

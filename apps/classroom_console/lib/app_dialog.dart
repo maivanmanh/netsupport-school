@@ -1,3 +1,4 @@
+import 'icon_tints.dart';
 import 'package:flutter/material.dart';
 
 /// Shared look of every Teacher dialog: a header (icon, title, optional
@@ -79,7 +80,7 @@ class AppDialog extends StatelessWidget {
               height: 15,
               child: CircularProgressIndicator(strokeWidth: 2),
             )
-          : Icon(icon, size: 17),
+          : TIcon(icon, size: 17),
       label: Text(label),
     );
   }
@@ -97,7 +98,7 @@ class AppDialog extends StatelessWidget {
       side: const BorderSide(color: Color(0xffc9d3db)),
     ),
     onPressed: onPressed,
-    icon: icon == null ? const SizedBox.shrink() : Icon(icon, size: 17),
+    icon: icon == null ? const SizedBox.shrink() : TIcon(icon, size: 17),
     label: Text(label),
   );
 
@@ -152,7 +153,7 @@ class AppDialog extends StatelessWidget {
                           color: color.withValues(alpha: 0.12),
                           borderRadius: BorderRadius.circular(10),
                         ),
-                        child: Icon(icon, size: 21, color: color),
+                        child: TIcon(icon, size: 21, color: color),
                       ),
                       const SizedBox(width: 14),
                     ],
@@ -193,7 +194,7 @@ class AppDialog extends StatelessWidget {
                       visualDensity: VisualDensity.compact,
                       splashRadius: 18,
                       onPressed: onClose ?? () => Navigator.maybePop(context),
-                      icon: const Icon(Icons.close, size: 19, color: muted),
+                      icon: const TIcon(Icons.close, size: 19, color: muted),
                     ),
                   ],
                 ),
@@ -310,7 +311,7 @@ class InlineNotice extends StatelessWidget {
     child: Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Icon(
+        TIcon(
           tone == AppTone.danger
               ? Icons.error_outline
               : tone == AppTone.warning
@@ -352,7 +353,7 @@ class DialogEmpty extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 38, color: const Color(0xffa9b8c4)),
+          TIcon(icon, size: 38, color: const Color(0xffa9b8c4)),
           const SizedBox(height: 10),
           Text(
             title,
@@ -439,4 +440,11 @@ Future<bool> confirmDialog(
     ),
   );
   return result == true;
+}
+
+/// Disposes a controller owned by a dialog's caller. The dialog is still on
+/// screen for its closing animation after `showDialog` returns, and widgets
+/// listening to the controller rebuild during it, so disposing at once throws.
+void disposeAfterClose(ChangeNotifier controller) {
+  Future<void>.delayed(const Duration(milliseconds: 500), controller.dispose);
 }

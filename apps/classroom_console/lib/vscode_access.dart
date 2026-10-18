@@ -1,4 +1,6 @@
+import 'icon_tints.dart';
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'agent.dart';
@@ -25,12 +27,26 @@ Set<String> vscodeBlockedStudents(Agent agent) {
 class _Extension {
   _Extension(this.id, this.name, this.description, this.publisher);
   final String id, name, description, publisher;
-  factory _Extension.fromJson(Map j) => _Extension(
-    '${j['id'] ?? ''}',
-    '${j['name'] ?? j['id'] ?? ''}',
-    '${j['description'] ?? ''}',
-    '${j['publisher'] ?? ''}',
-  );
+
+  /// Decoded once; decoding per rebuild would redo the work on every keystroke.
+  Uint8List? icon;
+  factory _Extension.fromJson(Map j) {
+    final id = '${j['id'] ?? ''}';
+    // A Student that has not resolved VS Code's "%key%" placeholders sends them
+    // as they are; show the extension's own name instead.
+    String readable(Object? value, String fallback) {
+      final text = '${value ?? ''}'.trim();
+      return RegExp(r'^%.*%$').hasMatch(text) || text.isEmpty ? fallback : text;
+    }
+
+    final shortName = id.contains('.') ? id.split('.').last : id;
+    return _Extension(
+      id,
+      readable(j['name'], shortName),
+      readable(j['description'], ''),
+      '${j['publisher'] ?? ''}',
+    );
+  }
 }
 
 class VsCodeWindow extends StatefulWidget {
@@ -76,6 +92,8 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
   bool firstScan = true;
   final newIds = <String>{};
   final scanJobs = <String>{};
+  Map<String, Uint8List>? iconCache;
+  bool fetchingIcons = false;
 
   List<String> get onlineIds => [
     for (final s in agent.students)
@@ -148,11 +166,12 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
 
   Future<Map<String, dynamic>?> fetchOne(
     String studentId,
-    int generation,
-  ) async {
+    int generation, [
+    List<String> iconIds = const [],
+  ]) async {
     final started = await agent.request(
       'vscode_list',
-      input: {'student': studentId},
+      input: {'student': studentId, 'icons_for': iconIds},
     );
     final id = started['job_id'];
     if (!mounted || generation != scanGeneration) {
@@ -163,8 +182,11 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
       return null;
     }
     scanJobs.add('$id');
+    var attempt = 0;
     while (mounted && generation == scanGeneration) {
-      await Future<void>.delayed(const Duration(milliseconds: 700));
+      await Future<void>.delayed(
+        resultPollDelay(attempt++, const Duration(milliseconds: 700)),
+      );
       if (!mounted || generation != scanGeneration) return null;
       final answer = await agent.request('fs_result', input: {'id': id});
       if (!mounted || generation != scanGeneration) return null;
@@ -201,6 +223,10 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
     final generation = ++scanGeneration;
     final ids = onlineIds; // Snapshot: later arrivals belong to the next scan.
     final baseline = extensions.map((e) => e.id).toSet();
+    await loadIconCache();
+    if (!mounted || generation != scanGeneration) return;
+    final owners =
+        <String, List<String>>{}; // extension id -> Students having it
     final initial = firstScan;
     firstScan = false;
     setState(() {
@@ -226,6 +252,8 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
           if (raw is! Map) continue;
           final ext = _Extension.fromJson(raw);
           if (_copilotIds.contains(ext.id)) continue;
+          owners.putIfAbsent(ext.id, () => []).add(id);
+          ext.icon = iconCache?[ext.id];
           if (!extensions.any((e) => e.id == ext.id) &&
               !additions.any((e) => e.id == ext.id)) {
             additions.add(ext);
@@ -261,7 +289,108 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
         });
       }
     });
+    unawaited(fetchMissingIcons(owners, generation));
   }
+
+  // ---------------------------------------------------------------- icons
+
+  Future<void> loadIconCache() async {
+    if (iconCache != null) return;
+    final cache = <String, Uint8List>{};
+    try {
+      for (final entry in (await agent.storeList('vscode_icons')).entries) {
+        final png = entry.value is Map ? (entry.value as Map)['png'] : null;
+        if (png is! String) continue;
+        try {
+          cache[entry.key] = base64Decode(png);
+        } catch (_) {}
+      }
+    } catch (_) {
+      // Icons are cosmetic; the list works without the cache.
+    }
+    iconCache = cache;
+  }
+
+  /// Every extension whose icon the Teacher lacks is requested from exactly one
+  /// Student that has it, spread over the Students, so the same icon is never
+  /// uploaded by many computers.
+  Future<void> fetchMissingIcons(
+    Map<String, List<String>> owners,
+    int generation,
+  ) async {
+    final plan = <String, List<String>>{};
+    var turn = 0;
+    for (final ext in extensions) {
+      final have = owners[ext.id];
+      if (ext.icon != null || have == null || have.isEmpty) continue;
+      plan.putIfAbsent(have[turn++ % have.length], () => []).add(ext.id);
+    }
+    if (plan.isEmpty || !mounted || generation != scanGeneration) return;
+    setState(() => fetchingIcons = true);
+    await Future.wait(
+      plan.entries.map((entry) async {
+        for (var i = 0; i < entry.value.length; i += 40) {
+          final chunk = entry.value.sublist(
+            i,
+            (i + 40).clamp(0, entry.value.length),
+          );
+          final report = await fetchOne(entry.key, generation, chunk);
+          if (!mounted || generation != scanGeneration || report == null) {
+            return;
+          }
+          final saved = <String, dynamic>{};
+          setState(() {
+            for (final raw in (report['extensions'] as List? ?? const [])) {
+              if (raw is! Map) continue;
+              final png = raw['icon_png_base64'];
+              if (png is! String || png.isEmpty) continue;
+              final ext = extensions.where((e) => e.id == raw['id']);
+              try {
+                final bytes = base64Decode(png);
+                for (final e in ext) {
+                  e.icon = bytes;
+                }
+                iconCache?['${raw['id']}'] = bytes;
+                saved['${raw['id']}'] = {'png': png};
+              } catch (_) {}
+            }
+          });
+          if (saved.isNotEmpty) {
+            unawaited(
+              agent.storeApply('vscode_icons', saved).catchError((_) {}),
+            );
+          }
+        }
+      }),
+    );
+    if (mounted) setState(() => fetchingIcons = false);
+  }
+
+  Widget _icon(_Extension e) {
+    final bytes = e.icon;
+    return SizedBox(
+      width: 30,
+      height: 30,
+      child: bytes == null
+          ? _genericIcon()
+          : Image.memory(
+              bytes,
+              fit: BoxFit.contain,
+              cacheWidth: 64,
+              filterQuality: FilterQuality.medium,
+              gaplessPlayback: true,
+              errorBuilder: (_, _, _) => _genericIcon(),
+            ),
+    );
+  }
+
+  Widget _genericIcon() => Container(
+    decoration: BoxDecoration(
+      color: Colors.blueGrey.withValues(alpha: 0.12),
+      borderRadius: BorderRadius.circular(6),
+    ),
+    child: const TIcon(Icons.extension, size: 17, color: Colors.blueGrey),
+  );
 
   Future<String?> waitForJob(dynamic id) async {
     final deadline = DateTime.now().add(const Duration(seconds: 60));
@@ -540,13 +669,13 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
                     if (loading)
                       TextButton.icon(
                         onPressed: stopScan,
-                        icon: const Icon(Icons.stop_circle_outlined, size: 18),
+                        icon: const TIcon(Icons.stop_circle_outlined, size: 18),
                         label: const Text('Dừng'),
                       )
                     else
                       TextButton.icon(
                         onPressed: load,
-                        icon: const Icon(Icons.refresh, size: 18),
+                        icon: const TIcon(Icons.refresh, size: 18),
                         label: const Text('Quét lại mọi máy đang kết nối'),
                       ),
                   ],
@@ -557,7 +686,7 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
                   onChanged: (_) => setState(() {}),
                   decoration: const InputDecoration(
                     isDense: true,
-                    prefixIcon: Icon(Icons.search, size: 18),
+                    prefixIcon: TIcon(Icons.search, size: 18),
                     hintText: 'Tìm tiện ích đã cài…',
                     filled: true,
                     fillColor: Colors.white,
@@ -617,6 +746,8 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
                                       }),
                                 title: Row(
                                   children: [
+                                    _icon(e),
+                                    const SizedBox(width: 10),
                                     Expanded(
                                       child: Text(
                                         e.name,
@@ -680,7 +811,7 @@ class _VsCodeWindowState extends State<VsCodeWindow> {
             const Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.check_circle, size: 17, color: Color(0xff1f7a4d)),
+                TIcon(Icons.check_circle, size: 17, color: Color(0xff1f7a4d)),
                 SizedBox(width: 6),
                 Text(
                   'Đã áp dụng',
@@ -729,7 +860,7 @@ class _CopilotRow extends StatelessWidget {
     child: Row(
       children: [
         Checkbox(value: value, onChanged: onChanged),
-        const Icon(Icons.smart_toy_outlined, size: 18, color: Colors.blueGrey),
+        const TIcon(Icons.smart_toy_outlined, size: 18, color: Colors.blueGrey),
         const SizedBox(width: 10),
         Expanded(
           child: Column(

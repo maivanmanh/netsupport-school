@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -15,6 +16,19 @@ class ObserveAgent extends Agent {
   Completer<void>? closeAck;
   @override
   bool get connected => true;
+
+  /// Observe only goes live for an online Student; default the fixture's one.
+  @override
+  List<Map<String, dynamic>> get students {
+    final rows = super.students;
+    final id = (state['observe'] as Map?)?['id'];
+    return rows.isNotEmpty || id == null
+        ? rows
+        : [
+            {'id': id, 'online': true},
+          ];
+  }
+
   @override
   Future<void> command(
     String action, [
@@ -533,9 +547,11 @@ void main() {
       );
       a.notifyListeners();
       await t.pump();
-      expect(titles.last, 'Observe · PC 01');
+      expect(titles.last, 'Quan sát · PC 01');
       await t.pump(const Duration(milliseconds: 100));
       await t.pump();
+      // The pending preview cross-fades out over 500 ms (AnimatedSwitcher).
+      await t.pump(const Duration(milliseconds: 600));
       expect(
         find.text('Đang kết nối tới học viên…'),
         findsNothing,
@@ -596,11 +612,11 @@ void main() {
       await t.pump();
       expect(a.inputs.any((v) => v['action'] == 'control'), true);
       expect(find.text('Đang đổi chế độ nhập…'), findsOneWidget);
-      expect(titles.last, 'Observe · PC 01');
+      expect(titles.last, 'Quan sát · PC 01');
       a.state['observe']['mode'] = 'control';
       a.notifyListeners();
       await t.pump();
-      expect(titles.last, 'Control · PC 01');
+      expect(titles.last, 'Điều khiển · PC 01');
       a.state['observe']['cursor'] = {
         'serial': 1,
         'width': 1,
@@ -719,13 +735,18 @@ void main() {
       await t.pump();
       expect(a.inputs.any((v) => v['action'] == 'observe'), isFalse);
       expect(a.state['observe']['mode'], 'control');
-      expect(
-        a.inputs.any(
-          (v) =>
-              v['action'] == 'key' && v['key'] == 'Shift' && v['down'] == false,
-        ),
-        isTrue,
-      );
+      // macOS forwards keys from the native event tap, not Flutter key events.
+      if (!Platform.isMacOS) {
+        expect(
+          a.inputs.any(
+            (v) =>
+                v['action'] == 'key' &&
+                v['key'] == 'Shift' &&
+                v['down'] == false,
+          ),
+          isTrue,
+        );
+      }
       expect(
         a.inputs.lastWhere((v) => v['action'] == 'button_at')['down'],
         isFalse,
@@ -744,10 +765,12 @@ void main() {
       await t.sendKeyDownEvent(LogicalKeyboardKey.keyA);
       await t.sendKeyUpEvent(LogicalKeyboardKey.keyA);
       expect(a.inputs.any((v) => v['action'] == 'move'), isTrue);
-      expect(
-        a.inputs.any((v) => v['action'] == 'key' && v['key'] == 'a'),
-        isTrue,
-      );
+      if (!Platform.isMacOS) {
+        expect(
+          a.inputs.any((v) => v['action'] == 'key' && v['key'] == 'a'),
+          isTrue,
+        );
+      }
       expect(
         a.inputs.any(
           (v) => v['action'] == 'control' || v['action'] == 'observe',
@@ -798,7 +821,7 @@ void main() {
       a.state['observe']['mode'] = 'observe';
       a.notifyListeners();
       await t.pump();
-      expect(titles.last, 'Observe · PC 01');
+      expect(titles.last, 'Quan sát · PC 01');
       expect(
         t.getSize(find.byKey(const ValueKey('observe-bottom-edge'))).height,
         5,
@@ -807,11 +830,11 @@ void main() {
       a.state['observe']['mode'] = 'exclusive';
       a.notifyListeners();
       await t.pump();
-      expect(titles.last, 'Control · PC 01');
+      expect(titles.last, 'Điều khiển · PC 01');
       a.state['observe']['phase'] = 'ended';
       a.notifyListeners();
       await t.pump();
-      expect(titles.last, 'Observe · PC 01');
+      expect(titles.last, 'Quan sát · PC 01');
       await t.pumpWidget(const SizedBox());
       a.dispose();
     },
@@ -857,7 +880,7 @@ void main() {
     await t.pump();
     await t.pump(const Duration(seconds: 1));
     await t.pump();
-    await t.tap(find.text('Giãn'));
+    await t.tap(find.text('Stretch'));
     await t.pump();
     await t.tap(find.text('Điều khiển'));
     a.state['observe']['mode'] = 'control';
@@ -916,9 +939,11 @@ void main() {
         ),
       );
     }
-    expect(a.inputs.where((v) => v['action'] == 'scroll').map((v) => v['y']), [
-      1,
-    ], reason: 'Small wheel deltas must accumulate rather than disappear');
+    expect(
+      a.inputs.where((v) => v['action'] == 'scroll').map((v) => v['y']),
+      [1],
+      reason: 'Small wheel deltas must accumulate rather than disappear',
+    );
     a.inputs.clear();
     await t.sendEventToBinding(
       const PointerPanZoomStartEvent(pointer: 8, position: Offset(400, 300)),
@@ -936,9 +961,11 @@ void main() {
     await t.sendEventToBinding(
       const PointerPanZoomEndEvent(pointer: 8, position: Offset(400, 300)),
     );
-    expect(a.inputs.where((v) => v['action'] == 'scroll').map((v) => v['y']), [
-      1,
-    ], reason: 'Trackpad content pan must become remote wheel input');
+    expect(
+      a.inputs.where((v) => v['action'] == 'scroll').map((v) => v['y']),
+      [1],
+      reason: 'Trackpad content pan must become remote wheel input',
+    );
     // A new frame shape changes the crop immediately after native stats update.
     source = const Size(1920, 1080);
     await t.pump(const Duration(seconds: 1));

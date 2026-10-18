@@ -1,3 +1,4 @@
+import 'icon_tints.dart';
 import 'package:flutter/material.dart';
 
 /// Session values only. Missing/stale timing is never presented as zero delay.
@@ -108,7 +109,7 @@ class ObserveStatsPanel extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  Icon(
+                  TIcon(
                     Icons.speed,
                     size: 14,
                     color: data.live ? const Color(0xff6ed9b4) : Colors.white54,

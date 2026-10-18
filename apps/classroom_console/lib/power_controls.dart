@@ -1,3 +1,4 @@
+import 'icon_tints.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'agent.dart';
@@ -62,7 +63,7 @@ List<PopupMenuEntry<String>> powerMenuItems({
     value: 'lock',
     child: ListTile(
       dense: true,
-      leading: Icon(Icons.lock_outline),
+      leading: TIcon(Icons.lock_outline),
       title: Text('Khóa màn hình…'),
     ),
   ),
@@ -70,7 +71,7 @@ List<PopupMenuEntry<String>> powerMenuItems({
     value: 'unlock',
     child: ListTile(
       dense: true,
-      leading: const Icon(Icons.lock_open_outlined),
+      leading: const TIcon(Icons.lock_open_outlined),
       title: const Text('Mở khóa màn hình'),
       subtitle: anyLocked ? null : const Text('Hiện không máy nào bị khóa'),
     ),
@@ -79,7 +80,7 @@ List<PopupMenuEntry<String>> powerMenuItems({
     value: anyClipboardBlocked ? 'clipboard_allow' : 'clipboard_block',
     child: ListTile(
       dense: true,
-      leading: Icon(
+      leading: TIcon(
         anyClipboardBlocked ? Icons.content_paste : Icons.content_paste_off,
       ),
       title: Text(
@@ -99,7 +100,7 @@ List<PopupMenuEntry<String>> powerMenuItems({
     value: 'logout',
     child: ListTile(
       dense: true,
-      leading: Icon(Icons.logout),
+      leading: TIcon(Icons.logout),
       title: Text('Đăng xuất người dùng…'),
     ),
   ),
@@ -107,7 +108,7 @@ List<PopupMenuEntry<String>> powerMenuItems({
     value: 'reboot',
     child: ListTile(
       dense: true,
-      leading: Icon(Icons.restart_alt),
+      leading: TIcon(Icons.restart_alt),
       title: Text('Khởi động lại…'),
     ),
   ),
@@ -115,7 +116,7 @@ List<PopupMenuEntry<String>> powerMenuItems({
     value: 'shutdown',
     child: ListTile(
       dense: true,
-      leading: Icon(Icons.power_settings_new, color: Color(0xffb83b40)),
+      leading: TIcon(Icons.power_settings_new, color: Color(0xffb83b40)),
       title: Text('Tắt máy…'),
     ),
   ),
