@@ -42,6 +42,9 @@ pub struct ClassRules {
     pub clipboard: Option<Scoped<bool>>,
     /// Class-wide activity collection switch.
     pub activity: bool,
+    /// `Some(list)` while blocking AI websites is on: the sites blocked, in
+    /// addition to whatever the Internet rule says. Class-wide.
+    pub ai: Option<Vec<String>>,
 }
 
 /// One corrective job for one Student: the Teacher action name and its input.
@@ -70,6 +73,21 @@ impl ClassRules {
         true
     }
 
+    /// The Internet rule this Student must be enforcing: the Teacher's own rule
+    /// for it combined with the AI-website list while that is switched on
+    /// (see [`crate::ai_sites::merge_into`]). `None` when nothing was ever asked.
+    pub fn internet_for(&self, student: &str) -> Option<InternetPolicy> {
+        let own = self.internet.as_ref().filter(|r| r.covers(student));
+        match (&self.ai, own) {
+            (None, None) => None,
+            (None, Some(rule)) => Some(rule.value.clone()),
+            (Some(sites), own) => Some(crate::ai_sites::merge_into(
+                &own.map(|r| r.value.clone()).unwrap_or_default(),
+                sites,
+            )),
+        }
+    }
+
     /// What this Student still needs, judged from the state it reports
     /// (`caps`: its capability document) against the rules that cover it.
     pub fn fixes_for(&self, student: &str, caps: &Value) -> Vec<Fix> {
@@ -77,16 +95,16 @@ impl ClassRules {
         if caps["guard"] != 1 {
             return fixes; // cannot enforce anything (not Windows/administrator)
         }
-        if let Some(rule) = self.internet.as_ref().filter(|r| r.covers(student)) {
-            let wanted = internet_fingerprint(&rule.value);
+        if let Some(wanted_policy) = self.internet_for(student) {
+            let wanted = internet_fingerprint(&wanted_policy);
             let in_sync = match caps["internet_fp"].as_str() {
                 Some(reported) => reported == wanted,
-                None => caps["internet"].as_str().unwrap_or("open") == rule.value.mode.name(),
+                None => caps["internet"].as_str().unwrap_or("open") == wanted_policy.mode.name(),
             };
             if !in_sync {
                 fixes.push((
                     "policy",
-                    json!({"policy": {"internet": rule.value, "lease_minutes": 1440}}),
+                    json!({"policy": {"internet": wanted_policy, "lease_minutes": 1440}}),
                 ));
             }
         }
@@ -138,11 +156,12 @@ mod tests {
                 None,
             )),
             apps: Some(Scoped::new(
-                AppPolicy { enabled: true, mode: MODE_BLOCK.into(), ids: vec!["0123456789ab".into()] },
+                AppPolicy { enabled: true, mode: MODE_BLOCK.into(), ids: vec!["0123456789ab".into()], paths: vec![] },
                 None,
             )),
             clipboard: Some(Scoped::new(true, Some(vec!["a".into()]))),
             activity: true,
+            ai: None,
         }
     }
 
@@ -154,6 +173,39 @@ mod tests {
         // Scoped rules skip computers outside their group.
         let names: Vec<&str> = rules().fixes_for("b", &caps).iter().map(|f| f.0).collect();
         assert_eq!(names, ["policy", "vscode_policy", "app_policy"]);
+    }
+
+    #[test]
+    fn blocking_ai_sites_is_added_to_the_internet_rule_and_lifted_cleanly() {
+        let caps = json!({"guard":1,"internet_fp":"","internet":"open"});
+        let mut rules = ClassRules { day: crate::local_day::today(), ..Default::default() };
+        // Nothing asked: nothing to do.
+        assert!(rules.fixes_for("a", &caps).is_empty());
+        // Switch on: the Student is told to block the list.
+        rules.ai = Some(vec!["chatgpt.com".into()]);
+        let fixes = rules.fixes_for("a", &caps);
+        assert_eq!(fixes.len(), 1);
+        assert_eq!(fixes[0].0, "policy");
+        assert_eq!(fixes[0].1["policy"]["internet"]["mode"], "block_only");
+        assert_eq!(fixes[0].1["policy"]["internet"]["rules"][0], "chatgpt.com");
+        // Once it enforces exactly that, it is left alone.
+        let wanted = internet_fingerprint(&rules.internet_for("a").unwrap());
+        let in_step = json!({"guard":1,"internet_fp":wanted});
+        assert!(rules.fixes_for("a", &in_step).is_empty());
+        // The Teacher's own rule for this Student combines with it.
+        rules.internet = Some(Scoped::new(
+            InternetPolicy { mode: Mode::BlockOnly, rules: vec!["facebook.com".into()] },
+            Some(vec!["a".into()]),
+        ));
+        let a = rules.internet_for("a").unwrap();
+        assert_eq!(a.rules, ["facebook.com", "chatgpt.com"]);
+        let b = rules.internet_for("b").unwrap();
+        assert_eq!(b.rules, ["chatgpt.com"], "outside the group only the AI list applies");
+        // Switch off with an explicit open rule remembered: the Student is released.
+        rules.ai = None;
+        rules.internet = Some(Scoped::new(InternetPolicy::default(), None));
+        let blocking = json!({"guard":1,"internet_fp":"abc123","internet":"block_only"});
+        assert_eq!(rules.fixes_for("a", &blocking)[0].1["policy"]["internet"]["mode"], "open");
     }
 
     #[test]

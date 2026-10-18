@@ -86,6 +86,18 @@ Control traffic is small and benefits from simple reliability. QUIC/WebRTC are u
 
 The observed `/20` network and unknown campus VLAN/broadcast topology make room-wide broadcast discovery undesirable. Use the campus `.200` teacher convention plus manual override.
 
+## Teacher location: remembered address, convention, own-/24 probe and a Teacher knock (2026-10-14)
+
+Owner decision (supersedes "convention plus manual override" only for what happens when that address is wrong). Rooms use at most 254 hosts per /24 (campus `10.0.X.1-200`, home `192.168.x.1-254`), a room's Teacher may move (DHCP, or `.200` changed), and either side may start first. Still **no broadcast or multicast**; nothing is scanned outside the Student's own /24.
+
+Student, best first: manual address (installer, `--teacher-ip`, settings) → address that last worked (profile doc `teacher_last`) → `.200` of its own /24. These are probed together at start and the best answering one is used. If the Teacher is silent, the Student retries with 0.5/1/2 s then every 3 s (±20 % jitter; a knock cuts the wait short), each attempt capped at 5 s, and, after 6 s, probes its own /24 for a listener on the control port (128 at a time, 300 ms, repeated every 45 s). A candidate is only believed after the real Student registration succeeds; then it is remembered and the Student restarts once so Guard rules, tools and monitoring are rebuilt for the new address. A Teacher verified within the last minute outranks a manual address, so the two cannot alternate.
+
+Teacher: remembers the Student addresses it has seen (store `knock/students`, 90 days, 512 max) and sends a unicast UDP "knock" (control port + 20, payload `CLSRM-KNOCK1` + control port) to those not connected, after 1, 2, 4, 8, 16 s and then every 30 s. A knock only makes a *disconnected* Student try the sender; the registration still decides.
+
+Switches: Student setting `network.teacher_discovery` (default on; off = only the configured address, nothing probed or scanned, knocks ignored).
+
+Known gap: the Student does not authenticate the Teacher beyond the protocol registration (as before). Anything on the LAN that speaks the protocol on the control port can be adopted while the real Teacher is unreachable. A room key / pinned Teacher identity is the planned hardening (the remote-terminal trust store is the starting point).
+
 ## Adaptive screen-content delivery
 
 The target workload is mostly code, slides, terminals, and browsers. Resolution/readability matters more than forcing 30 fps continuously. Frame rate and bitrate may adapt to activity/load while resolution is preserved where possible. Under sustained encoder pressure, packet loss, or receiver decode slowdown, reduce bitrate first; reduce the active FPS ceiling only after bitrate reaches its configured minimum or runtime bitrate control is unavailable.

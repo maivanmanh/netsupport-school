@@ -26,8 +26,12 @@ pub struct ObserveRequests {
     pub entries: Mutex<std::collections::HashMap<String, ObserveJob>>,
     wake: Condvar,
     thumbnail_width: AtomicU32,
-    /// Teacher's enhanced-profile offer (codecs it decodes, fps ceiling).
-    offer: (Vec<String>, u32),
+    /// Teacher's enhanced-profile offer (codecs it decodes, fps ceiling). Behind a
+    /// lock because switching the performance mode changes it while running.
+    offer: Mutex<(Vec<String>, u32)>,
+    /// Thumbnail settings in force now; `None` until a performance-mode switch,
+    /// then the connection threads use these instead of the ones they started with.
+    monitoring: Mutex<Option<MonitoringConfig>>,
 }
 
 struct BroadcastBadgeSuppression {
@@ -63,9 +67,22 @@ fn wait_badge_hidden(applied: &AtomicBool) -> bool {
 impl ObserveRequests {
     pub fn with_offer(offer: (Vec<String>, u32)) -> Self {
         Self {
-            offer,
+            offer: Mutex::new(offer),
             ..Self::default()
         }
+    }
+    pub fn offer(&self) -> (Vec<String>, u32) {
+        self.offer.lock().unwrap().clone()
+    }
+    pub fn set_offer(&self, offer: (Vec<String>, u32)) {
+        *self.offer.lock().unwrap() = offer;
+    }
+    pub fn monitoring_override(&self) -> Option<MonitoringConfig> {
+        self.monitoring.lock().unwrap().clone()
+    }
+    pub fn set_monitoring(&self, settings: MonitoringConfig) {
+        *self.monitoring.lock().unwrap() = Some(settings);
+        self.wake.notify_all(); // a longer or shorter interval takes effect now
     }
     pub fn set_thumbnail_width(&self, width: u32) -> Result<()> {
         anyhow::ensure!([240, 360, 480].contains(&width), "Invalid thumbnail tier");
@@ -262,6 +279,99 @@ fn configure(socket: &TcpStream) -> Result<()> {
     socket.set_write_timeout(Some(Duration::from_secs(3)))?;
     Ok(())
 }
+/// True when a peer message is waiting. A closed peer also reports readable so
+/// the following framed read returns its normal error. Restores the 8 s budget.
+fn readable_within(socket: &TcpStream, wait: Duration) -> Result<bool> {
+    socket.set_read_timeout(Some(wait))?;
+    let result = match socket.peek(&mut [0; 1]) {
+        Ok(_) => Ok(true),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ) =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(error.into()),
+    };
+    socket.set_read_timeout(Some(Duration::from_secs(8)))?;
+    result
+}
+fn take_observe_request(jobs: &ObserveJobs, id: &str) -> Option<Instant> {
+    jobs.entries.lock().unwrap().get_mut(id).and_then(|j| {
+        let r = j
+            .request
+            .then(|| j.requested_at.unwrap_or_else(Instant::now));
+        j.request = false;
+        r
+    })
+}
+fn send_observe_start(
+    socket: &mut TcpStream,
+    jobs: &ObserveJobs,
+    id: &str,
+    client_id: u64,
+    queued_at: Instant,
+) -> Result<Instant> {
+    let (offer, class_broadcast) = {
+        let entries = jobs.entries.lock().unwrap();
+        let job = entries.get(id);
+        (
+            job.and_then(|j| j.offer.clone())
+                .unwrap_or_else(|| jobs.offer()),
+            job.is_some_and(|j| j.class_broadcast),
+        )
+    };
+    let handshake = Instant::now();
+    info!(
+        client_id,
+        queue_wait_ms = queued_at.elapsed().as_secs_f64() * 1000.0,
+        "Observe request dispatched to Student"
+    );
+    send(
+        socket,
+        Payload::Observe(protocol::ObserveMessage {
+            action: "start".into(),
+            codecs: offer.0,
+            max_fps: offer.1,
+            class_broadcast,
+            ..Default::default()
+        }),
+    )?;
+    Ok(handshake)
+}
+fn finish_observe_start(
+    socket: &mut TcpStream,
+    jobs: &ObserveJobs,
+    id: &str,
+    client_id: u64,
+    queued_at: Instant,
+    handshake: Instant,
+) -> Result<()> {
+    let Payload::Observe(reply) = read(socket)? else {
+        anyhow::bail!("Expected Observe response")
+    };
+    info!(
+        client_id,
+        handshake_ms = handshake.elapsed().as_secs_f64() * 1000.0,
+        offered = ?jobs.offer(),
+        profile = %reply.codec,
+        "Observe source handshake complete"
+    );
+    jobs.complete_start(id, queued_at, reply, Instant::now())
+}
+/// Wait out `duration`, returning early with true when the Teacher has sent a
+/// message (an Observe command) that the next read would consume.
+fn wait_for_command(socket: &TcpStream, stop: &AtomicBool, duration: Duration) -> Result<bool> {
+    let end = Instant::now() + duration;
+    while !stop.load(Ordering::Acquire) && Instant::now() < end {
+        if readable_within(socket, Duration::from_millis(10))? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
 fn sleep(stop: &AtomicBool, duration: Duration) {
     let end = Instant::now() + duration;
     while !stop.load(Ordering::Acquire) && Instant::now() < end {
@@ -355,6 +465,9 @@ fn serve(
         .context("monitoring peer has no active room registration")?;
     info!(client_id,%peer,"teacher monitoring Student connected");
     while !stop.load(Ordering::Acquire) {
+        // The performance mode can change while this connection lives.
+        let live = jobs.monitoring_override();
+        let settings = live.as_ref().unwrap_or(settings);
         if roster
             .lock()
             .unwrap()
@@ -363,58 +476,17 @@ fn serve(
         {
             break;
         }
-        let request = jobs
-            .entries
-            .lock()
-            .unwrap()
-            .get_mut(&hello.instance_id)
-            .and_then(|j| {
-                let r = j
-                    .request
-                    .then(|| j.requested_at.unwrap_or_else(Instant::now));
-                j.request = false;
-                r
-            });
-        if let Some(queued_at) = request {
-            let offer = jobs
-                .entries
-                .lock()
-                .unwrap()
-                .get(&hello.instance_id)
-                .and_then(|j| j.offer.clone())
-                .unwrap_or_else(|| jobs.offer.clone());
-            let handshake = Instant::now();
-            info!(
-                client_id,
-                queue_wait_ms = queued_at.elapsed().as_secs_f64() * 1000.0,
-                "Observe request dispatched to Student"
-            );
-            send(
+        if let Some(queued_at) = take_observe_request(jobs, &hello.instance_id) {
+            let handshake =
+                send_observe_start(socket, jobs, &hello.instance_id, client_id, queued_at)?;
+            finish_observe_start(
                 socket,
-                Payload::Observe(protocol::ObserveMessage {
-                    action: "start".into(),
-                    codecs: offer.0,
-                    max_fps: offer.1,
-                    class_broadcast: jobs
-                        .entries
-                        .lock()
-                        .unwrap()
-                        .get(&hello.instance_id)
-                        .is_some_and(|j| j.class_broadcast),
-                    ..Default::default()
-                }),
-            )?;
-            let Payload::Observe(reply) = read(socket)? else {
-                anyhow::bail!("Expected Observe response")
-            };
-            info!(
+                jobs,
+                &hello.instance_id,
                 client_id,
-                handshake_ms = handshake.elapsed().as_secs_f64() * 1000.0,
-                offered = ?jobs.offer,
-                profile = %reply.codec,
-                "Observe source handshake complete"
-            );
-            jobs.complete_start(&hello.instance_id, queued_at, reply, Instant::now())?;
+                queued_at,
+                handshake,
+            )?;
         }
         let tier = jobs.thumbnail_width.load(Ordering::Acquire);
         let width = match tier {
@@ -423,10 +495,10 @@ fn serve(
         };
         // Negotiate sharper snapshots without sending unsupported requests to
         // legacy Students. Logical UI tiers remain 240/360/480.
-        let width = if hello.max_width >= 960 {
+        let width = if settings.hidpi && hello.max_width >= 960 {
             (width * 2).min(960)
         } else {
-            width.min(480)
+            width.min(settings.width)
         };
         let height = if tier == 0 {
             (u64::from(width) * u64::from(settings.height) / u64::from(settings.width)) as u32
@@ -440,12 +512,39 @@ fn serve(
                 width,
                 height,
                 interval_ms: settings.interval_ms,
-                quality: u32::from(settings.jpeg_quality.max(85)),
+                quality: u32::from(settings.jpeg_quality.max(settings.quality_floor)),
             }),
         )?;
+        // The Student may hold this reply until its snapshot interval ends. Do not
+        // let an Observe click wait for it: dispatch the start as soon as it is
+        // requested and collect both replies in the order the Student sends them.
+        let mut early_start = None;
+        let wait_until = Instant::now() + Duration::from_secs(9);
+        while !stop.load(Ordering::Acquire)
+            && Instant::now() < wait_until
+            && !readable_within(socket, Duration::from_millis(10))?
+        {
+            if early_start.is_none() {
+                if let Some(queued_at) = take_observe_request(jobs, &hello.instance_id) {
+                    let handshake =
+                        send_observe_start(socket, jobs, &hello.instance_id, client_id, queued_at)?;
+                    early_start = Some((queued_at, handshake));
+                }
+            }
+        }
         let Payload::ThumbnailFrame(frame) = read(socket)? else {
             anyhow::bail!("expected thumbnail response");
         };
+        if let Some((queued_at, handshake)) = early_start {
+            finish_observe_start(
+                socket,
+                jobs,
+                &hello.instance_id,
+                client_id,
+                queued_at,
+                handshake,
+            )?;
+        }
         anyhow::ensure!(
             frame.jpeg.len() <= MAX_JPEG
                 && ["ready", "paused", "unavailable", "observing"].contains(&frame.state.as_str()),
@@ -661,10 +760,29 @@ fn capture_requests(
         }
         // Read control immediately after each response. Rate-limit only snapshots,
         // never the Observe command waiting on this connection.
-        sleep(
-            stop,
-            thumbnail_due.saturating_duration_since(Instant::now()),
-        );
+        // A command that arrives while the snapshot interval is pending ends the
+        // wait: answer this request at once (no pixels; the Teacher keeps its
+        // previous snapshot) so the command is read without the interval delay.
+        let interval_left = thumbnail_due.saturating_duration_since(Instant::now());
+        if !interval_left.is_zero() && wait_for_command(socket, stop, interval_left)? {
+            sequence = sequence.wrapping_add(1);
+            send(
+                socket,
+                Payload::ThumbnailFrame(ThumbnailFrame {
+                    width: 0,
+                    height: 0,
+                    jpeg: Vec::new(),
+                    state: if presenting.load(Ordering::Acquire) {
+                        "paused"
+                    } else {
+                        "observing"
+                    }
+                    .into(),
+                    sequence,
+                }),
+            )?;
+            continue;
+        }
         let started = Instant::now();
         thumbnail_due = started + Duration::from_millis(u64::from(request.interval_ms));
         sequence = sequence.wrapping_add(1);
@@ -980,6 +1098,67 @@ mod tests {
         .unwrap();
         assert!(matches!(read(&mut peer).unwrap(), Payload::Observe(_)));
         assert!(began.elapsed() < Duration::from_millis(500));
+        stop.store(true, Ordering::Release);
+        peer.shutdown(Shutdown::Both).unwrap();
+        worker.join().unwrap();
+    }
+    #[test]
+    fn observe_command_interrupts_pending_student_snapshot_interval() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut student, _) = listener.accept().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let canceled = Arc::clone(&stop);
+        let worker = thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let _ = capture_requests(
+                &mut student,
+                "test",
+                &Arc::new(AtomicBool::new(true)),
+                &Arc::new(AtomicBool::new(false)),
+                &Arc::new(AtomicBool::new(false)),
+                &canceled,
+                &classroom_config::Config::load(None).unwrap().0,
+                runtime.handle(),
+            );
+        });
+        let _ = read(&mut peer).unwrap();
+        let request = || {
+            Payload::ThumbnailRequest(ThumbnailRequest {
+                width: 240,
+                height: 135,
+                interval_ms: 2000,
+                quality: 65,
+            })
+        };
+        send(&mut peer, request()).unwrap();
+        assert!(matches!(
+            read(&mut peer).unwrap(),
+            Payload::ThumbnailFrame(_)
+        ));
+        // The Student now owes a 2 s snapshot interval. A command sent while that
+        // request is pending must not wait for it.
+        send(&mut peer, request()).unwrap();
+        thread::sleep(Duration::from_millis(50));
+        let began = Instant::now();
+        send(
+            &mut peer,
+            Payload::Observe(protocol::ObserveMessage {
+                action: "start".into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        let Payload::ThumbnailFrame(frame) = read(&mut peer).unwrap() else {
+            panic!("pending snapshot request must be answered first");
+        };
+        assert!(frame.jpeg.is_empty());
+        assert!(matches!(read(&mut peer).unwrap(), Payload::Observe(_)));
+        assert!(
+            began.elapsed() < Duration::from_millis(500),
+            "Observe waited {:?}",
+            began.elapsed()
+        );
         stop.store(true, Ordering::Release);
         peer.shutdown(Shutdown::Both).unwrap();
         worker.join().unwrap();

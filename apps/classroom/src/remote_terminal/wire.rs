@@ -12,6 +12,9 @@ pub const PING: u8 = 8;
 pub const AUTH: u8 = 9;
 pub const MAX_BYTES: usize = 16 * 1024;
 pub const GRACE: std::time::Duration = std::time::Duration::from_secs(15);
+/// A slow lab PC can take a while to start its shell; wait longer before giving up
+/// on a session that has never connected.
+pub const CONNECT_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[derive(Clone, Debug)]
 pub struct Frame {

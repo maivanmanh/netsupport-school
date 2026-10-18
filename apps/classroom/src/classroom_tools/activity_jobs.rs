@@ -119,6 +119,7 @@ pub(super) struct Lifecycle {
     live: super::super::activity::collector::Live,
     collector: Option<super::super::activity::collector::Collector>,
     clipboard: Option<super::super::activity::clipboard::Watcher>,
+    options: super::super::activity::SharedOptions,
 }
 impl Lifecycle {
     pub fn new() -> Self {
@@ -127,10 +128,22 @@ impl Lifecycle {
             live: Arc::new(Mutex::new(None)),
             collector: None,
             clipboard: None,
+            options: Arc::default(),
         }
     }
     pub fn live(&self) -> &super::super::activity::collector::Live {
         &self.live
+    }
+    /// Applies the Teacher's collection choices; takes effect on the next scan.
+    pub fn set_options(&self, options: super::super::activity::ActivityOptions) {
+        let options = options.sanitized();
+        if !options.collect_clipboard {
+            self.history.clear_clipboard();
+        }
+        *self.options.lock().unwrap() = options;
+    }
+    pub fn options(&self) -> super::super::activity::ActivityOptions {
+        self.options.lock().unwrap().clone()
     }
     pub fn set_enabled(&mut self, enabled: bool) {
         match (enabled, self.collector.is_some()) {
@@ -138,10 +151,14 @@ impl Lifecycle {
                 self.collector = Some(super::super::activity::collector::Collector::start(
                     Arc::clone(&self.history),
                     Arc::clone(&self.live),
+                    Arc::clone(&self.options),
                 ));
                 let history = Arc::clone(&self.history);
+                let options = Arc::clone(&self.options);
                 match super::super::activity::clipboard::Watcher::start(move |entry| {
-                    history.push_clipboard(entry);
+                    if options.lock().unwrap().collect_clipboard {
+                        history.push_clipboard(entry);
+                    }
                 }) {
                     Ok(watcher) => self.clipboard = Some(watcher),
                     Err(error) => tracing::warn!(%error, "Clipboard monitoring could not start"),

@@ -91,6 +91,8 @@ Convenience rule:
 
 This is not a network-discovery protocol and is not universally correct. It is a configurable campus convention. Manual teacher-IP override is mandatory.
 
+Since 2026-10-14 the Student resolves its Teacher at start and whenever the Teacher is unreachable (remembered address, convention, own-/24 probe, Teacher knock); see the decision log entry "Teacher location". The convention is `.200` of the Student's own /24 for any address range, not only `10.0.X.Y`. The knock is a 14-byte UDP datagram to `control_port + 20`.
+
 ## Adapter selection
 
 Because virtual adapters are installed, use the active default route to identify the preferred interface. Reject/penalize loopback, down, tunnel, Hyper-V/VMware virtual adapters unless the user explicitly selects one.

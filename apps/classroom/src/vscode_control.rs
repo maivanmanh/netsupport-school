@@ -81,6 +81,18 @@ pub struct ExtensionInfo {
     pub name: String,
     pub description: String,
     pub publisher: String,
+    /// Marketplace icon as a small PNG (base64); only for ids the Teacher asked for.
+    pub icon_png_base64: Option<String>,
+    /// Install folder, used to find the icon; never sent.
+    #[serde(skip)]
+    pub folder: std::path::PathBuf,
+}
+/// Request body of an extension scan.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct ListRequest {
+    /// Extension ids whose icons this computer should attach.
+    pub icons_for: Vec<String>,
 }
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct ExtensionReport {
@@ -152,14 +164,16 @@ mod windows_impl {
                     let id = format!("{publisher}.{name}").to_ascii_lowercase();
                     byid.entry(id.clone()).or_insert_with(|| ExtensionInfo {
                         id,
-                        name: value["displayName"].as_str().unwrap_or(name).to_owned(),
-                        description: value["description"]
-                            .as_str()
-                            .unwrap_or("")
+                        name: super::manifest_text(&value, "displayName", &entry.path())
+                            .unwrap_or_else(|| name.to_owned()),
+                        description: super::manifest_text(&value, "description", &entry.path())
+                            .unwrap_or_default()
                             .chars()
                             .take(300)
                             .collect(),
                         publisher: publisher.to_owned(),
+                        icon_png_base64: None,
+                        folder: entry.path(),
                     });
                 }
             }
@@ -508,18 +522,170 @@ pub fn list_extensions() -> ExtensionReport {
         }
         by_id.entry(id.clone()).or_insert_with(|| ExtensionInfo {
             id,
-            name: v["displayName"].as_str().unwrap_or(name).to_owned(),
-            description: v["description"]
-                .as_str()
-                .unwrap_or("")
+            name: manifest_text(&v, "displayName", &entry.path())
+                .unwrap_or_else(|| name.to_owned()),
+            description: manifest_text(&v, "description", &entry.path())
+                .unwrap_or_default()
                 .chars()
                 .take(300)
                 .collect(),
             publisher: publisher.to_owned(),
+            icon_png_base64: None,
+            folder: entry.path(),
         });
     }
     report.extensions = by_id.into_values().collect();
     report
+}
+
+/// A manifest text such as `displayName`, with VS Code's `%key%` placeholders
+/// resolved from the extension's own `package.nls.json` (English). Extensions
+/// that localize their manifest otherwise show up as "%displayName%". Returns
+/// `None` when the field is absent or the placeholder cannot be resolved.
+#[must_use]
+pub fn manifest_text(manifest: &serde_json::Value, field: &str, folder: &std::path::Path) -> Option<String> {
+    let raw = manifest[field].as_str()?.trim();
+    let Some(key) = raw.strip_prefix('%').and_then(|r| r.strip_suffix('%')) else {
+        return (!raw.is_empty()).then(|| raw.to_owned());
+    };
+    let bytes = std::fs::read(folder.join("package.nls.json")).ok()?;
+    let table: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    // Values are either a string or {"message": "...", "comment": [...]}.
+    let entry = &table[key];
+    let text = entry.as_str().or_else(|| entry["message"].as_str())?.trim();
+    (!text.is_empty()).then(|| text.to_owned())
+}
+
+/// Longest edge of an icon sent to the Teacher. The list shows them at ~32 px.
+const ICON_EDGE: u32 = 64;
+/// An icon file that already is small enough is forwarded byte for byte.
+const ICON_RAW_MAX: usize = 16 * 1024;
+const ICON_READ_MAX: u64 = 2 * 1024 * 1024;
+const ICON_SEND_MAX: usize = 48 * 1024;
+const ICON_PIXELS_MAX: u64 = 4096 * 4096;
+
+/// Attaches icons for just the requested ids. Marketplace icons are PNGs next
+/// to `package.json` (`"icon": "images/icon.png"`); a typical one is 128x128
+/// or larger, so anything above the raw limit is shrunk before it travels.
+pub fn attach_icons(report: &mut ExtensionReport, request: &ListRequest) {
+    let wanted: std::collections::HashSet<&str> =
+        request.icons_for.iter().map(String::as_str).take(200).collect();
+    for ext in &mut report.extensions {
+        if wanted.contains(ext.id.as_str()) {
+            ext.icon_png_base64 = extension_icon(&ext.folder);
+        }
+    }
+}
+
+fn extension_icon(folder: &std::path::Path) -> Option<String> {
+    use base64::Engine;
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(folder.join("package.json")).ok()?).ok()?;
+    let relative = std::path::Path::new(manifest["icon"].as_str()?);
+    // Stay inside the extension's own folder: no absolute path, no `..`, no
+    // symlink that leads elsewhere.
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
+        || !relative
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("png"))
+    {
+        return None;
+    }
+    let root = folder.canonicalize().ok()?;
+    let file = root.join(relative).canonicalize().ok()?;
+    if !file.starts_with(&root) || std::fs::metadata(&file).ok()?.len() > ICON_READ_MAX {
+        return None;
+    }
+    let bytes = std::fs::read(&file).ok()?;
+    let encoded = if bytes.len() <= ICON_RAW_MAX && png_edge(&bytes)? <= 128 {
+        bytes
+    } else {
+        let small = shrink_png(&bytes, ICON_EDGE)?;
+        if small.len() > ICON_SEND_MAX {
+            return None;
+        }
+        small
+    };
+    Some(base64::engine::general_purpose::STANDARD.encode(encoded))
+}
+
+fn png_edge(bytes: &[u8]) -> Option<u32> {
+    let reader = png::Decoder::new(std::io::Cursor::new(bytes)).read_info().ok()?;
+    let info = reader.info();
+    Some(info.width.max(info.height))
+}
+
+/// Decodes any PNG to RGBA8 and box-filters it down so its longest edge is at
+/// most `edge`; images already that small are re-encoded unchanged in size.
+fn shrink_png(bytes: &[u8], edge: u32) -> Option<Vec<u8>> {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    decoder.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = decoder.read_info().ok()?;
+    let (width, height) = {
+        let info = reader.info();
+        (info.width, info.height)
+    };
+    if width == 0 || height == 0 || u64::from(width) * u64::from(height) > ICON_PIXELS_MAX {
+        return None;
+    }
+    let mut raw = vec![0; reader.output_buffer_size()];
+    let frame = reader.next_frame(&mut raw).ok()?;
+    let channels = frame.color_type.samples();
+    let pixel = |x: u32, y: u32| -> [u32; 4] {
+        let i = (y as usize * width as usize + x as usize) * channels;
+        let p = &raw[i..i + channels];
+        match frame.color_type {
+            png::ColorType::Grayscale => [p[0].into(), p[0].into(), p[0].into(), 255],
+            png::ColorType::GrayscaleAlpha => [p[0].into(), p[0].into(), p[0].into(), p[1].into()],
+            png::ColorType::Rgb => [p[0].into(), p[1].into(), p[2].into(), 255],
+            _ => [p[0].into(), p[1].into(), p[2].into(), p[3].into()],
+        }
+    };
+    let scale = f64::from(width.max(height)) / f64::from(edge.min(width.max(height)));
+    let out_w = ((f64::from(width) / scale).round() as u32).max(1);
+    let out_h = ((f64::from(height) / scale).round() as u32).max(1);
+    let mut out = Vec::with_capacity((out_w * out_h * 4) as usize);
+    for oy in 0..out_h {
+        let y0 = (f64::from(oy) * scale) as u32;
+        let y1 = (((f64::from(oy) + 1.0) * scale).ceil() as u32).clamp(y0 + 1, height);
+        for ox in 0..out_w {
+            let x0 = (f64::from(ox) * scale) as u32;
+            let x1 = (((f64::from(ox) + 1.0) * scale).ceil() as u32).clamp(x0 + 1, width);
+            // Colour is weighted by alpha so transparent pixels do not darken edges.
+            let (mut r, mut g, mut b, mut a, mut n) = (0u64, 0u64, 0u64, 0u64, 0u64);
+            for y in y0.min(height - 1)..y1 {
+                for x in x0.min(width - 1)..x1 {
+                    let [pr, pg, pb, pa] = pixel(x, y);
+                    r += u64::from(pr * pa);
+                    g += u64::from(pg * pa);
+                    b += u64::from(pb * pa);
+                    a += u64::from(pa);
+                    n += 1;
+                }
+            }
+            if a == 0 {
+                out.extend_from_slice(&[0, 0, 0, 0]);
+            } else {
+                out.extend_from_slice(&[
+                    (r / a) as u8,
+                    (g / a) as u8,
+                    (b / a) as u8,
+                    (a / n.max(1)) as u8,
+                ]);
+            }
+        }
+    }
+    let mut encoded = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut encoded, out_w, out_h);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.write_header().ok()?.write_image_data(&out).ok()?;
+    }
+    Some(encoded)
 }
 
 #[cfg(test)]
@@ -555,5 +721,105 @@ mod tests {
         }
         .validate()
         .is_err());
+    }
+
+    fn png_of(width: u32, height: u32, noisy: bool) -> Vec<u8> {
+        let mut pixels = Vec::new();
+        for y in 0..height {
+            for x in 0..width {
+                let v = if noisy { ((x * 7 + y * 13) % 251) as u8 } else { 200 };
+                pixels.extend_from_slice(&[v, 255 - v, v / 2, 255]);
+            }
+        }
+        let mut out = Vec::new();
+        let mut encoder = png::Encoder::new(&mut out, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.write_header().unwrap().write_image_data(&pixels).unwrap();
+        out
+    }
+    fn extension_folder(name: &str, icon: Option<&str>, files: &[(&str, Vec<u8>)]) -> std::path::PathBuf {
+        let folder = std::env::temp_dir().join(format!("classroom-ext-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(folder.join("images")).unwrap();
+        let manifest = match icon {
+            Some(icon) => serde_json::json!({"name": "x", "publisher": "p", "icon": icon}),
+            None => serde_json::json!({"name": "x", "publisher": "p"}),
+        };
+        std::fs::write(folder.join("package.json"), manifest.to_string()).unwrap();
+        for (path, bytes) in files {
+            std::fs::write(folder.join(path), bytes).unwrap();
+        }
+        folder
+    }
+    fn decode(b64: &str) -> Vec<u8> {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.decode(b64).unwrap()
+    }
+    #[test]
+    fn small_icon_is_forwarded_unchanged() {
+        let icon = png_of(32, 32, false);
+        let folder = extension_folder("small", Some("images/icon.png"), &[("images/icon.png", icon.clone())]);
+        assert_eq!(decode(&extension_icon(&folder).unwrap()), icon);
+    }
+    #[test]
+    fn large_icon_is_shrunk_to_a_few_kilobytes() {
+        let big = png_of(512, 512, true);
+        assert!(big.len() > ICON_RAW_MAX);
+        let folder = extension_folder("large", Some("images/icon.png"), &[("images/icon.png", big)]);
+        let sent = decode(&extension_icon(&folder).unwrap());
+        assert!(sent.len() <= ICON_SEND_MAX);
+        assert_eq!(png_edge(&sent), Some(ICON_EDGE));
+    }
+    #[test]
+    fn icon_cannot_leave_the_extension_folder_or_be_a_non_png() {
+        let secret = png_of(16, 16, false);
+        let folder = extension_folder("escape", Some("../secret.png"), &[]);
+        std::fs::write(folder.parent().unwrap().join("secret.png"), &secret).unwrap();
+        assert!(extension_icon(&folder).is_none());
+        let svg = extension_folder("svg", Some("images/icon.svg"), &[("images/icon.svg", b"<svg/>".to_vec())]);
+        assert!(extension_icon(&svg).is_none());
+        let absolute = extension_folder("abs", Some("/etc/hosts.png"), &[]);
+        assert!(extension_icon(&absolute).is_none());
+        assert!(extension_icon(&extension_folder("none", None, &[])).is_none());
+        let garbage = extension_folder("garbage", Some("images/icon.png"), &[("images/icon.png", vec![1, 2, 3])]);
+        assert!(extension_icon(&garbage).is_none());
+    }
+    #[test]
+    fn only_requested_ids_get_icons() {
+        let folder = extension_folder("only", Some("images/icon.png"), &[("images/icon.png", png_of(24, 24, false))]);
+        let ext = |id: &str| ExtensionInfo { id: id.into(), folder: folder.clone(), ..Default::default() };
+        let mut report = ExtensionReport { supported: true, extensions: vec![ext("p.a"), ext("p.b")], notes: vec![] };
+        attach_icons(&mut report, &ListRequest { icons_for: vec!["p.b".into()] });
+        assert!(report.extensions[0].icon_png_base64.is_none());
+        assert!(report.extensions[1].icon_png_base64.is_some());
+    }
+
+    #[test]
+    fn localized_manifest_placeholders_resolve_from_the_nls_file() {
+        let folder = std::env::temp_dir().join(format!("classroom-nls-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(
+            folder.join("package.nls.json"),
+            r#"{"displayName":"Dev Containers","extension.description":{"message":"Official C# extension","comment":["x"]},"empty":""}"#,
+        )
+        .unwrap();
+        let manifest = serde_json::json!({
+            "displayName": "%displayName%",
+            "description": "%extension.description%",
+            "missing": "%nothing.here%",
+            "empty": "%empty%",
+            "plain": "  Python  ",
+        });
+        assert_eq!(manifest_text(&manifest, "displayName", &folder).as_deref(), Some("Dev Containers"));
+        assert_eq!(manifest_text(&manifest, "description", &folder).as_deref(), Some("Official C# extension"));
+        assert_eq!(manifest_text(&manifest, "plain", &folder).as_deref(), Some("Python"));
+        // Unresolvable placeholders and absent fields are None, never "%x%".
+        assert_eq!(manifest_text(&manifest, "missing", &folder), None);
+        assert_eq!(manifest_text(&manifest, "empty", &folder), None);
+        assert_eq!(manifest_text(&manifest, "absent", &folder), None);
+        // No nls file at all.
+        assert_eq!(manifest_text(&manifest, "displayName", &folder.join("nope")), None);
     }
 }

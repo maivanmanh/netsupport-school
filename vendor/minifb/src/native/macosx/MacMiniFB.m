@@ -102,7 +102,8 @@ void cursor_init() {
     s_cursors[CursorStyle_Ibeam] = [[NSCursor IBeamCursor] retain];
     s_cursors[CursorStyle_Crosshair] = [[NSCursor crosshairCursor] retain];
     s_cursors[CursorStyle_ClosedHand] = [[NSCursor closedHandCursor] retain];
-    s_cursors[CursorStyle_OpenHand] = [[NSCursor openHandCursor] retain];
+    // Classroom: OpenHand is the "clickable" pointing hand (Windows and X11 already map it so).
+    s_cursors[CursorStyle_OpenHand] = [[NSCursor pointingHandCursor] retain];
     s_cursors[CursorStyle_ResizeLeftRight] = [[NSCursor resizeLeftRightCursor] retain];
     s_cursors[CursorStyle_ResizeUpDown] = [[NSCursor resizeUpDownCursor] retain];
     s_cursors[CursorStyle_SizeAll] = [[NSCursor closedHandCursor] retain];
@@ -619,10 +620,8 @@ void mfb_set_mouse_data(void* window, SharedData* shared_data) {
 void mfb_set_cursor_style(void* window, int cursor) {
     OSXWindow* win = (OSXWindow*)window;
 
-    if (win->prev_cursor == cursor) {
-        return;
-    }
-
+    // Always apply: macOS resets the cursor when the mouse leaves and re-enters the
+    // window, so a cached "unchanged" style could leave the wrong cursor showing.
     if (cursor < 0 || cursor >= CursorStyle_Count) {
         printf("cursor out of range %d\n", cursor);
         return;

@@ -5,23 +5,37 @@
 //! window with a compact text box; Send delivers the reply to the Teacher.
 use super::{classroom_tools::Inbox, dashboard_view::Canvas};
 use anyhow::Result;
-use minifb::{InputCallback, Key, KeyRepeat, MouseButton, MouseMode, Window, WindowOptions};
+use minifb::{
+    CursorStyle, InputCallback, Key, KeyRepeat, MouseButton, MouseMode, Window, WindowOptions,
+};
 use protocol::ToolPacket;
 use std::sync::{Arc, Mutex};
 
 const TITLE: &str = "Classroom · Message from teacher";
-const PAD: usize = 16;
-const HEADER: usize = 32;
-const LINE: usize = 21;
-const MAX_LINES: usize = 12;
-const MIN_WIDTH: usize = 320;
-const MAX_WIDTH: usize = 520;
-const BUTTON_H: usize = 28;
-const BUTTON_W: usize = 72;
+const PAD: usize = 20;
+const HEADER: usize = 56;
+/// Message text: 15 px on 23 px lines.
+const MSG_PX: u16 = 15;
+const LINE: usize = 23;
+/// The reply editor draws 14 px text on fixed 21 px lines.
+const EDIT_LINE: usize = 21;
+const MAX_LINES: usize = 10;
+const MIN_WIDTH: usize = 380;
+const MAX_WIDTH: usize = 560;
+const BUTTON_H: usize = 36;
+const BUTTON_W: usize = 92;
 const GAP: usize = 10;
 const REPLY_LINES: usize = 3;
-const REPLY_BOX_H: usize = REPLY_LINES * LINE + 12;
+const REPLY_BOX_H: usize = REPLY_LINES * EDIT_LINE + 16;
 const MAX_REPLY: usize = 500;
+
+const BACKGROUND: u32 = 0x00ff_ffff;
+const ACCENT: u32 = 0x000d_7785;
+const ACCENT_HOVER: u32 = 0x000a_6874;
+const INK: u32 = 0x001f_2937;
+const MUTED: u32 = 0x006b_7280;
+const FIELD_BORDER: u32 = 0x00cb_d5e1;
+const LINE_COLOR: u32 = 0x00e5_e7eb;
 
 struct Characters(Arc<Mutex<Vec<char>>>);
 impl InputCallback for Characters {
@@ -41,6 +55,8 @@ enum Button {
     Reply,
     Send,
     Cancel,
+    /// The × in the header: dismisses like OK.
+    Close,
 }
 
 /// Keyboard focus target: the reply box or a button.
@@ -82,20 +98,35 @@ struct Layout {
 impl Layout {
     fn new(width: usize, lines: usize, replying: bool) -> Self {
         let visible_lines = lines.clamp(1, MAX_LINES);
-        let message_bottom = HEADER + 16 + visible_lines * LINE;
-        let reply_top = message_bottom + 12;
+        let message_bottom = HEADER + 18 + visible_lines * LINE;
+        let reply_top = message_bottom + 14;
         let buttons_top = if replying {
-            reply_top + 22 + REPLY_BOX_H + 14
+            reply_top + 24 + REPLY_BOX_H + 16
         } else {
-            message_bottom + 16
+            message_bottom + 20
         };
         Self {
             width,
-            height: buttons_top + BUTTON_H + 16,
+            height: buttons_top + BUTTON_H + 18,
             visible_lines,
             reply_top,
             buttons_top,
         }
+    }
+    fn box_top(&self) -> usize {
+        self.reply_top + 24
+    }
+    /// Where the reply editor draws its text (inside the box).
+    fn editor_rect(&self) -> [usize; 4] {
+        [
+            PAD + 12,
+            self.box_top() + 8,
+            self.width - 2 * PAD - 24,
+            REPLY_LINES * EDIT_LINE,
+        ]
+    }
+    fn close_button(&self) -> [usize; 4] {
+        [self.width - 44, 14, 28, 28]
     }
     fn buttons(&self, replying: bool, allow_reply: bool) -> Vec<(Button, [usize; 4])> {
         let right = self.width - PAD;
@@ -354,12 +385,7 @@ impl Popup {
             self.editor.vertical(
                 &self.canvas,
                 &self.reply,
-                [
-                    PAD + 10,
-                    self.layout.reply_top + 28,
-                    self.layout.width - 2 * PAD - 20,
-                    REPLY_LINES * LINE,
-                ],
+                self.layout.editor_rect(),
                 1,
                 &self.window,
                 &keys,
@@ -397,7 +423,8 @@ impl Popup {
         }
         self.message_scroll = self.message_scroll.min(max_scroll);
 
-        let buttons = self.layout.buttons(self.replying, self.message.allow_reply);
+        let mut buttons = self.layout.buttons(self.replying, self.message.allow_reply);
+        buttons.push((Button::Close, self.layout.close_button()));
         let at = |pos: Option<(f32, f32)>| {
             let (x, y) = pos?;
             buttons
@@ -409,6 +436,15 @@ impl Popup {
                 .map(|(b, _)| *b)
         };
         self.hover = at(self.window.get_mouse_pos(MouseMode::Discard));
+        let pointer = self.window.get_mouse_pos(MouseMode::Discard);
+        let over_input = self.replying && pointer.is_some_and(|(x, y)| self.in_reply_box(x, y));
+        let can_send = !self.reply.trim().is_empty();
+        self.window.set_cursor_style(match self.hover {
+            Some(Button::Send) if !can_send => CursorStyle::Arrow,
+            Some(_) => CursorStyle::OpenHand, // the pointing hand, see vendor/minifb
+            None if over_input => CursorStyle::Ibeam,
+            None => CursorStyle::Arrow,
+        });
         let down = self.window.get_mouse_down(MouseButton::Left);
         if down && !self.previous_down && self.replying {
             if let Some(p) = self.window.get_mouse_pos(MouseMode::Discard) {
@@ -417,12 +453,7 @@ impl Popup {
                     self.editor.click(
                         &self.canvas,
                         &self.reply,
-                        [
-                            PAD + 10,
-                            self.layout.reply_top + 28,
-                            self.layout.width - 2 * PAD - 20,
-                            REPLY_LINES * LINE,
-                        ],
+                        self.layout.editor_rect(),
                         1,
                         p,
                         self.window.is_key_down(Key::LeftShift)
@@ -446,12 +477,7 @@ impl Popup {
             self.editor.click(
                 &self.canvas,
                 &self.reply,
-                [
-                    PAD + 10,
-                    self.layout.reply_top + 28,
-                    self.layout.width - 2 * PAD - 20,
-                    REPLY_LINES * LINE,
-                ],
+                self.layout.editor_rect(),
                 1,
                 click.unwrap(),
                 self.window.is_key_down(Key::LeftShift) || self.window.is_key_down(Key::RightShift),
@@ -465,12 +491,7 @@ impl Popup {
             self.editor.drag(
                 &self.canvas,
                 &self.reply,
-                [
-                    PAD + 10,
-                    self.layout.reply_top + 28,
-                    self.layout.width - 2 * PAD - 20,
-                    REPLY_LINES * LINE,
-                ],
+                self.layout.editor_rect(),
                 1,
                 &self.window,
             );
@@ -503,7 +524,7 @@ impl Popup {
     /// Performs a button action (mouse, Enter or Space).
     fn activate(&mut self, button: Button) -> Result<Option<(&'static str, String)>> {
         match button {
-            Button::Ok => return Ok(Some(("dismissed", String::new()))),
+            Button::Ok | Button::Close => return Ok(Some(("dismissed", String::new()))),
             Button::Reply => self.set_replying(true)?,
             Button::Cancel => self.set_replying(false)?,
             Button::Send if !self.reply.trim().is_empty() => {
@@ -515,23 +536,40 @@ impl Popup {
     }
     #[allow(clippy::cast_precision_loss)]
     fn in_reply_box(&self, x: f32, y: f32) -> bool {
-        let top = self.layout.reply_top + 22;
+        let top = self.layout.box_top();
         (PAD as f32..(self.layout.width - PAD) as f32).contains(&x)
             && (top as f32..(top + REPLY_BOX_H) as f32).contains(&y)
     }
+    #[allow(clippy::too_many_lines)] // one immediate-mode paint pass
     fn draw(&mut self) {
         let Layout {
             width,
+            height,
             visible_lines,
             reply_top,
             ..
         } = self.layout;
-        self.canvas.pixels.fill(0x00f7_f9fb);
-        self.canvas
-            .fill_rect([0, 0, 4, self.layout.height], 0x000d_7785);
-        self.canvas
-            .text(PAD, 9, "Message from teacher", 0x0065_7583, 1);
-        let top = HEADER + 16;
+        let hover = self.hover;
+        let c = &mut self.canvas;
+        c.pixels.fill(BACKGROUND);
+        c.fill_rect([0, 0, width, 3], ACCENT);
+        // Header: a chat badge, the title and the close button.
+        c.disc(PAD as f32 + 16.0, 30.0, 16.0, 0x00dd_eff1);
+        c.round_rect([PAD + 8, 23, 17, 12], 4, ACCENT);
+        c.disc(PAD as f32 + 12.0, 36.5, 2.4, ACCENT);
+        c.text_bold(PAD + 44, 20, "Message from your teacher", INK, 15);
+        let close = self.layout.close_button();
+        let close_hot = hover == Some(Button::Close);
+        if close_hot {
+            c.round_rect(close, 6, 0x00ee_f2f6);
+        }
+        let ink = if close_hot { INK } else { MUTED };
+        let (cx, cy) = (close[0] as f32 + 14.0, close[1] as f32 + 14.0);
+        c.line((cx - 4.5, cy - 4.5), (cx + 4.5, cy + 4.5), 1.6, ink);
+        c.line((cx - 4.5, cy + 4.5), (cx + 4.5, cy - 4.5), 1.6, ink);
+        c.fill_rect([0, HEADER - 1, width, 1], LINE_COLOR);
+        // The message.
+        let top = HEADER + 18;
         for (i, line) in self
             .lines
             .iter()
@@ -539,7 +577,7 @@ impl Popup {
             .take(visible_lines)
             .enumerate()
         {
-            self.canvas.text(PAD, top + i * LINE, line, 0x0022_3342, 1);
+            c.text_px(PAD, top + i * LINE, line, INK, MSG_PX);
         }
         if self.lines.len() > visible_lines {
             let label = format!(
@@ -548,47 +586,35 @@ impl Popup {
                 (self.message_scroll + visible_lines).min(self.lines.len()),
                 self.lines.len()
             );
-            let w = self.canvas.text_width(&label, 1);
-            self.canvas
-                .text(width - PAD - w, HEADER + 2, &label, 0x0098_a7b4, 1);
+            let w = c.text_width_px(&label, 12);
+            c.text_px(width - PAD - w, HEADER + 3, &label, 0x009c_a3af, 12);
         }
         if self.replying {
-            self.canvas.text(
-                PAD,
-                reply_top,
-                "Your reply · Enter to send · Tab to move",
-                0x0061_7180,
-                1,
-            );
-            let box_top = reply_top + 22;
+            c.text_bold(PAD, reply_top, "Your reply", INK, 13);
+            let counter = format!("{} / {MAX_REPLY}", self.reply.chars().count());
+            let cw = c.text_width_px(&counter, 12);
+            c.text_px(width - PAD - cw, reply_top + 1, &counter, 0x009c_a3af, 12);
+            let box_top = self.layout.box_top();
             let box_w = width - 2 * PAD;
             let input_focused = self.focus == Focus::Input;
-            let border = if input_focused {
-                0x0025_63eb
+            if input_focused {
+                c.round_rect([PAD, box_top, box_w, REPLY_BOX_H], 8, ACCENT);
+                c.round_rect(
+                    [PAD + 2, box_top + 2, box_w - 4, REPLY_BOX_H - 4],
+                    6,
+                    BACKGROUND,
+                );
             } else {
-                0x007c_8b99
-            };
-            self.canvas
-                .fill_rect([PAD, box_top, box_w, REPLY_BOX_H], border);
-            let inset = if input_focused { 2 } else { 1 };
-            self.canvas.fill_rect(
-                [
-                    PAD + inset,
-                    box_top + inset,
-                    box_w - 2 * inset,
-                    REPLY_BOX_H - 2 * inset,
-                ],
-                0x00ff_ffff,
-            );
+                c.round_rect_border([PAD, box_top, box_w, REPLY_BOX_H], 8, FIELD_BORDER, BACKGROUND);
+            }
             self.editor.draw(
-                &mut self.canvas,
+                c,
                 &self.reply,
-                [PAD + 10, box_top + 6, box_w - 20, REPLY_LINES * LINE],
+                self.layout.editor_rect(),
                 1,
                 input_focused,
             );
-        }
-        if !self.replying {
+        } else {
             let notice = if self
                 .copy_notice_until
                 .is_some_and(|t| std::time::Instant::now() < t)
@@ -596,45 +622,43 @@ impl Popup {
                 if self.copy_failed {
                     "Click again to copy"
                 } else {
-                    "Copied"
+                    "Copied to clipboard"
                 }
             } else {
-                "Click to copy"
+                "Click the message to copy it"
             };
-            self.canvas
-                .text(PAD, self.layout.buttons_top + 7, notice, 0x0065_7583, 1);
+            c.text_px(PAD, self.layout.buttons_top + 11, notice, MUTED, 12);
         }
         let can_send = !self.reply.trim().is_empty();
         for (button, area) in self.layout.buttons(self.replying, self.message.allow_reply) {
             let primary = matches!(button, Button::Ok | Button::Send);
             let disabled = button == Button::Send && !can_send;
-            let base = match (primary, disabled) {
-                (_, true) => 0x00b8_c4cc,
-                (true, false) => 0x000d_7785,
-                (false, false) => 0x00e5_ebf0,
-            };
-            self.canvas
-                .button(area, base, self.hover == Some(button) && !disabled, false);
+            let hot = hover == Some(button) && !disabled;
             if self.focus == Focus::Button(button) {
-                self.canvas.focus_ring(area);
+                let [x, y, w, h] = area;
+                c.round_rect([x - 3, y - 3, w + 6, h + 6], 11, 0x0025_63eb);
+                c.round_rect([x - 1, y - 1, w + 2, h + 2], 9, BACKGROUND);
             }
+            let (fill, border, color) = match (primary, disabled) {
+                (true, true) => (0x00b8_c4cc, 0x00b8_c4cc, 0x00ff_ffff),
+                (true, false) => {
+                    let fill = if hot { ACCENT_HOVER } else { ACCENT };
+                    (fill, fill, 0x00ff_ffff)
+                }
+                (false, _) => (if hot { 0x00f1_f5f9 } else { BACKGROUND }, FIELD_BORDER, INK),
+            };
+            c.round_rect_border(area, 8, border, fill);
             let label = match button {
                 Button::Ok => "OK",
                 Button::Reply => "Reply",
                 Button::Send => "Send",
                 Button::Cancel => "Cancel",
+                Button::Close => "",
             };
-            let w = self.canvas.text_width(label, 1);
-            let color = if primary { 0x00ff_ffff } else { 0x0022_3342 };
-            self.canvas.text(
-                area[0] + area[2].saturating_sub(w) / 2,
-                area[1] + 8,
-                label,
-                color,
-                1,
-            );
+            let w = c.text_width_px(label, 14);
+            c.text_bold(area[0] + area[2].saturating_sub(w) / 2, area[1] + 9, label, color, 14);
         }
-        self.canvas.notification_border(width, self.layout.height);
+        c.notification_border(width, height);
     }
 }
 fn centered(area: [isize; 4], frame: [isize; 4]) -> (isize, isize) {
@@ -651,26 +675,31 @@ fn copy_hit(layout: &Layout, replying: bool, x: f32, y: f32) -> bool {
     } else {
         layout.buttons_top
     };
-    x >= 0.0 && x < layout.width as f32 && y >= 0.0 && y < bottom as f32
+    // The header (title, close button) is not part of the copyable message.
+    x >= 0.0 && x < layout.width as f32 && y >= HEADER as f32 && y < bottom as f32
 }
 /// Picks the narrowest comfortable width (within bounds) and wraps to it.
 fn fit_message(canvas: &Canvas, text: &str) -> (usize, Vec<String>) {
     let natural = text
         .lines()
-        .map(|line| canvas.text_width(line, 1))
+        .map(|line| canvas.text_width_px(line, MSG_PX))
         .max()
         .unwrap_or(0);
     let width = (natural + 2 * PAD + 4).clamp(MIN_WIDTH, MAX_WIDTH);
-    (width, wrap(canvas, text, width - 2 * PAD))
+    (width, wrap_px(canvas, text, width - 2 * PAD, MSG_PX))
+}
+/// Word wrap by rendered width at the default text size.
+pub(super) fn wrap(canvas: &Canvas, text: &str, max_width: usize) -> Vec<String> {
+    wrap_px(canvas, text, max_width, 14)
 }
 /// Word wrap by rendered width; words longer than a line are split by character.
-pub(super) fn wrap(canvas: &Canvas, text: &str, max_width: usize) -> Vec<String> {
+fn wrap_px(canvas: &Canvas, text: &str, max_width: usize, px: u16) -> Vec<String> {
     let mut lines = Vec::new();
     for paragraph in text.lines() {
         let mut line = String::new();
         for word in paragraph.split_inclusive(' ') {
             let candidate = format!("{line}{word}");
-            if canvas.text_width(candidate.trim_end(), 1) <= max_width {
+            if canvas.text_width_px(candidate.trim_end(), px) <= max_width {
                 line = candidate;
                 continue;
             }
@@ -680,7 +709,7 @@ pub(super) fn wrap(canvas: &Canvas, text: &str, max_width: usize) -> Vec<String>
             }
             for c in word.chars() {
                 line.push(c);
-                if line.chars().count() > 1 && canvas.text_width(line.trim_end(), 1) > max_width {
+                if line.chars().count() > 1 && canvas.text_width_px(line.trim_end(), px) > max_width {
                     line.pop();
                     lines.push(std::mem::take(&mut line));
                     line.push(c);
@@ -706,7 +735,11 @@ mod tests {
         );
         assert_eq!(centered([10, 20, 200, 100], [0, 0, 320, 150]), (10, 20));
         let collapsed = Layout::new(MIN_WIDTH, 3, false);
-        assert!(copy_hit(&collapsed, false, 40.0, (HEADER + 16) as f32));
+        assert!(copy_hit(&collapsed, false, 40.0, (HEADER + 18) as f32));
+        // The title bar (and its close button) is not copyable text.
+        assert!(!copy_hit(&collapsed, false, 40.0, 20.0));
+        let [cx, cy, ..] = collapsed.close_button();
+        assert!(!copy_hit(&collapsed, false, (cx + 4) as f32, (cy + 4) as f32));
         assert!(!copy_hit(&collapsed, false, -1.0, 40.0));
         for (_, [x, y, ..]) in collapsed.buttons(false, true) {
             assert!(!copy_hit(&collapsed, false, (x + 2) as f32, (y + 2) as f32));
@@ -727,7 +760,7 @@ mod tests {
         assert_eq!(lines.len(), 1);
         let collapsed = Layout::new(width, lines.len(), false);
         let expanded = Layout::new(width, lines.len(), true);
-        assert!(collapsed.height < 170, "{collapsed:?}");
+        assert!(collapsed.height < 190, "{collapsed:?}");
         assert!(expanded.height > collapsed.height + REPLY_BOX_H);
         let labels: Vec<_> = collapsed
             .buttons(false, true)
@@ -771,7 +804,7 @@ mod tests {
         assert!(lines.len() > MAX_LINES);
         assert!(lines
             .iter()
-            .all(|l| canvas.text_width(l, 1) <= MAX_WIDTH - 2 * PAD));
+            .all(|l| canvas.text_width_px(l, MSG_PX) <= MAX_WIDTH - 2 * PAD));
         assert_eq!(
             Layout::new(width, lines.len(), false).visible_lines,
             MAX_LINES

@@ -22,8 +22,8 @@ pub fn apply_saved(config: &mut Config, profile: &Path) -> Result<()> {
     Ok(())
 }
 fn overlay(config: &Config) -> String {
-    format!("[network]\nteacher_ip = \"{}\"\nteacher_ip_mode = \"explicit\"\ncontrol_port = {}\nmedia_port = {}\nfeedback_port = {}\n\n[video]\njitter_buffer_ms = {}\nnack_repair_ms = {}\n\n[app]\nlog_level = {:?}\n",
-        config.network.teacher_ip, config.network.control_port, config.network.media_port,
+    format!("[network]\nteacher_ip = \"{}\"\nteacher_ip_mode = \"explicit\"\nteacher_discovery = {}\ncontrol_port = {}\nmedia_port = {}\nfeedback_port = {}\n\n[video]\njitter_buffer_ms = {}\nnack_repair_ms = {}\n\n[app]\nlog_level = {:?}\n",
+        config.network.teacher_ip, config.network.teacher_discovery, config.network.control_port, config.network.media_port,
         config.network.feedback_port, config.video.jitter_buffer_ms, config.video.nack_repair_ms,
         config.app.log_level)
 }
@@ -71,6 +71,11 @@ fn fields(config: &Config, teacher: Ipv4Addr) -> Vec<Field> {
             page: 0,
         },
         Field {
+            label: "Find the Teacher automatically (1 = yes, 0 = only this address)",
+            value: u8::from(config.network.teacher_discovery).to_string(),
+            page: 0,
+        },
+        Field {
             label: "Jitter hold (ms, 1-100)",
             value: config.video.jitter_buffer_ms.to_string(),
             page: 1,
@@ -110,11 +115,16 @@ fn candidate(config: &Config, fields: &[Field], level: &str) -> Result<Config> {
         .all(|port| *port >= 1024),
         "Use ports from 1024 to 65535"
     );
-    updated.video.jitter_buffer_ms = fields[4]
+    updated.network.teacher_discovery = match fields[4].value.trim() {
+        "1" => true,
+        "0" => false,
+        _ => anyhow::bail!("Enter 1 to find the Teacher automatically or 0 to use only its address"),
+    };
+    updated.video.jitter_buffer_ms = fields[5]
         .value
         .parse()
         .context("Enter a valid jitter hold")?;
-    updated.video.nack_repair_ms = fields[5]
+    updated.video.nack_repair_ms = fields[6]
         .value
         .parse()
         .context("Enter a valid repair budget")?;
@@ -498,11 +508,16 @@ mod tests {
         edited[2].value = edited[1].value.clone();
         assert!(candidate(&config, &edited, "info").is_err());
         edited[2].value = "48710".into();
-        edited[4].value = "50".into();
-        edited[5].value = "100".into();
+        edited[4].value = "0".into();
+        edited[5].value = "50".into();
+        edited[6].value = "100".into();
         let updated = candidate(&config, &edited, "debug").unwrap();
         config.apply_saved(&overlay(&updated)).unwrap();
         assert_eq!(config.network.teacher_ip, Ipv4Addr::new(192, 168, 50, 94));
+        // "Only this address" is saved and read back.
+        assert!(!config.network.teacher_discovery);
+        edited[4].value = "yes".into();
+        assert!(candidate(&config, &edited, "info").is_err());
         assert_eq!(config.video.jitter_buffer_ms, 50);
         assert_eq!(config.video.nack_repair_ms, 100);
         assert_eq!(config.video.width, 1920);

@@ -22,10 +22,9 @@ use std::{
 };
 use tracing::{info, warn};
 const VERSION: u32 = 1;
-const MAX_PACKET: usize = 8192;
+const MAX_PACKET: usize = 65536;
 const CHUNK: usize = 64 * 1024;
 pub const MAX_FILE: u64 = 4 * 1024 * 1024 * 1024;
-const PACE: Duration = Duration::from_millis(64); // ~1 MiB/s per transfer, at most two
 mod activity_jobs;
 mod app_jobs;
 mod file_tree;
@@ -34,6 +33,7 @@ mod hardware;
 mod launch;
 mod power;
 pub(crate) mod recording;
+mod evidence;
 pub(crate) mod screenshot;
 mod vscode_jobs;
 fn packet(action: &str) -> ToolPacket {
@@ -218,8 +218,36 @@ struct Job {
     targets: HashMap<String, Target>,
     cancel: Arc<AtomicBool>,
 }
+/// Settings the Teacher can change while running; the defaults are how each
+/// behaved before it was adjustable.
+#[derive(Clone)]
+struct Tuning {
+    power_grace: u32,
+    alert_cooldown: Duration,
+    activity: crate::activity::ActivityOptions,
+    /// File sending speed per transfer, KiB/s.
+    rate_kib_s: u32,
+}
+impl Default for Tuning {
+    fn default() -> Self {
+        Self {
+            power_grace: 15,
+            alert_cooldown: Duration::from_secs(30),
+            activity: crate::activity::ActivityOptions::default(),
+            rate_kib_s: 1000,
+        }
+    }
+}
 #[derive(Default)]
 struct State {
+    tuning: Tuning,
+    /// Screenshots of Students on AI websites, kept for the day.
+    evidence: evidence::Store,
+    /// Listed AI entries (as typed) and whether they are currently blocked.
+    ai_entries: Vec<String>,
+    ai_blocking: bool,
+    /// Recognises hosts of AI/chatbot websites for the roster highlight.
+    ai_matcher: crate::ai_sites::Matcher,
     hardware: hardware::Room,
     badge: HashMap<String, BadgeState>,
     badge_doc: Option<classroom_store::Doc>,
@@ -245,6 +273,11 @@ struct State {
     /// repeatedly in a short window (a flapping connection is one event to
     /// the Teacher, not one per retry).
     last_alert: HashMap<String, Instant>,
+    /// Latest compact "what is on this Student's screen" summary, and when it
+    /// arrived; shown on the roster tiles while activity monitoring is on.
+    activity_live: HashMap<String, (Instant, Value)>,
+    /// Program icons (PNG base64) per Student and app, sent only once.
+    activity_icons: HashMap<String, HashMap<String, String>>,
 }
 struct BadgeState {
     enabled: bool,
@@ -392,6 +425,130 @@ impl Hub {
     pub(super) fn activity_ingest(&self, student: &str, report: Value) {
         self.5.lock().unwrap().insert(student.to_owned(), report);
     }
+    /// Stores a Student's compact live summary (see `activity::live_summary`).
+    pub(super) fn activity_live(&self, student: &str, p: &ToolPacket) -> Result<()> {
+        anyhow::ensure!(
+            p.text.len() <= crate::activity::MAX_SUMMARY_BYTES,
+            "Live activity summary too large"
+        );
+        let mut summary: Value = serde_json::from_str(&p.text)?;
+        anyhow::ensure!(summary["apps"].is_array(), "Invalid live activity summary");
+        let mut state = self.0.lock().unwrap();
+        let icons = state.activity_icons.entry(student.to_owned()).or_default();
+        if let Some(apps) = summary["apps"].as_array_mut() {
+            apps.truncate(crate::activity::LIVE_APPS);
+            for app in apps {
+                let Some(icon) = app.as_object_mut().and_then(|o| o.remove("icon")) else {
+                    continue;
+                };
+                if let (Some(name), Some(icon)) = (app["app"].as_str(), icon.as_str()) {
+                    if icons.len() < 40 || icons.contains_key(&name.to_ascii_lowercase()) {
+                        icons.insert(name.to_ascii_lowercase(), icon.to_owned());
+                    }
+                }
+            }
+        }
+        state
+            .activity_live
+            .insert(student.to_owned(), (Instant::now(), summary));
+        Ok(())
+    }
+    /// Live summaries newer than 30 s, with cached program icons filled back
+    /// in. Empty while activity monitoring is off.
+    fn activity_live_snapshot(&self, state: &State) -> Value {
+        if !self.activity_monitoring() {
+            return json!({});
+        }
+        let mut out = serde_json::Map::new();
+        for (student, (at, summary)) in &state.activity_live {
+            if at.elapsed() > Duration::from_secs(30) || !state.peers.contains_key(student) {
+                continue;
+            }
+            let mut summary = summary.clone();
+            // Which listed AI sites are open in any of the Student's tabs; the
+            // raw host names stay here.
+            let hosts: Vec<String> = summary["hosts"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|h| h.as_str().map(str::to_owned))
+                .collect();
+            if let Some(map) = summary.as_object_mut() {
+                map.remove("hosts");
+            }
+            let titles: Vec<String> = summary["titles"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|t| t.as_str().map(str::to_owned))
+                .collect();
+            if let Some(map) = summary.as_object_mut() {
+                map.remove("titles");
+            }
+            let mut hits = state.ai_matcher.hits(&hosts);
+            for host in state.ai_matcher.hits_in_titles(&titles) {
+                if !hits.contains(&host) {
+                    hits.push(host);
+                }
+            }
+            if !hits.is_empty() {
+                summary["ai"] = json!(hits);
+            }
+            if let (Some(apps), Some(icons)) = (
+                summary["apps"].as_array_mut(),
+                state.activity_icons.get(student),
+            ) {
+                for app in apps {
+                    let icon = app["app"]
+                        .as_str()
+                        .and_then(|n| icons.get(&n.to_ascii_lowercase()))
+                        .cloned();
+                    if let Some(icon) = icon {
+                        app["icon"] = json!(icon);
+                    }
+                }
+            }
+            out.insert(student.clone(), summary);
+        }
+        Value::Object(out)
+    }
+    /// Takes the adjustable settings from `config`; used at start and whenever
+    /// the Teacher applies Settings.
+    pub fn set_tuning(&self, config: &classroom_config::Config) {
+        let mut state = self.0.lock().unwrap();
+        state.tuning = Tuning {
+            power_grace: config.class.power_grace_seconds,
+            alert_cooldown: Duration::from_secs(u64::from(config.activity.alert_cooldown_seconds)),
+            activity: crate::activity::ActivityOptions::from_config(&config.activity),
+            rate_kib_s: config.transfer.rate_kib_s,
+        };
+    }
+    /// The AI-website list used to highlight Students who visit those sites.
+    pub fn set_ai_sites(&self, sites: &[String]) {
+        let mut state = self.0.lock().unwrap();
+        state.ai_matcher = crate::ai_sites::Matcher::new(sites);
+        state.ai_entries = sites.to_vec();
+    }
+    /// While AI websites are blocked no Student can visit them, so evidence stops.
+    pub fn set_ai_blocking(&self, blocking: bool) {
+        self.0.lock().unwrap().ai_blocking = blocking;
+    }
+    /// Midnight: yesterday's evidence is deleted.
+    pub fn evidence_roll(&self) {
+        self.0.lock().unwrap().evidence.roll_day(crate::local_day::today());
+    }
+    /// What the Students are told to collect: the Teacher's choices, plus the AI
+    /// sites to watch for while they are not blocked.
+    fn activity_options_to_send(&self) -> crate::activity::ActivityOptions {
+        let state = self.0.lock().unwrap();
+        let mut options = state.tuning.activity.clone();
+        options.evidence = options.evidence && !state.ai_blocking;
+        options.watch = if options.evidence { state.ai_entries.clone() } else { Vec::new() };
+        options
+    }
+    fn tuning(&self) -> Tuning {
+        self.0.lock().unwrap().tuning.clone()
+    }
     pub fn activity_forget(&self, student: &str) {
         self.5.lock().unwrap().remove(student);
     }
@@ -448,7 +605,7 @@ impl Hub {
         let mut apps_blocked: Vec<&String> = s.apps_blocked.iter().collect();
         apps_blocked.sort();
         let copilot_blocked: Vec<&String> = s.copilot_blocked.iter().collect();
-        json!({"recordings":self.recording_snapshot(&s.peers),"hardware":s.hardware.snapshot(&s.peers, &s.capabilities),"monitoring_badges":badges,"connection_popup":self.connection_popup(),"fs_jobs":fs_jobs,"locked":locked,"clipboard_blocked":clipboard_blocked,"vscode_blocked":vscode_blocked,"apps_blocked":apps_blocked,"copilot_blocked":copilot_blocked,"internet":s.internet,"capabilities":s.capabilities,"ready":s.peers.keys().collect::<Vec<_>>(),"jobs":s.jobs.iter().map(|j|json!({"id":j.packet.id,"kind":j.packet.action,"name":j.packet.name,"size":j.packet.size,"text":j.packet.text.chars().take(240).collect::<String>(),"targets":j.targets.iter().map(|(id,t)|json!({"id":id,"status":t.status,"done":t.done,"reply":t.reply,"error":t.error})).collect::<Vec<_>>()})).collect::<Vec<_>>()})
+        json!({"evidence":s.evidence.snapshot(),"activity_live":self.activity_live_snapshot(&s),"recordings":self.recording_snapshot(&s.peers),"hardware":s.hardware.snapshot(&s.peers, &s.capabilities),"monitoring_badges":badges,"connection_popup":self.connection_popup(),"fs_jobs":fs_jobs,"locked":locked,"clipboard_blocked":clipboard_blocked,"vscode_blocked":vscode_blocked,"apps_blocked":apps_blocked,"copilot_blocked":copilot_blocked,"internet":s.internet,"capabilities":s.capabilities,"ready":s.peers.keys().collect::<Vec<_>>(),"jobs":s.jobs.iter().map(|j|json!({"id":j.packet.id,"kind":j.packet.action,"name":j.packet.name,"size":j.packet.size,"text":j.packet.text.chars().take(240).collect::<String>(),"targets":j.targets.iter().map(|(id,t)|json!({"id":id,"status":t.status,"done":t.done,"reply":t.reply,"error":t.error})).collect::<Vec<_>>()})).collect::<Vec<_>>()})
     }
     /// Hashes a staged file off the caller's thread, then offers it to every
     /// recipient that has not been cancelled meanwhile. The hash lets Students
@@ -582,10 +739,10 @@ impl Hub {
             policy.validate()?;
             p.text = serde_json::to_string(&policy)?;
             anyhow::ensure!(
-                p.text.len() <= 8000,
+                p.text.len() <= 48_000,
                 "The application list is too long to send (keep it under about 400 entries)"
             );
-            p.name = if policy.enabled { "app_block" } else { "app_open" }.into();
+            p.name = if policy.active() { "app_block" } else { "app_open" }.into();
             None
         } else if action == "power" {
             let op = input["op"].as_str().unwrap_or("");
@@ -609,7 +766,8 @@ impl Hub {
                 .chars()
                 .take(200)
                 .collect();
-            p.text = json!({"op":op,"message":message}).to_string();
+            p.text = json!({"op":op,"message":message,"grace":self.tuning().power_grace})
+                .to_string();
             p.name = op.into();
             None
         } else if action == "website" {
@@ -1076,12 +1234,12 @@ impl Hub {
         if state.peers.get(student) != Some(&generation) {
             return;
         }
-        const ALERT_COOLDOWN: Duration = Duration::from_secs(30);
+        let alert_cooldown = state.tuning.alert_cooldown;
         if self.activity_monitoring()
             && state
                 .last_alert
                 .get(student)
-                .is_none_or(|at| at.elapsed() >= ALERT_COOLDOWN)
+                .is_none_or(|at| at.elapsed() >= alert_cooldown)
         {
             state.last_alert.insert(student.to_owned(), Instant::now());
             if state.activity_alerts.len() >= 50 {
@@ -1093,6 +1251,8 @@ impl Hub {
                 "unix_ms": media_core::unix_us() / 1000,
             }));
         }
+        state.activity_live.remove(student);
+        state.activity_icons.remove(student);
         if let Some(b) = state.badge.get_mut(student) {
             b.status = "offline".into();
             b.actual = None;
@@ -1236,6 +1396,9 @@ fn serve(
     if let Some(result) = recording::serve(s, &hello, hub) {
         return result;
     }
+    if let Some(result) = evidence::serve(s, &hello, hub) {
+        return result;
+    }
     if let Some(result) = fs_jobs::serve(s, &hello, hub) {
         return result;
     }
@@ -1325,6 +1488,7 @@ fn serve(
     let mut last_popup = None;
     let activity_supported = capability.as_ref().is_some_and(|c| c["activity"] == 1);
     let mut last_activity_monitoring = None;
+    let mut last_activity_options = None;
     let confirmed = capability
         .as_ref()
         .is_some_and(|c| hub.confirm_update(&hello.student, c));
@@ -1342,12 +1506,17 @@ fn serve(
                 "Student left classroom"
             );
             if p.action == "recording_status" {
-                let stopping = hub.recording_status(&hello.student, &p)?;
+                let verdict = hub.recording_status(&hello.student, &p)?;
                 let mut ack = packet("ok");
-                if stopping {
-                    ack.status = "stop".into();
-                }
+                ack.status = verdict.into();
                 send(s, &ack)?;
+            } else if p.action == "activity_live" {
+                // A summary that cannot be used is dropped; it must never cost
+                // the Student its tools connection.
+                if let Err(error) = hub.activity_live(&hello.student, &p) {
+                    tracing::debug!(%error, "Ignored a live activity summary");
+                }
+                send(s, &packet("ok"))?;
             } else if p.action == "hardware_ack" {
                 hub.hardware_ack(&hello.student, &p)?;
                 send(s, &packet("ok"))?;
@@ -1404,11 +1573,17 @@ fn serve(
                     continue;
                 }
                 let monitoring = hub.activity_monitoring();
-                if activity_supported && last_activity_monitoring != Some(monitoring) {
+                let activity_options = hub.activity_options_to_send();
+                if activity_supported
+                    && (last_activity_monitoring != Some(monitoring)
+                        || (monitoring && last_activity_options.as_ref() != Some(&activity_options)))
+                {
                     let mut preference = packet("activity_status");
                     preference.status = if monitoring { "on" } else { "off" }.into();
+                    preference.text = serde_json::to_string(&activity_options)?;
                     send(s, &preference)?;
                     last_activity_monitoring = Some(monitoring);
+                    last_activity_options = Some(activity_options);
                     continue;
                 }
                 let next = hub
@@ -1476,6 +1651,10 @@ fn serve_file(
     let mut done = 0;
     let mut hash = Sha256::new();
     let mut buffer = vec![0; CHUNK];
+    // One block per interval gives the configured speed (1000 KiB/s = 64 ms per 64 KiB).
+    let pace = Duration::from_micros(
+        (CHUNK as u64 * 1_000_000 / 1024 / u64::from(hub.tuning().rate_kib_s.max(1))).max(500),
+    );
     while done < total {
         let start = Instant::now();
         anyhow::ensure!(
@@ -1487,7 +1666,7 @@ fn serve_file(
         hash.update(&buffer[..n]);
         s.write_all(&buffer[..n])?;
         done += n as u64;
-        thread::sleep(PACE.saturating_sub(start.elapsed()));
+        thread::sleep(pace.saturating_sub(start.elapsed()));
     }
     let mut finish = packet("checksum");
     finish.hash = format!("{:x}", hash.finalize());
@@ -1836,6 +2015,9 @@ pub fn student(
         let app_enforcer = super::app_control::Enforcer::start();
         inbox.sync_clipboard_block();
         let mut activity_lifecycle = activity_jobs::Lifecycle::new();
+        // Takes screenshots as evidence of AI-site use when the Teacher asks for them.
+        let mut ai_watcher = evidence::Watcher::new(&state_dir);
+        let mut last_evidence_check = Instant::now();
         // Collection resumes by itself after a Student restart and keeps
         // going while the Teacher is away; it ends with the local day.
         let activity_doc = classroom_store::open_shared(&state_dir)
@@ -1933,11 +2115,67 @@ pub fn student(
                     }
                     inbox.bind_message_session(&ack.token);
                     info!("Student classroom tools ready");
+                    // Per connection: the Teacher's icon cache starts empty too.
+                    let mut sent_icons = std::collections::HashSet::<String>::new();
+                    let mut last_live_text = String::new();
+                    let mut last_live_sent: Option<Instant> = None;
                     while !cancel.load(Ordering::Acquire) {
                         terminals.retain_mut(|worker| !worker.finished());
                         inbox
                             .terminal_active
                             .store(terminals.len(), Ordering::Release);
+                        recorder.note_contact();
+                        if activity_monitoring
+                            && last_live_sent.is_none_or(|at| at.elapsed() >= Duration::from_secs(3))
+                        {
+                            let summary = activity_lifecycle
+                                .live()
+                                .lock()
+                                .unwrap()
+                                .as_ref()
+                                .and_then(|r| {
+                                    crate::activity::live_summary(
+                                        r,
+                                        &mut sent_icons,
+                                        activity_lifecycle.options().live_apps as usize,
+                                    )
+                                });
+                            if let Some(summary) = summary {
+                                let text = summary.to_string();
+                                let heartbeat_due = last_live_sent
+                                    .is_none_or(|at| at.elapsed() >= Duration::from_secs(12));
+                                if heartbeat_due || last_live_text != text {
+                                    let mut p = packet("activity_live");
+                                    p.student.clone_from(&identity);
+                                    p.text.clone_from(&text);
+                                    send(&mut s, &p)?;
+                                    anyhow::ensure!(
+                                        read(&mut s)?.action == "ok",
+                                        "Live activity summary rejected"
+                                    );
+                                    last_live_text = text;
+                                    last_live_sent = Some(Instant::now());
+                                }
+                            }
+                        }
+                        if activity_monitoring && last_evidence_check.elapsed() >= Duration::from_secs(2) {
+                            last_evidence_check = Instant::now();
+                            let plan = activity_lifecycle
+                                .live()
+                                .lock()
+                                .unwrap()
+                                .as_ref()
+                                .and_then(|report| ai_watcher.observe(report, crate::activity::now_ms()));
+                            if let Some(plan) = plan {
+                                ai_watcher.capture(
+                                    plan,
+                                    address,
+                                    identity.clone(),
+                                    state_dir.clone(),
+                                    Arc::clone(&cancel),
+                                );
+                            }
+                        }
                         for p in recorder.statuses() {
                             send(&mut s, &p)?;
                             let ack = read(&mut s)?;
@@ -1946,6 +2184,11 @@ pub fn student(
                                 let mut stop = p;
                                 stop.action = "recording_stop".into();
                                 let _ = recorder.command(stop);
+                            } else if ack.status == "discard" {
+                                // The Teacher deleted this recording: drop what is left here.
+                                let mut discard = p;
+                                discard.action = "recording_discard".into();
+                                let _ = recorder.command(discard);
                             }
                         }
                         for _ in 0..16 {
@@ -1956,6 +2199,9 @@ pub fn student(
                         }
                         send(&mut s, &packet("poll"))?;
                         let p = read(&mut s)?;
+                        // A real command may be followed by more queued work: ask
+                        // again at once instead of idling a full interval.
+                        let had_work = p.action != "idle";
                         inbox.touch();
                         guard.keepalive();
                         expire_rules!();
@@ -2071,6 +2317,10 @@ pub fn student(
                                     "Invalid activity monitoring preference"
                                 );
                                 activity_monitoring = p.status == "on";
+                                if let Ok(options) = serde_json::from_str::<crate::activity::ActivityOptions>(&p.text) {
+                                    ai_watcher.configure(&options);
+                                    activity_lifecycle.set_options(options);
+                                }
                                 activity_lifecycle.set_enabled(activity_monitoring);
                                 if let Some(doc) = &activity_doc {
                                     let _ = if activity_monitoring {
@@ -2242,7 +2492,7 @@ pub fn student(
                                 );
                             }
                         }
-                        for _ in 0..10 {
+                        for _ in 0..if had_work { 0 } else { 10 } {
                             if cancel.load(Ordering::Acquire) {
                                 break;
                             }
@@ -2605,6 +2855,92 @@ pub fn collection_root(label: &str) -> Result<PathBuf> {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_student_on_an_ai_site_is_flagged_in_the_snapshot_even_with_the_browser_in_the_background() {
+        let hub = Hub::default();
+        hub.0.lock().unwrap().peers.insert("s1".into(), 1);
+        hub.set_activity_monitoring(true);
+        hub.set_ai_sites(&crate::ai_sites::defaults());
+        let mut p = packet("activity_live");
+        p.text = json!({"apps":[{"app":"Code.exe","title":"main.rs"}],
+                        "url":"https://docs.rs","hosts":["docs.rs","chatgpt.com"]}).to_string();
+        hub.activity_live("s1", &p).unwrap();
+        let shown = hub.snapshot()["activity_live"]["s1"].clone();
+        assert_eq!(shown["ai"], json!(["chatgpt.com"]));
+        assert!(shown.get("hosts").is_none(), "raw hosts are not published");
+        // A tab whose address is not known yet is still recognised by its title.
+        p.text = json!({"apps":[{"app":"Code.exe","title":"x"}],
+                        "hosts":["tinteo.vn"],"titles":["tinteo.vn","ChatGPT"]}).to_string();
+        hub.activity_live("s1", &p).unwrap();
+        let shown = hub.snapshot()["activity_live"]["s1"].clone();
+        assert_eq!(shown["ai"], json!(["chatgpt.com"]));
+        assert!(shown.get("titles").is_none(), "raw titles are not published");
+        // Not flagged when nothing on the list is open.
+        p.text = json!({"apps":[{"app":"Code.exe","title":"x"}],"hosts":["docs.rs"]}).to_string();
+        hub.activity_live("s1", &p).unwrap();
+        assert!(hub.snapshot()["activity_live"]["s1"].get("ai").is_none());
+        // The list is the Teacher's: with an empty one nobody is flagged.
+        p.text = json!({"apps":[{"app":"Code.exe","title":"x"}],"hosts":["chatgpt.com"]}).to_string();
+        hub.activity_live("s1", &p).unwrap();
+        hub.set_ai_sites(&[]);
+        assert!(hub.snapshot()["activity_live"]["s1"].get("ai").is_none());
+    }
+
+    #[test]
+    fn adjustable_settings_reach_the_hub_and_default_to_todays_behaviour() {
+        let hub = Hub::default();
+        let before = hub.tuning();
+        assert_eq!(before.power_grace, 15);
+        assert_eq!(before.alert_cooldown, Duration::from_secs(30));
+        assert_eq!(before.rate_kib_s, 1000);
+        assert_eq!(before.activity, crate::activity::ActivityOptions::default());
+        let mut config = classroom_config::Config::load(None).unwrap().0;
+        config.class.power_grace_seconds = 45;
+        config.activity.scan_seconds = 20;
+        config.activity.live_apps = 2;
+        config.activity.collect_clipboard = false;
+        config.activity.alert_cooldown_seconds = 120;
+        config.transfer.rate_kib_s = 4096;
+        hub.set_tuning(&config);
+        let now = hub.tuning();
+        assert_eq!(now.power_grace, 45);
+        assert_eq!(now.alert_cooldown, Duration::from_secs(120));
+        assert_eq!(now.rate_kib_s, 4096);
+        assert_eq!(now.activity.scan_seconds, 20);
+        assert_eq!(now.activity.live_apps, 2);
+        assert!(!now.activity.collect_clipboard);
+    }
+    #[test]
+    fn live_activity_reaches_the_snapshot_with_cached_icons_only_while_monitoring() {
+        let hub = Hub::default();
+        hub.0.lock().unwrap().peers.insert("s1".into(), 1);
+        let mut first = packet("activity_live");
+        first.text = json!({"apps":[{"app":"Chrome.exe","title":"Docs","icon":"AAAA"}],"url":"https://a.dev"}).to_string();
+        hub.activity_live("s1", &first).unwrap();
+        // Off by default: nothing is published.
+        assert_eq!(hub.snapshot()["activity_live"], json!({}));
+        hub.set_activity_monitoring(true);
+        let shown = hub.snapshot()["activity_live"]["s1"].clone();
+        assert_eq!(shown["apps"][0]["icon"], "AAAA");
+        assert_eq!(shown["url"], "https://a.dev");
+        // A later summary without the icon still shows it, from the cache.
+        let mut next = packet("activity_live");
+        next.text = json!({"apps":[{"app":"chrome.exe","title":"Other"}]}).to_string();
+        hub.activity_live("s1", &next).unwrap();
+        let shown = hub.snapshot()["activity_live"]["s1"].clone();
+        assert_eq!(shown["apps"][0]["icon"], "AAAA");
+        assert_eq!(shown["apps"][0]["title"], "Other");
+        assert!(shown.get("url").is_none());
+        // Malformed or oversized input is refused.
+        let mut bad = packet("activity_live");
+        bad.text = "{\"apps\":1}".into();
+        assert!(hub.activity_live("s1", &bad).is_err());
+        bad.text = "x".repeat(crate::activity::MAX_SUMMARY_BYTES + 1);
+        assert!(hub.activity_live("s1", &bad).is_err());
+        // A Student that is no longer connected disappears.
+        hub.0.lock().unwrap().peers.clear();
+        assert_eq!(hub.snapshot()["activity_live"], json!({}));
+    }
     use super::*;
     #[test]
     fn teacher_file_limit_rejects_before_hashing_and_removes_staging() {

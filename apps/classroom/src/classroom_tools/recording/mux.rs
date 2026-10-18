@@ -10,6 +10,7 @@ pub(super) struct Mux {
     pending: Option<Mp4Sample>,
     origin: u64,
     samples: u32,
+    max_samples: u32,
 }
 fn units(bytes: &[u8]) -> Vec<&[u8]> {
     let mut codes = Vec::new();
@@ -46,7 +47,13 @@ fn avcc(bytes: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 impl Mux {
-    pub fn start(path: &Path, dimensions: (u32, u32), au: &[u8], pts: u64) -> Result<Self> {
+    pub fn start(
+        path: &Path,
+        dimensions: (u32, u32),
+        au: &[u8],
+        pts: u64,
+        max_samples: u32,
+    ) -> Result<Self> {
         let nals = units(au);
         let sps = nals
             .iter()
@@ -83,6 +90,7 @@ impl Mux {
             pending: None,
             origin: pts,
             samples: 0,
+            max_samples,
         };
         mux.push(au, pts, true)?;
         Ok(mux)
@@ -90,7 +98,7 @@ impl Mux {
     pub fn push(&mut self, au: &[u8], pts: u64, keyframe: bool) -> Result<()> {
         let time = pts.saturating_sub(self.origin);
         anyhow::ensure!(
-            self.samples < 18_100,
+            self.samples < self.max_samples,
             "Recording sample table limit exceeded"
         );
         if let Some(mut previous) = self.pending.take() {
@@ -142,7 +150,7 @@ mod tests {
             0, 0, 0, 1, 0x67, 0x42, 0, 0x1e, 0xab, 0x40, 0, 0, 1, 0x68, 0xce, 0x38, 0x80, 0, 0, 1,
             0x65, 0x88,
         ];
-        let mut mux = Mux::start(&path, (1280, 720), &idr, 9000).unwrap();
+        let mut mux = Mux::start(&path, (1280, 720), &idr, 9000, 18_100).unwrap();
         mux.push(&[0, 0, 1, 0x41, 0x88], 18000, false).unwrap(); // 100 ms, not synthetic 33 ms.
         mux.finish(99000).unwrap();
         let reader = mp4::Mp4Reader::read_header(
@@ -163,7 +171,7 @@ mod tests {
             [0, 0, 0, 2, 0x65, 3, 0, 0, 0, 2, 0x41, 4]
         );
         assert!(avcc(&[1, 2, 3]).is_err());
-        assert!(Mux::start(Path::new("unused.mp4"), (1280, 720), &[0, 0, 1, 0x41, 3], 0).is_err());
+        assert!(Mux::start(Path::new("unused.mp4"), (1280, 720), &[0, 0, 1, 0x41, 3], 0, 18_100).is_err());
     }
     #[test]
     fn real_h264_can_be_remuxed_without_encoding_or_audio() {
@@ -172,7 +180,7 @@ mod tests {
             "record-real-{}.mp4",
             super::super::nonce().unwrap()
         ));
-        let mut mux = Mux::start(&path, (1280, 720), au, 0).unwrap();
+        let mut mux = Mux::start(&path, (1280, 720), au, 0, 18_100).unwrap();
         mux.push(au, 9000, true).unwrap();
         mux.finish(90000).unwrap();
         let reader = mp4::Mp4Reader::read_header(

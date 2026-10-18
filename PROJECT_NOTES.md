@@ -64,3 +64,62 @@ và liệt kê đầy đủ đường dẫn app/helper cùng loại quyền đ�
 Không dùng Computer Use để thao tác cấp quyền. Không reset/xóa/đổi privacy grants.
 Checklist chỉ tự hiện lần đầu khi cả hai quyền Recording chưa được cấp; lưu dấu
 đã xem, không hiện lại mỗi lần mở Teacher. Nút toolbar vẫn mở theo yêu cầu.
+
+## Build Mac luôn ký bằng Apple Development cert (14-10-2026)
+
+Chủ dự án yêu cầu từ nay mọi lượt build Teacher/Student macOS đều ký bằng Apple
+Development cert để quyền macOS (Screen Recording, Accessibility, Local Network)
+được giữ giữa các lần build, không cấp lại nhiều lần. Không dùng ad-hoc mặc định.
+
+```
+CLASSROOM_MAC_SIGN_MODE=apple \
+CLASSROOM_MAC_SIGN_IDENTITY=A9F06E151E345F70B12858DF2BC32945BFF60945 \
+scripts/build-flutter-macos.sh
+```
+
+- Giữ nguyên bundle ID, đường dẫn output (`target/Classroom Console.app`) và cert.
+  Thoát đúng Teacher/helper đang chạy trước khi build đè cùng đường dẫn.
+- Cert hết hạn 03-10-2027; các cert cũ cùng tên đã bị revoke. Khi gia hạn, giữ
+  cùng CN để designated requirement không đổi (script sẽ dừng nếu requirement đổi).
+- `sign-macos-app.py` chỉ bỏ bước Gatekeeper `spctl` cho cert không phải Developer
+  ID (Apple Development không bao giờ qua Gatekeeper); các kiểm tra khác giữ nguyên.
+- Lần đầu dùng đường dẫn/danh tính mới vẫn cần cấp quyền thủ công một lần. Mac
+  Student chưa deploy bản ký Apple sẽ cần cấp một lần khi deploy.
+
+## Ý tưởng cài đặt giảng viên chưa làm (so sánh NetSupport School / Veyon, 14-10-2026)
+
+Chủ dự án yêu cầu lưu lại để sau này hỏi thì gợi ý implement. Nguồn: tài liệu chính
+thức NetSupport School (Tutor Configurator: Start Options, Network and Wireless,
+Performance, Student Selection, Administration; Tutor UI settings; Monitor mode) và
+Veyon (Configurator: General, Service, Master, Access control, Authentication keys,
+Demo server, File transfer, WebAPI). Danh sách NetSupport không đầy đủ từng tuỳ chọn.
+
+Đã làm: **#1 chế độ Wi-Fi / băng thông thấp / máy yếu** (xem `docs/29_LOW_BANDWIDTH_MODE.md`).
+
+Còn lại, theo thứ tự đề xuất:
+
+2. **Trang "Giao diện giám sát"** (chỉ Teacher): nhãn thumbnail (tên máy / IP / cả hai),
+   sắp xếp (tên, IP theo số — `.9` trước `.10` —, trạng thái), hành động nhấp đôi
+   (Observe / Control / không làm gì; kiểm tra hành vi hiện tại trước), tự vừa cỡ, ẩn
+   máy offline mặc định; gom các lựa chọn đang rải ở thanh công cụ.
+3. **Xác nhận thao tác nguy hiểm** (tắt máy / khởi động lại / đăng xuất; hiện luôn có
+   hộp xác nhận trong `power_controls.dart`): công tắc (mặc định bật; khi chọn cả lớp
+   vẫn bắt xác nhận), nút "Reset các nhắc nhở không hiện lại", tự nối lại sinh viên.
+4. **Bí danh và nguồn tên máy**: đặt tên theo máy (nhớ theo ID máy, không theo IP),
+   hiện ở lưới, dialog ghi màn hình, toast phản hồi, báo lỗi; nguồn tên mặc định
+   hostname / tên đăng nhập / bí danh. Lưu trong kho dữ liệu Teacher.
+5. **Thư mục lưu và chất lượng ghi hình**: thư mục gốc cho ảnh chụp, video ghi, tệp
+   thu về (hiện luôn Desktop); độ phân giải ghi (hiện 720p), fps, độ dài đoạn MP4 (10
+   phút); cách gom tệp thu (theo máy / theo ngày); cảnh báo ổ đĩa đầy. Chất lượng ghi
+   cần cập nhật cả Student.
+6. **Thời hạn của quy tắc chặn** (Internet / ứng dụng / VS Code): "đến hết ngày / 30 /
+   60 / 90 phút / 2 giờ / đến khi gỡ". Student phải tự gỡ khi hết hạn (như khi sang
+   ngày mới), nên sửa cả hai phía; tốn công nhất (~1–2 ngày).
+
+Làm sau (đầu tư lớn): **hồ sơ buổi học** (ví dụ chế độ thi: chặn Internet + ứng dụng
+cùng lúc), **mật khẩu bảo vệ cài đặt** và **mã phòng / khoá xác thực Teacher**
+(đã nêu ở docs/11 "Known gap"), **Wake-on-LAN** (nhớ MAC từ danh sách máy đã thấy).
+
+Tuỳ chọn / ưu tiên thấp: giới hạn dung lượng và xoay vòng log, hiện cổng điều khiển /
+media / phản hồi, ngôn ngữ vi/en và giao diện sáng/tối, WebAPI REST, LDAP/AD, ngoại lệ
+tường lửa tự động (nên để installer), nguồn tên đăng nhập / ảnh sinh viên.

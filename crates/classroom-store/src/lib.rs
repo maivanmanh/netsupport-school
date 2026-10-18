@@ -53,6 +53,8 @@ pub mod ns {
     pub const HARDWARE: &str = "hardware";
     /// Small console flags (first-run notices and similar).
     pub const UI: &str = "ui";
+    /// The Teacher's list of AI/chatbot websites (`ai_sites/list`).
+    pub const AI_SITES: &str = "ai_sites";
     /// Last Activity report per Student, kept for the day it was recorded.
     pub const ACTIVITY: &str = "activity";
     /// Per-profile-directory state of every role: launch selection, device

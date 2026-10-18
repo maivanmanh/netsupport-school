@@ -90,3 +90,32 @@ Thu logs và updater sau lần bootstrap tiếp tục dùng chức năng hiện 
 HTTP dev LAN không có xác thực nhà phát hành/TLS; checksum kiểm tra package nội
 bộ, không thay thế release signing. Không công bố endpoint ra Internet. Các cảnh
 báo/quyền OS vẫn do người dùng xử lý; code không bypass chính sách hệ điều hành.
+
+## Cài một bước bằng tệp `.bat` (16-10-2026)
+
+Cùng công tắc chia sẻ, Teacher phục vụ thêm `http://<IP-Teacher>:<cổng>/install.bat`
+(tải về là `Install-Classroom-Student.bat`). ZIP ở `/` vẫn giữ nguyên.
+
+Học viên chỉ cần bấm chuột phải tệp → **Run as administrator** (bấm đúp cũng được: tệp
+tự xin quyền). Tệp tự làm toàn bộ: tải ZIP từ Teacher (thử lại nếu máy chủ bận), kiểm tra
+SHA-256, dừng Student/dịch vụ cũ, giải nén vào `C:\Program Files\Classroom`, sửa lại IP/cổng
+Teacher trong `classroom-bootstrap.toml`, cài dịch vụ Classroom Guard (dịch vụ mở Student
+trong phiên của người dùng đang đăng nhập) và chờ Student chạy. Có thể chạy lại để cập
+nhật. Tham số: `/quiet` (không `pause`, dùng khi chạy từ xa bằng phần mềm điều khiển cũ,
+mã thoát 0 nếu thành công), `/teacher <IP>` (dùng IP Teacher khác với IP ghi trong tệp).
+
+**Địa chỉ luôn là địa chỉ mới nhất của Teacher.** Máy chủ chia sẻ lắng nghe trên mọi card
+mạng và tạo script cho từng lượt tải theo đúng IP mà học viên kết nối tới; nếu máy giảng
+viên đổi từ cáp LAN sang Wi-Fi (hoặc sang phòng máy khác) thì lượt tải kế tiếp nhận script
+và gói ZIP với IP mới (ZIP được dựng lại tự động). Bản sao ghi ra Desktop bằng nút
+*Lưu tệp .bat ra Desktop* chỉ mang IP lúc sao chép: sau khi đổi mạng hãy tải lại từ liên
+kết, hoặc chạy với `/teacher <IP mới>`. Lưu ý: kết nối điều khiển lớp học của Teacher vẫn
+gắn với card mạng đã chọn khi khởi động; sau khi đổi mạng hãy khởi động lại Teacher để
+Student kết nối ở IP mới.
+
+Kiểm tra thủ công trên một máy Windows: (1) Teacher bật chia sẻ; (2) trên máy học viên mở
+`http://<IP-Teacher>:8080/install.bat` bằng trình duyệt (Chrome có thể hỏi *Keep*); (3)
+chuột phải tệp → Run as administrator; (4) cửa sổ hiện các bước `[+]` và kết thúc bằng
+`HOAN TAT`; (5) `services.msc` thấy *Classroom Guard* đang chạy, Task Manager thấy
+`ClassroomStudent.exe` ở `C:\Program Files\Classroom`, máy xuất hiện trong danh sách của
+Teacher. Gỡ: `"C:\Program Files\Classroom\ClassroomGuardService.exe" --uninstall` rồi xóa thư mục.

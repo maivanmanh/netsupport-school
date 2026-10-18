@@ -5,7 +5,7 @@
 //! just handing over the already-current cache — no scan happens inside that
 //! request/response round trip, which is what made opening the Activity
 //! window feel slow before this existed.
-use super::{history::History, Report};
+use super::{history::History, Report, SharedOptions};
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -15,8 +15,6 @@ use std::{
     time::Duration,
 };
 
-/// Windows/tabs scan cadence.
-const INTERVAL: Duration = Duration::from_secs(6);
 /// Downloads (disk + SQLite) are read every Nth cycle — real I/O, so it runs
 /// less often than the in-memory window/tab scan.
 const DOWNLOADS_EVERY: u32 = 5;
@@ -30,17 +28,28 @@ pub struct Collector {
     worker: Option<thread::JoinHandle<()>>,
 }
 impl Collector {
-    pub fn start(history: Arc<History>, live: Live) -> Self {
+    pub fn start(history: Arc<History>, live: Live, options: SharedOptions) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
         let worker = thread::spawn(move || {
             let mut tick: u32 = 0;
             while !worker_stop.load(Ordering::Acquire) {
-                let report = super::build(&history, tick % DOWNLOADS_EVERY == 0);
+                let now = options.lock().unwrap().clone();
+                let mut report = super::build(
+                    &history,
+                    now.collect_downloads && tick % DOWNLOADS_EVERY == 0,
+                );
+                if !now.collect_downloads {
+                    report.downloads.clear();
+                }
                 *live.lock().unwrap() = Some(report);
                 tick = tick.wrapping_add(1);
                 let start = std::time::Instant::now();
-                while !worker_stop.load(Ordering::Acquire) && start.elapsed() < INTERVAL {
+                // Re-read each pass so a changed setting takes effect at once.
+                while !worker_stop.load(Ordering::Acquire)
+                    && start.elapsed()
+                        < Duration::from_secs(u64::from(options.lock().unwrap().scan_seconds))
+                {
                     thread::sleep(Duration::from_millis(200));
                 }
             }

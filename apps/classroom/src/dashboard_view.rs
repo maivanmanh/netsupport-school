@@ -158,6 +158,152 @@ pub fn hit(
         .map(Action::Select)
 }
 
+/// Drawing helpers for the modern Student dialogs: anti-aliased rounded
+/// rectangles, thick lines and text at any pixel size. Coordinates are logical.
+impl Canvas {
+    fn blend_pixel(&mut self, x: usize, y: usize, color: u32, alpha: u32) {
+        if x >= self.pixel_width() || y >= self.pixel_height() || alpha == 0 {
+            return;
+        }
+        let index = y * self.pixel_width() + x;
+        if alpha >= 255 {
+            self.pixels[index] = color & 0x00ff_ffff;
+            return;
+        }
+        let bg = self.pixels[index];
+        let mut out = 0;
+        for shift in [0, 8, 16] {
+            out |= ((((color >> shift) & 255) * alpha + ((bg >> shift) & 255) * (255 - alpha) + 127)
+                / 255)
+                << shift;
+        }
+        self.pixels[index] = out;
+    }
+
+    /// Coverage (0..=255) of a pixel centre at distance `dist` from a circle of radius `r`.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn coverage(dist: f32, r: f32) -> u32 {
+        if dist <= r - 0.5 {
+            255
+        } else if dist >= r + 0.5 {
+            0
+        } else {
+            ((r + 0.5 - dist) * 255.0) as u32
+        }
+    }
+
+    /// Filled rectangle with rounded, anti-aliased corners.
+    #[allow(clippy::cast_precision_loss)]
+    pub(crate) fn round_rect(&mut self, area: [usize; 4], radius: usize, color: u32) {
+        let d = self.density;
+        let (x, y, w, h) = (area[0] * d, area[1] * d, area[2] * d, area[3] * d);
+        if w == 0 || h == 0 {
+            return;
+        }
+        let r = (radius * d).min(w / 2).min(h / 2);
+        let rf = r as f32;
+        let (right, bottom) = ((x + w).min(self.pixel_width()), (y + h).min(self.pixel_height()));
+        for py in y..bottom {
+            let top_band = py < y + r;
+            let bottom_band = py + r >= y + h;
+            if !top_band && !bottom_band {
+                let stride = self.pixel_width();
+                self.pixels[py * stride + x..py * stride + right].fill(color & 0x00ff_ffff);
+                continue;
+            }
+            let cy = if top_band { (y + r) as f32 } else { (y + h - r) as f32 };
+            let fy = py as f32 + 0.5;
+            for px in x..right {
+                let near_left = px < x + r;
+                let near_right = px + r >= x + w;
+                if !near_left && !near_right {
+                    self.blend_pixel(px, py, color, 255);
+                    continue;
+                }
+                let cx = if near_left { (x + r) as f32 } else { (x + w - r) as f32 };
+                let fx = px as f32 + 0.5;
+                let dist = ((fx - cx).powi(2) + (fy - cy).powi(2)).sqrt();
+                let alpha = Self::coverage(dist, rf);
+                self.blend_pixel(px, py, color, alpha);
+            }
+        }
+    }
+
+    /// A rounded rectangle with a 1 px border inside `area`.
+    pub(crate) fn round_rect_border(&mut self, area: [usize; 4], radius: usize, border: u32, fill: u32) {
+        self.round_rect(area, radius, border);
+        let [x, y, w, h] = area;
+        if w > 2 && h > 2 {
+            self.round_rect([x + 1, y + 1, w - 2, h - 2], radius.saturating_sub(1), fill);
+        }
+    }
+
+    /// A filled anti-aliased disc (logical centre and radius).
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub(crate) fn disc(&mut self, cx: f32, cy: f32, radius: f32, color: u32) {
+        let d = self.density as f32;
+        let (cx, cy, r) = (cx * d, cy * d, radius * d);
+        let (x0, x1) = ((cx - r - 1.0).max(0.0) as usize, (cx + r + 1.0).max(0.0) as usize);
+        let (y0, y1) = ((cy - r - 1.0).max(0.0) as usize, (cy + r + 1.0).max(0.0) as usize);
+        for py in y0..=y1 {
+            for px in x0..=x1 {
+                let dist = ((px as f32 + 0.5 - cx).powi(2) + (py as f32 + 0.5 - cy).powi(2)).sqrt();
+                self.blend_pixel(px, py, color, Self::coverage(dist, r));
+            }
+        }
+    }
+
+    /// A line with round caps, `thickness` logical pixels wide.
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub(crate) fn line(&mut self, from: (f32, f32), to: (f32, f32), thickness: f32, color: u32) {
+        let length = ((to.0 - from.0).powi(2) + (to.1 - from.1).powi(2)).sqrt();
+        let steps = (length * self.density as f32 * 2.0).ceil().max(1.0) as usize;
+        for i in 0..=steps {
+            let t = i as f32 / steps as f32;
+            self.disc(
+                from.0 + (to.0 - from.0) * t,
+                from.1 + (to.1 - from.1) * t,
+                thickness / 2.0,
+                color,
+            );
+        }
+    }
+
+    /// Text at an arbitrary pixel size (the system font; a coarse fallback otherwise).
+    pub(crate) fn text_px(&mut self, x: usize, y: usize, value: &str, color: u32, px: u16) {
+        if self.font.is_some() {
+            self.font_text(x, y, value, color, px);
+        } else {
+            self.text(x, y, value, color, 1);
+        }
+    }
+
+    /// Logical width of `value` at pixel size `px`.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub(crate) fn text_width_px(&self, value: &str, px: u16) -> usize {
+        let Some(font) = self.font.as_ref() else {
+            return value.chars().count() * 6;
+        };
+        let size = f32::from(px);
+        let mut width = 0.0_f32;
+        let mut previous = None;
+        for c in value.chars() {
+            if let Some(left) = previous {
+                width += font.horizontal_kern(left, c, size).unwrap_or(0.0);
+            }
+            previous = Some(c);
+            width += font.metrics(c, size).advance_width;
+        }
+        width.ceil().max(0.0) as usize
+    }
+
+    /// Text with a one-pixel horizontal overdraw, standing in for a bold weight.
+    pub(crate) fn text_bold(&mut self, x: usize, y: usize, value: &str, color: u32, px: u16) {
+        self.text_px(x, y, value, color, px);
+        self.text_px(x + 1, y, value, color, px);
+    }
+}
+
 pub struct Canvas {
     pub pixels: Vec<u32>,
     pub width: usize,

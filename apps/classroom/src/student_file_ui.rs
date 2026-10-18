@@ -1,29 +1,46 @@
 //! Rust-only Student window for incoming files: compact, bottom-right,
-//! borderless, collapsible. It shows each file's name and
-//! progress, cannot be closed while a transfer is active, and offers "Show"
-//! (reveal the saved file in Finder/Explorer) once a file has arrived.
+//! borderless, collapsible. It shows each file's name and progress and cannot
+//! be closed while a transfer is active. A file that has arrived is a row the
+//! Student can click anywhere (it highlights and the cursor becomes a pointing
+//! hand) to reveal it in Finder/Explorer. Closing hides the window but keeps the
+//! list; "Clear" in the footer removes the files that are done.
 use super::{
     classroom_tools::{Inbox, Transfer, TransferState},
     dashboard_view::Canvas,
 };
 use anyhow::Result;
-use minifb::{MouseButton, MouseMode, Window, WindowOptions};
+use minifb::{CursorStyle, MouseButton, MouseMode, Window, WindowOptions};
 use std::{path::Path, sync::Arc, time::Instant};
 
 const TITLE: &str = "Classroom · Files from teacher";
-const WIDTH: usize = 320;
-const HEADER: usize = 30;
-const ROW: usize = 52;
-const FOOTER: usize = 36;
+const WIDTH: usize = 360;
+const HEADER: usize = 48;
+const ROW: usize = 64;
+/// Footer: "+ N earlier" on the left, "Clear" on the right.
+const FOOT: usize = 34;
 const MAX_ROWS: usize = 3;
 const MARGIN: isize = 16;
-const PAD: usize = 14;
+const PAD: usize = 16;
+/// Left edge of the text column (after the file icon).
+const TEXT_X: usize = PAD + 46;
+
+const BACKGROUND: u32 = 0x00ff_ffff;
+const ACCENT: u32 = 0x000d_7785;
+const INK: u32 = 0x001f_2937;
+const MUTED: u32 = 0x006b_7280;
+const LINE: u32 = 0x00e5_e7eb;
+const HOVER_ROW: u32 = 0x00ea_f4f6;
+const GOOD: u32 = 0x0015_803d;
+const BAD: u32 = 0x00b4_2309;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Hit {
     Collapse,
     Close,
-    Show(usize),
+    /// Forget the files that are done (keeps anything still arriving).
+    Clear,
+    /// A finished file's row (anywhere on it): reveal the file.
+    Row(usize),
 }
 
 /// Pure geometry so sizing is testable without a window.
@@ -43,19 +60,25 @@ impl Layout {
         if self.collapsed {
             HEADER
         } else {
-            HEADER + self.rows * ROW + FOOTER
+            HEADER + self.rows * ROW + FOOT
         }
     }
     #[allow(clippy::unused_self)] // keeps all hit areas on Layout
     fn collapse_button(self) -> [usize; 4] {
-        [WIDTH - 34, 6, 26, 24]
-    }
-    fn close_button(self) -> [usize; 4] {
-        [WIDTH - PAD - 80, HEADER + self.rows * ROW + 8, 80, 28]
+        [WIDTH - 74, 10, 28, 28]
     }
     #[allow(clippy::unused_self)]
-    fn show_button(self, row: usize) -> [usize; 4] {
-        [WIDTH - PAD - 62, HEADER + row * ROW + 14, 62, 28]
+    fn close_button(self) -> [usize; 4] {
+        [WIDTH - 42, 10, 28, 28]
+    }
+    /// The footer's "Clear" link.
+    fn clear_button(self) -> [usize; 4] {
+        [WIDTH - PAD - 96, HEADER + self.rows * ROW + 4, 96, 26]
+    }
+    /// The whole row, edge to edge.
+    #[allow(clippy::unused_self)]
+    fn row(self, row: usize) -> [usize; 4] {
+        [0, HEADER + row * ROW, WIDTH, ROW]
     }
 }
 
@@ -143,7 +166,6 @@ impl FileWindow {
                 // Closing is not allowed mid-transfer: keep it, collapsed.
                 self.relayout(Layout::new(transfers.len(), true))?;
             } else {
-                inbox.forget_finished();
                 return Ok(false);
             }
         }
@@ -156,6 +178,7 @@ impl FileWindow {
         }
         let shown = rows(&transfers);
         let layout = self.layout;
+        let any_done = transfers.iter().any(|t| !t.state.active());
         let hit = |pos: Option<(f32, f32)>| -> Option<Hit> {
             let (x, y) = pos?;
             let inside = |[bx, by, bw, bh]: [usize; 4]| {
@@ -171,13 +194,25 @@ impl FileWindow {
             if inside(layout.close_button()) {
                 return Some(Hit::Close);
             }
+            if any_done && inside(layout.clear_button()) {
+                return Some(Hit::Clear);
+            }
             (0..shown.len())
-                .find(|&i| {
-                    finished_path(&shown[i].state).is_some() && inside(layout.show_button(i))
-                })
-                .map(Hit::Show)
+                .find(|&i| finished_path(&shown[i].state).is_some() && inside(layout.row(i)))
+                .map(Hit::Row)
         };
         self.hover = hit(self.window.get_mouse_pos(MouseMode::Discard));
+        // Everything the Student can click shows the pointing hand.
+        let clickable = match self.hover {
+            Some(Hit::Collapse | Hit::Row(_) | Hit::Clear) => true,
+            Some(Hit::Close) => !active,
+            None => false,
+        };
+        self.window.set_cursor_style(if clickable {
+            CursorStyle::OpenHand // "pointing hand" in the vendored minifb
+        } else {
+            CursorStyle::Arrow
+        });
         let down = self.window.get_mouse_down(MouseButton::Left);
         let click = self.window.left_click().or_else(|| {
             (!down && self.previous_down)
@@ -190,11 +225,16 @@ impl FileWindow {
                 self.relayout(Layout::new(transfers.len(), !self.layout.collapsed))?;
                 return Ok(true);
             }
-            Some(Hit::Close) if !active => {
+            Some(Hit::Close) if !active => return Ok(false),
+            Some(Hit::Clear) => {
                 inbox.forget_finished();
-                return Ok(false);
+                // Nothing left to show once the done files are gone.
+                if inbox.transfers().is_empty() {
+                    return Ok(false);
+                }
+                return Ok(true);
             }
-            Some(Hit::Show(i)) => {
+            Some(Hit::Row(i)) => {
                 if let Some(path) = finished_path(&shown[i].state) {
                     reveal(path);
                 }
@@ -222,111 +262,148 @@ impl FileWindow {
     #[allow(clippy::too_many_lines)] // one immediate-mode paint pass
     fn draw(&mut self, transfers: &[Transfer]) {
         let layout = self.layout;
-        let active: Vec<_> = transfers.iter().filter(|t| t.state.active()).collect();
+        let hover = self.hover;
+        let active_any = transfers.iter().any(|t| t.state.active());
+        let any_done = transfers.iter().any(|t| !t.state.active());
         let c = &mut self.canvas;
-        c.pixels.fill(0x00f7_f9fb);
-        c.fill_rect([0, 0, 4, layout.height()], 0x000d_7785);
+        c.pixels.fill(BACKGROUND);
+        c.fill_rect([0, 0, WIDTH, 3], ACCENT);
         let title = if layout.collapsed {
             summary(transfers)
         } else {
             "Files from your teacher".to_owned()
         };
-        let title = ellipsize(c, &title, WIDTH - PAD - 44);
-        c.text(PAD, 7, &title, 0x0065_7583, 1);
+        let title = ellipsize(c, &title, WIDTH - PAD - 90, 15);
+        c.text_bold(PAD, 15, &title, INK, 15);
+        // Minimise / restore and close: quiet icon buttons that light up on hover.
         let collapse = layout.collapse_button();
-        c.button(
-            collapse,
-            0x00e5_ebf0,
-            self.hover == Some(Hit::Collapse),
-            false,
-        );
-        let glyph = if layout.collapsed { "+" } else { "–" };
-        let gw = c.text_width(glyph, 1);
-        c.text(collapse[0] + (26 - gw) / 2, 7, glyph, 0x0022_3342, 1);
+        if hover == Some(Hit::Collapse) {
+            c.round_rect(collapse, 6, 0x00ee_f2f6);
+        }
+        let (cx, cy) = (collapse[0] as f32 + 14.0, collapse[1] as f32 + 14.0);
+        let ink = if hover == Some(Hit::Collapse) { INK } else { MUTED };
+        c.line((cx - 5.0, cy), (cx + 5.0, cy), 1.6, ink);
+        if layout.collapsed {
+            c.line((cx, cy - 5.0), (cx, cy + 5.0), 1.6, ink);
+        }
+        let close = layout.close_button();
+        let close_on = hover == Some(Hit::Close) && !active_any;
+        if close_on {
+            c.round_rect(close, 6, 0x00fd_e8e6);
+        }
+        let ink = if active_any {
+            0x00c5_ccd3
+        } else if close_on {
+            BAD
+        } else {
+            MUTED
+        };
+        let (cx, cy) = (close[0] as f32 + 14.0, close[1] as f32 + 14.0);
+        c.line((cx - 4.5, cy - 4.5), (cx + 4.5, cy + 4.5), 1.6, ink);
+        c.line((cx - 4.5, cy + 4.5), (cx + 4.5, cy - 4.5), 1.6, ink);
         if layout.collapsed {
             c.notification_border(WIDTH, layout.height());
             return;
         }
+        c.fill_rect([0, HEADER - 1, WIDTH, 1], LINE);
         for (i, t) in rows(transfers).into_iter().enumerate() {
             let y = HEADER + i * ROW;
-            if i > 0 {
-                c.fill_rect([PAD, y, WIDTH - 2 * PAD, 1], 0x00dd_e3e8);
+            let finished = finished_path(&t.state).is_some();
+            if hover == Some(Hit::Row(i)) {
+                c.fill_rect([0, y, WIDTH, ROW], HOVER_ROW);
+            } else if i > 0 {
+                c.fill_rect([PAD, y, WIDTH - 2 * PAD, 1], LINE);
             }
-            let name = ellipsize(c, &t.name, WIDTH - 2 * PAD - 76);
-            c.text(PAD, y + 9, &name, 0x0022_3342, 1);
+            draw_file_icon(c, PAD, y + 14, &t.state);
+            let side = if t.state.active() { 54 } else { 8 };
+            let name = ellipsize(c, &t.name, WIDTH - TEXT_X - PAD - side, 15);
+            c.text_px(TEXT_X, y + 11, &name, INK, 15);
             let (status, color) = match &t.state {
-                TransferState::Waiting => ("Waiting…".to_owned(), 0x0061_7180),
-                TransferState::Receiving => {
-                    (format!("{} / {}", size(t.done), size(t.size)), 0x0061_7180)
+                TransferState::Waiting => ("Waiting…".to_owned(), MUTED),
+                TransferState::Receiving => (format!("{} of {}", size(t.done), size(t.size)), MUTED),
+                TransferState::Saved(_) | TransferState::AlreadyPresent(_)
+                    if hover == Some(Hit::Row(i)) =>
+                {
+                    ("Click to show in folder".to_owned(), ACCENT)
                 }
-                TransferState::Saved(_) => ("Saved to Desktop".to_owned(), 0x0015_803d),
-                TransferState::AlreadyPresent(_) => ("Already on Desktop".to_owned(), 0x0015_803d),
-                TransferState::Failed(e) => (format!("Failed: {e}"), 0x00b4_2309),
-                TransferState::Cancelled => ("Cancelled by teacher".to_owned(), 0x00b4_2309),
+                TransferState::Saved(_) => ("Saved to Desktop".to_owned(), GOOD),
+                TransferState::AlreadyPresent(_) => ("Already on Desktop".to_owned(), GOOD),
+                TransferState::Failed(e) => (format!("Failed: {e}"), BAD),
+                TransferState::Cancelled => ("Cancelled by teacher".to_owned(), BAD),
             };
             if t.state.active() {
-                // Percentage beside the name, full-width progress bar below.
-                let bar = [PAD, y + 34, WIDTH - 2 * PAD, 6];
-                c.fill_rect(bar, 0x00dd_e3e8);
                 let pct = t
                     .done
                     .saturating_mul(100)
                     .checked_div(t.size)
-                    .map_or(100, |p| usize::try_from(p).unwrap_or(100));
-                c.fill_rect(
-                    [bar[0], bar[1], bar[2] * pct.min(100) / 100, 6],
-                    0x000d_7785,
-                );
+                    .map_or(100, |p| usize::try_from(p).unwrap_or(100))
+                    .min(100);
                 let label = if t.state == TransferState::Waiting {
                     "…".to_owned()
                 } else {
                     format!("{pct}%")
                 };
-                let lw = c.text_width(&label, 1);
-                c.text(WIDTH - PAD - lw, y + 9, &label, 0x0022_3342, 1);
-                let _ = (status, color);
-            } else {
-                let status = ellipsize(c, &status, WIDTH - 2 * PAD - 76);
-                c.text(PAD, y + 30, &status, color, 1);
-                if finished_path(&t.state).is_some() {
-                    let area = layout.show_button(i);
-                    c.button(area, 0x00e5_ebf0, self.hover == Some(Hit::Show(i)), false);
-                    let w = c.text_width("Show", 1);
-                    c.text(
-                        area[0] + (area[2] - w) / 2,
-                        area[1] + 6,
-                        "Show",
-                        0x0022_3342,
-                        1,
-                    );
+                let lw = c.text_width_px(&label, 13);
+                c.text_px(WIDTH - PAD - lw, y + 12, &label, MUTED, 13);
+                c.text_px(TEXT_X, y + 31, &status, color, 13);
+                let bar = [TEXT_X, y + 51, WIDTH - TEXT_X - PAD, 5];
+                c.round_rect(bar, 2, LINE);
+                if pct > 0 {
+                    c.round_rect([bar[0], bar[1], (bar[2] * pct / 100).max(5), 5], 2, ACCENT);
                 }
+            } else {
+                let status = ellipsize(c, &status, WIDTH - TEXT_X - PAD, 13);
+                c.text_px(TEXT_X, y + 33, &status, color, 13);
             }
         }
-        let close = layout.close_button();
-        let footer = if !active.is_empty() {
-            "Receiving…".to_owned()
-        } else if transfers.len() > MAX_ROWS {
-            format!("+ {} earlier", transfers.len() - MAX_ROWS)
-        } else {
-            String::new()
-        };
-        c.text(PAD, close[1] + 6, &footer, 0x0061_7180, 1);
-        let enabled = active.is_empty();
-        c.button(
-            close,
-            if enabled { 0x000d_7785 } else { 0x00b8_c4cc },
-            enabled && self.hover == Some(Hit::Close),
-            false,
-        );
-        let w = c.text_width("Close", 1);
-        c.text(
-            close[0] + (80 - w) / 2,
-            close[1] + 6,
-            "Close",
-            0x00ff_ffff,
-            1,
-        );
+        let footer = HEADER + layout.rows * ROW;
+        c.fill_rect([PAD, footer, WIDTH - 2 * PAD, 1], LINE);
+        if transfers.len() > MAX_ROWS {
+            let extra = format!("+ {} earlier", transfers.len() - MAX_ROWS);
+            c.text_px(PAD, footer + 11, &extra, MUTED, 13);
+        }
+        if any_done {
+            let area = layout.clear_button();
+            let hot = hover == Some(Hit::Clear);
+            if hot {
+                c.round_rect(area, 6, 0x00ee_f2f6);
+            }
+            let color = if hot { ACCENT } else { MUTED };
+            let label = "Clear";
+            let w = c.text_width_px(label, 13);
+            // A small bin glyph before the label.
+            let gx = area[0] + (area[2] - w - 22) / 2;
+            let gy = area[1] + 6;
+            c.round_rect([gx + 2, gy + 4, 9, 10], 1, color);
+            c.fill_rect([gx, gy + 2, 13, 2], color);
+            c.fill_rect([gx + 4, gy, 5, 2], color);
+            c.text_px(gx + 20, area[1] + 5, label, color, 13);
+        }
         c.notification_border(WIDTH, layout.height());
+    }
+}
+
+/// A 36 px badge: the file for transfers in flight, a check once it arrived,
+/// a cross when it did not.
+fn draw_file_icon(c: &mut Canvas, x: usize, y: usize, state: &TransferState) {
+    let (cx, cy) = (x as f32 + 18.0, y as f32 + 18.0);
+    match state {
+        TransferState::Saved(_) | TransferState::AlreadyPresent(_) => {
+            c.disc(cx, cy, 18.0, 0x00dc_fce7);
+            c.line((cx - 6.0, cy + 0.5), (cx - 1.5, cy + 5.0), 2.2, GOOD);
+            c.line((cx - 1.5, cy + 5.0), (cx + 6.5, cy - 4.5), 2.2, GOOD);
+        }
+        TransferState::Failed(_) | TransferState::Cancelled => {
+            c.disc(cx, cy, 18.0, 0x00fd_e8e6);
+            c.line((cx - 5.0, cy - 5.0), (cx + 5.0, cy + 5.0), 2.2, BAD);
+            c.line((cx - 5.0, cy + 5.0), (cx + 5.0, cy - 5.0), 2.2, BAD);
+        }
+        _ => {
+            c.disc(cx, cy, 18.0, 0x00dd_eff1);
+            c.round_rect([x + 12, y + 9, 13, 18], 2, ACCENT);
+            c.line((cx - 3.0, cy - 1.5), (cx + 3.0, cy - 1.5), 1.2, 0x00ff_ffff);
+            c.line((cx - 3.0, cy + 2.0), (cx + 3.0, cy + 2.0), 1.2, 0x00ff_ffff);
+        }
     }
 }
 
@@ -335,14 +412,15 @@ impl FileWindow {
 #[derive(Default)]
 pub struct FileProgress {
     window: Option<FileWindow>,
-    seen: usize,
+    /// Ids already shown, so a reopened window means something new arrived.
+    seen: std::collections::HashSet<String>,
 }
 impl FileProgress {
     pub fn pump(&mut self, inbox: &Arc<Inbox>) {
         let transfers = inbox.transfers();
         if self.window.is_none() {
             // Reopen only for a new offer, not for leftovers already closed.
-            let fresh = transfers.len() > self.seen || transfers.iter().any(|t| t.state.active());
+            let fresh = transfers.iter().any(|t| !self.seen.contains(&t.id) || t.state.active());
             if !transfers.is_empty() && fresh {
                 match FileWindow::new(transfers.len()) {
                     Ok(window) => self.window = Some(window),
@@ -360,7 +438,7 @@ impl FileProgress {
                 }
             }
         }
-        self.seen = inbox.transfers().len();
+        self.seen = inbox.transfers().into_iter().map(|t| t.id).collect();
     }
 }
 
@@ -403,13 +481,13 @@ fn size(bytes: u64) -> String {
     }
 }
 
-/// Truncates with "…" to fit `max` logical pixels.
-fn ellipsize(canvas: &Canvas, text: &str, max: usize) -> String {
-    if canvas.text_width(text, 1) <= max {
+/// Truncates with "…" to fit `max` logical pixels at pixel size `px`.
+fn ellipsize(canvas: &Canvas, text: &str, max: usize, px: u16) -> String {
+    if canvas.text_width_px(text, px) <= max {
         return text.to_owned();
     }
     let mut out: String = text.to_owned();
-    while !out.is_empty() && canvas.text_width(&format!("{out}…"), 1) > max {
+    while !out.is_empty() && canvas.text_width_px(&format!("{out}…"), px) > max {
         out.pop();
     }
     format!("{out}…")
@@ -453,9 +531,17 @@ mod tests {
     #[test]
     fn layout_is_compact_and_bounded() {
         assert_eq!(Layout::new(1, true).height(), HEADER);
-        assert_eq!(Layout::new(1, false).height(), HEADER + ROW + FOOTER);
+        assert_eq!(Layout::new(1, false).height(), HEADER + ROW + FOOT);
         assert_eq!(Layout::new(9, false).rows, MAX_ROWS);
-        assert!(Layout::new(9, false).height() < 260);
+        assert!(Layout::new(9, false).height() < 320);
+        // A row is clickable edge to edge, and the header buttons stay inside the window.
+        let layout = Layout::new(2, false);
+        let [x, y, w, h] = layout.clear_button();
+        assert!(x + w <= WIDTH && y >= HEADER + 2 * ROW && y + h <= layout.height());
+        assert_eq!(layout.row(1), [0, HEADER + ROW, WIDTH, ROW]);
+        for [x, y, w, h] in [layout.collapse_button(), layout.close_button()] {
+            assert!(x + w <= WIDTH && y + h <= HEADER);
+        }
     }
     #[test]
     fn summary_reports_progress_then_completion() {
@@ -472,9 +558,9 @@ mod tests {
     fn long_names_are_ellipsized() {
         let c = Canvas::new(1, 1);
         let name = "a very long lecture handout filename that never ends.pdf";
-        let short = ellipsize(&c, name, 120);
+        let short = ellipsize(&c, name, 120, 15);
         assert!(short.ends_with('…'));
-        assert!(c.text_width(&short, 1) <= 120);
-        assert_eq!(ellipsize(&c, "x.pdf", 120), "x.pdf");
+        assert!(c.text_width_px(&short, 15) <= 120);
+        assert_eq!(ellipsize(&c, "x.pdf", 120, 15), "x.pdf");
     }
 }

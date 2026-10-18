@@ -59,6 +59,8 @@ struct Snapshot {
     settings: Value,
     diagnostics: Value,
     student_download: Value,
+    /// What the performance mode is doing right now (for the settings window).
+    performance: Value,
     presentation: Option<RoomPresentation>,
     source_id: Option<String>,
     next_source: Option<String>,
@@ -219,7 +221,7 @@ fn state_json(state: &Snapshot, sent: &mut HashMap<String, u64>) -> Value {
         "recipients":state.recipients,"stream_id":state.stream_id,"error":state.error,
         "tray_available":state.tray,"ui_request":state.ui_request,"open_settings":state.open_settings,
         "students":students,"observe":state.observe,"tools":state.tools,"lifecycle":state.lifecycle,
-        "settings":state.settings,"diagnostics":state.diagnostics,"student_download":state.student_download,
+        "settings":state.settings,"diagnostics":state.diagnostics,"student_download":state.student_download,"performance":state.performance,
         "observe_focus":state.observe_focus,"source_id":state.source_id,"next_source":state.next_source})
 }
 async fn client(
@@ -375,14 +377,85 @@ fn store_apply(store: &classroom_store::Store, input: &Value) -> Result<(), &'st
     })
 }
 
+/// What the performance mode is doing right now, for the console.
+/// `base` with the settings that can change while running first put back to
+/// the shipped defaults and then the stored `overlay` applied, so removing a
+/// setting from the overlay really returns it to its default.
+fn tuned_config(base: &Config, overlay: Option<&Value>) -> Result<Config, String> {
+    let mut next = base.clone();
+    let (defaults, _) = Config::load(None).map_err(|e| e.to_string())?;
+    next.tools = defaults.tools;
+    next.recording = defaults.recording;
+    next.class = defaults.class;
+    next.activity = defaults.activity;
+    next.transfer = defaults.transfer;
+    if let Some(table) = overlay.and_then(super::json_to_toml) {
+        let text = toml::to_string(&table).map_err(|e| e.to_string())?;
+        next.apply_saved(&text).map_err(|e| e.to_string())?;
+    }
+    Ok(next)
+}
+
+/// Pushes the settings that may change while running into the tools hub.
+fn apply_tuning(hub: &super::classroom_tools::Hub, config: &Config) {
+    hub.set_tuning(config);
+}
+
+fn performance_state(
+    perf: &classroom_config::PerformanceConfig,
+    raw: &Config,
+    wireless: bool,
+    effective: &Config,
+) -> Value {
+    let mut chosen = raw.clone();
+    chosen.performance = perf.clone();
+    let (active, reason) = chosen.active_mode(wireless);
+    json!({
+        "requested": perf.mode,
+        "auto_wifi": perf.auto_wifi,
+        "wireless": wireless,
+        "active": active,
+        "reason": reason,
+        "width": effective.video.width,
+        "height": effective.video.height,
+        "max_fps": effective.video.max_fps,
+        "bitrate_kbps": effective.video.target_bitrate_kbps,
+        "cap_mbps": effective.performance.bandwidth_cap_mbps,
+    })
+}
+
 #[allow(clippy::too_many_lines)]
 pub(super) fn run(
-    config: &Config,
+    raw_config: &Config,
+    wireless: bool,
     bind_ip: Ipv4Addr,
     display_index: u32,
     path: &Path,
     console: Option<&Path>,
 ) -> Result<bool> {
+    // The performance mode (Wi-Fi / weak PCs) lowers what is sent and requested;
+    // the settings the console reads and saves stay the ones the Teacher chose.
+    let effective = raw_config.with_profile(wireless);
+    let config = &effective;
+    // The mode can be switched while running (the bottom-bar control); what a
+    // new presentation or thumbnail request uses is `live_config`.
+    let mut perf = raw_config.performance.clone();
+    let mut live_config = effective.clone();
+    // Settings that can change while the Teacher runs (recording, tools,
+    // activity, transfer, class rules); see the `settings_apply` command.
+    let mut tuning = raw_config.clone();
+    let (active_mode, mode_reason) = raw_config.active_mode(wireless);
+    info!(
+        mode = active_mode,
+        reason = mode_reason,
+        wireless,
+        width = config.video.width,
+        height = config.video.height,
+        max_fps = config.video.max_fps,
+        bitrate_kbps = config.video.target_bitrate_kbps,
+        bandwidth_cap_mbps = config.performance.bandwidth_cap_mbps,
+        "performance mode"
+    );
     let mut presentation_ids = PresentationIds::new()?;
     info!("Teacher presentation ID epoch initialized");
     let parent = path.parent().context("IPC endpoint parent missing")?;
@@ -413,9 +486,18 @@ pub(super) fn run(
     )?);
     store.import_legacy(parent)?;
     tools_hub.load_badges(store.doc(classroom_store::ns::BADGES, "enabled"))?;
+    // Tell Students that are waiting, or still looking at an old address, that
+    // this Teacher is up (and where). Stops when the agent ends.
+    let _knocker = super::teacher_discovery::spawn_knocker(
+        Arc::clone(&roster),
+        Arc::clone(&store),
+        bind_ip,
+        config.network.control_port,
+    );
     tools_hub.load_recordings(store.doc(classroom_store::ns::RECORDINGS, "journal"))?;
     tools_hub.load_hardware(store.doc(classroom_store::ns::HARDWARE, "policy"))?;
     tools_hub.set_connection_popup(config.tools.connection_popup);
+    apply_tuning(&tools_hub, &tuning);
     let mut diagnostics = super::diagnostics::Collector::new(config, parent)?;
     let tools_server = super::classroom_tools::teacher(
         SocketAddrV4::new(
@@ -490,9 +572,10 @@ pub(super) fn run(
         observe: Value::Null,
         tools: tools_hub.snapshot(),
         lifecycle: "running",
-        settings: serde_json::to_value(config)?,
+        settings: serde_json::to_value(raw_config)?,
         diagnostics: diagnostics.snapshot(),
         student_download: json!({"phase":"off"}),
+        performance: performance_state(&perf, raw_config, wireless, config),
         presentation: None,
         source_id: None,
         next_source: None,
@@ -560,6 +643,20 @@ pub(super) fn run(
     // joiners, restarted computers). All of them end with the local day.
     let rules_doc = store.doc(classroom_store::ns::RULES, "today");
     let mut class_rules = super::class_rules::ClassRules::load(&rules_doc);
+    // The AI/chatbot website list is the Teacher's own and outlives the day;
+    // only the switch that blocks it is a daily rule.
+    let ai_doc = store.doc(classroom_store::ns::AI_SITES, "list");
+    let mut ai_sites: Vec<String> = ai_doc
+        .read::<Vec<String>>()
+        .ok()
+        .flatten()
+        .unwrap_or_else(super::ai_sites::defaults);
+    tools_hub.set_ai_sites(&ai_sites);
+    tools_hub.set_evidence_dir(&parent.join("evidence"));
+    if let Some(blocked) = class_rules.ai.as_mut() {
+        *blocked = ai_sites.clone();
+    }
+    tools_hub.set_ai_blocking(class_rules.ai.is_some());
     if class_rules.activity {
         tools_hub.set_activity_monitoring(true);
     }
@@ -574,8 +671,10 @@ pub(super) fn run(
             diagnostics.poll();
             if rules_tick.elapsed() >= Duration::from_secs(2) {
                 rules_tick = Instant::now();
+                tools_hub.evidence_roll();
                 if class_rules.roll_over() {
                     info!("New day: yesterday's class rules are void");
+                    tools_hub.set_ai_blocking(false);
                     tools_hub.set_activity_monitoring(false);
                     rule_attempts.clear();
                     let _ = rules_doc.clear();
@@ -599,7 +698,7 @@ pub(super) fn run(
                             std::slice::from_ref(id),
                             &input,
                             &outbox,
-                            u64::from(config.tools.max_file_mb) * 1024 * 1024,
+                            u64::from(tuning.tools.max_file_mb) * 1024 * 1024,
                         ) {
                             Ok(_) => {
                                 info!(student = %row.hostname, rule = action, "Class rule sent to a computer that was out of step");
@@ -831,6 +930,168 @@ pub(super) fn run(
                             Err("Missing popup preference")
                         }
                     }
+                    "ai_sites_set" | "ai_sites_reset" => {
+                        let wanted: Result<Vec<String>, String> = if command.action
+                            == "ai_sites_reset"
+                        {
+                            Ok(super::ai_sites::defaults())
+                        } else {
+                            command.input["sites"]
+                                .as_array()
+                                .ok_or_else(|| "Thiếu danh sách website".to_owned())
+                                .and_then(|list| {
+                                    let lines: Vec<String> = list
+                                        .iter()
+                                        .filter_map(|v| v.as_str().map(str::to_owned))
+                                        .collect();
+                                    super::ai_sites::normalize_list(&lines)
+                                        .map_err(|e| format!("{e:#}"))
+                                })
+                        };
+                        match wanted {
+                            Ok(list) => match ai_doc.write(&list) {
+                                Ok(()) => {
+                                    ai_sites = list;
+                                    tools_hub.set_ai_sites(&ai_sites);
+                                    // While blocking is on, the Students must follow the new list.
+                                    if class_rules.ai.is_some() {
+                                        class_rules.ai = Some(ai_sites.clone());
+                                        class_rules.day = super::local_day::today();
+                                        let _ = class_rules.save(&rules_doc);
+                                        rule_attempts.clear();
+                                        rules_tick = Instant::now() - Duration::from_secs(2);
+                                    }
+                                    publish_due = Instant::now();
+                                    Ok(())
+                                }
+                                Err(error) => {
+                                    let message =
+                                        format!("Không lưu được danh sách website AI: {error:#}");
+                                    payload = Some(json!({"error_detail": message}));
+                                    snapshot.error = Some(message);
+                                    Err("AI list was not saved")
+                                }
+                            },
+                            Err(message) => {
+                                payload = Some(json!({"error_detail": message.clone()}));
+                                snapshot.error = Some(message);
+                                Err("Danh sách website AI không hợp lệ")
+                            }
+                        }
+                    }
+                    "evidence_delete" => {
+                        let ids: Vec<String> = command.input["ids"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|v| v.as_str().map(str::to_owned))
+                            .collect();
+                        let removed = tools_hub.evidence_delete(&ids);
+                        info!(removed, "AI evidence deleted by the Teacher");
+                        publish_due = Instant::now();
+                        Ok(())
+                    }
+                    "ai_block_set" => {
+                        let on = command.input["enabled"].as_bool() == Some(true);
+                        if on && ai_sites.is_empty() {
+                            let message = "Danh sách website AI đang trống: hãy thêm website hoặc khôi phục danh sách gốc".to_owned();
+                            payload = Some(json!({"error_detail": message.clone()}));
+                            snapshot.error = Some(message);
+                            Err("AI list is empty")
+                        } else {
+                            if on {
+                                class_rules.ai = Some(ai_sites.clone());
+                            } else {
+                                class_rules.ai = None;
+                                // Remember an explicit "open" so Students that were
+                                // blocked get released even if no other rule exists.
+                                if class_rules.internet.is_none() {
+                                    class_rules.internet = Some(super::class_rules::Scoped::new(
+                                        super::guard::InternetPolicy::default(),
+                                        None,
+                                    ));
+                                }
+                            }
+                            tools_hub.set_ai_blocking(class_rules.ai.is_some());
+                            class_rules.day = super::local_day::today();
+                            if let Err(error) = class_rules.save(&rules_doc) {
+                                warn!(%error, "Could not remember the class rules");
+                            }
+                            rule_attempts.clear();
+                            rules_tick = Instant::now() - Duration::from_secs(2);
+                            info!(enabled = on, sites = ai_sites.len(), "AI website blocking changed");
+                            publish_due = Instant::now();
+                            Ok(())
+                        }
+                    }
+                    "settings_apply" => {
+                        // Re-read what Settings just stored and use it right away,
+                        // without restarting the Teacher. Anything invalid keeps
+                        // the previous values.
+                        let overlay = store
+                            .get(classroom_store::ns::CONFIG, "overlay")
+                            .ok()
+                            .flatten()
+                            .filter(Value::is_object);
+                        let applied = tuned_config(raw_config, overlay.as_ref());
+                        match applied {
+                            Ok(next) => {
+                                tuning = next;
+                                tools_hub.set_connection_popup(tuning.tools.connection_popup);
+                                apply_tuning(&tools_hub, &tuning);
+                                if let Ok(value) = serde_json::to_value(&tuning) {
+                                    snapshot.settings = value;
+                                }
+                                info!("settings applied without restart");
+                                publish_due = Instant::now();
+                                Ok(())
+                            }
+                            Err(error) => {
+                                snapshot.error = Some(format!("Cài đặt không hợp lệ: {error}"));
+                                Err("Settings were not applied")
+                            }
+                        }
+                    }
+                    "set_performance" => {
+                        let mode = command.input["mode"].as_str().unwrap_or("");
+                        if matches!(mode, "normal" | "economy" | "minimal") {
+                            mode.clone_into(&mut perf.mode);
+                            // Choosing high performance on purpose also ends the
+                            // automatic drop on Wi-Fi, or it would undo the choice.
+                            if mode == "normal" {
+                                perf.auto_wifi = false;
+                            }
+                            let mut next = raw_config.clone();
+                            next.performance = perf.clone();
+                            live_config = next.with_profile(wireless);
+                            observe_jobs.set_monitoring(live_config.monitoring.clone());
+                            observe_jobs.set_offer(super::stream_profile::teacher_offer(
+                                &live_config.observe,
+                                super::stream_profile::local_decodable,
+                            ));
+                            snapshot.performance =
+                                performance_state(&perf, raw_config, wireless, &live_config);
+                            snapshot.settings["performance"] = json!(perf);
+                            // Remembered for the next start, with the rest of the overlay.
+                            let mut overlay = store
+                                .get(classroom_store::ns::CONFIG, "overlay")
+                                .ok()
+                                .flatten()
+                                .filter(Value::is_object)
+                                .unwrap_or_else(|| json!({}));
+                            overlay["performance"] = json!(perf);
+                            if let Err(error) =
+                                store.put(classroom_store::ns::CONFIG, "overlay", &overlay)
+                            {
+                                warn!(%error, "Could not remember the performance mode");
+                            }
+                            info!(mode, "performance mode switched");
+                            publish_due = Instant::now();
+                            Ok(())
+                        } else {
+                            Err("Unknown performance mode")
+                        }
+                    }
                     "student_download_stop" => {
                         student_download = None;
                         snapshot.student_download = json!({"phase":"off"});
@@ -838,6 +1099,13 @@ pub(super) fn run(
                         Ok(())
                     }
                     "student_download_start" => {
+                        // A share that failed (or is only a husk) must not block turning it on again.
+                        if student_download
+                            .as_ref()
+                            .is_some_and(|share| share.state.lock().unwrap()["phase"] == "error")
+                        {
+                            student_download = None;
+                        }
                         if student_download.is_some() {
                             Err("Stop the current download share first")
                         } else {
@@ -845,7 +1113,7 @@ pub(super) fn run(
                                 .as_str()
                                 .map(PathBuf::from)
                                 .or_else(super::student_bootstrap::bundled_package);
-                            let port = command.input["port"].as_u64().unwrap_or(80);
+                            let port = command.input["port"].as_u64().unwrap_or(8080);
                             if let Some(source) = source {
                                 match u16::try_from(port).ok().filter(|p| *p != 0).map(|port| {
                                     super::student_bootstrap::Share::start(
@@ -1168,6 +1436,16 @@ pub(super) fn run(
                                 });
                             }
                         }
+                        // While AI blocking is on, every Internet rule that goes to a
+                        // Student already includes the AI list.
+                        let send_input = if command.action == "tool_policy" {
+                            super::ai_sites::effective_policy_input(
+                                &command.input,
+                                class_rules.ai.as_deref(),
+                            )
+                        } else {
+                            command.input.clone()
+                        };
                         match tools_hub.submit_with_limit(
                             if command.action == "tool_update" {
                                 "update"
@@ -1191,9 +1469,9 @@ pub(super) fn run(
                                 "message"
                             },
                             &recipients,
-                            &command.input,
+                            &send_input,
                             &outbox,
-                            u64::from(config.tools.max_file_mb) * 1024 * 1024,
+                            u64::from(tuning.tools.max_file_mb) * 1024 * 1024,
                         ) {
                             Ok(job) => {
                                 job_id = Some(job);
@@ -1278,7 +1556,7 @@ pub(super) fn run(
                             tools_hub.retry_with_limit(
                                 job,
                                 &outbox,
-                                u64::from(config.tools.max_file_mb) * 1024 * 1024,
+                                u64::from(tuning.tools.max_file_mb) * 1024 * 1024,
                             )
                         };
                         match result {
@@ -1295,6 +1573,7 @@ pub(super) fn run(
                     "recording_start"
                     | "recording_stop"
                     | "recording_open"
+                    | "recording_delete"
                     | "student_screenshot"
                     | "fs_collect"
                     | "fs_list"
@@ -1319,7 +1598,12 @@ pub(super) fn run(
                                     })
                                     .map(|r| (r.instance_id.clone(), r.hostname.clone()))
                                     .collect();
-                                job_id = Some(tools_hub.recording_start(&recipients)?);
+                                job_id = Some(tools_hub.recording_start(
+                                    &recipients,
+                                    &super::classroom_tools::recording::StartPolicy::from_config(
+                                        &tuning,
+                                    ),
+                                )?);
                                 Ok(None)
                             }
                             "recording_stop" => {
@@ -1330,6 +1614,12 @@ pub(super) fn run(
                                     tools_hub.recording_stop(session_id)?;
                                 }
                                 Ok(None)
+                            }
+                            "recording_delete" => {
+                                let removed =
+                                    tools_hub.recording_delete(input["id"].as_str().unwrap_or(""))?;
+                                info!(files = removed, "recording deleted");
+                                Ok(Some(json!({"files_deleted": removed})))
                             }
                             "recording_open" => {
                                 let folder = tools_hub
@@ -1458,7 +1748,14 @@ pub(super) fn run(
                                     rows.iter().any(|r| r.online && r.instance_id == student),
                                     "Student is offline"
                                 );
-                                job_id = Some(tools_hub.vscode_list(student)?);
+                                let icons: Vec<String> = input["icons_for"]
+                                    .as_array()
+                                    .into_iter()
+                                    .flatten()
+                                    .filter_map(|v| v.as_str().map(str::to_owned))
+                                    .take(200)
+                                    .collect();
+                                job_id = Some(tools_hub.vscode_list(student, &icons)?);
                                 Ok(None)
                             }
                             _ => {
@@ -1998,7 +2295,8 @@ pub(super) fn run(
                             snapshot.error = None;
                             let stop = Arc::new(AtomicBool::new(false));
                             let cancel = Arc::clone(&stop);
-                            let settings = config.clone();
+                            // The class-wide bandwidth cap, shared out over this audience.
+                            let settings = live_config.for_stream(snapshot.recipients);
                             let state = presentation.clone();
                             let stream = snapshot.stream_id;
                             let source_id = source.instance_id.clone();
@@ -2050,7 +2348,8 @@ pub(super) fn run(
                             snapshot.error = None;
                             let stop = Arc::new(AtomicBool::new(false));
                             let cancel = Arc::clone(&stop);
-                            let settings = config.clone();
+                            // The class-wide bandwidth cap, shared out over this audience.
+                            let settings = live_config.for_stream(snapshot.recipients);
                             let state = presentation.clone();
                             let stream = snapshot.stream_id;
                             session = Some(Session {
@@ -2158,7 +2457,17 @@ pub(super) fn run(
                 snapshot.rows = roster.lock().unwrap().snapshot();
                 snapshot.presentation = presentation.borrow().clone();
                 snapshot.tools = tools_hub.snapshot();
+                // The share reports preparing -> sharing (and its download count) on
+                // its own thread; publish what it says now, not what it said at start.
+                if let Some(share) = student_download.as_ref() {
+                    snapshot.student_download = share.state.lock().unwrap().clone();
+                }
                 snapshot.tools["activity_monitoring"] = json!(tools_hub.activity_monitoring());
+                snapshot.tools["ai"] = json!({
+                    "sites": ai_sites,
+                    "blocking": class_rules.ai.is_some(),
+                    "default_count": super::ai_sites::DEFAULT_SITES.len(),
+                });
                 let new_alerts = tools_hub.activity_alerts();
                 if !new_alerts.is_empty() {
                     snapshot.tools["new_alerts"] = json!(new_alerts);
@@ -2254,6 +2563,28 @@ fn cleanup_staged_files(outbox: &Path) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn removing_a_setting_from_the_overlay_returns_it_to_the_default() {
+        let (mut base, _) = Config::load(None).unwrap();
+        // The Teacher started with an older overlay already applied.
+        base.recording.fps = 15;
+        base.activity.live_apps = 1;
+        base.tools.max_file_mb = 50;
+        let overlay = json!({"recording": {"height": 480}, "tools": {"recording_max_minutes": 20}});
+        let next = tuned_config(&base, Some(&overlay)).unwrap();
+        assert_eq!(next.recording.height, 480, "the new setting is used");
+        assert_eq!(next.tools.recording_max_minutes, 20);
+        assert_eq!(next.recording.fps, 30, "a setting no longer stored is back to default");
+        assert_eq!(next.activity.live_apps, 3);
+        assert_eq!(next.tools.max_file_mb, 300);
+        // Empty or missing overlay: everything adjustable is default.
+        let plain = tuned_config(&base, None).unwrap();
+        assert_eq!(plain.recording, Config::load(None).unwrap().0.recording);
+        // Something invalid is refused and changes nothing.
+        let bad = json!({"recording": {"fps": 99}});
+        assert!(tuned_config(&base, Some(&bad)).is_err());
+    }
+
     use super::*;
     #[test]
     fn source_switch_waits_for_old_worker_and_keeps_one_target() {

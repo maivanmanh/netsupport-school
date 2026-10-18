@@ -22,7 +22,7 @@ send_keyframe_deadline_ms = 300
 fanout_threads = 4
 # Per-Student connected UDP sockets on the shared media port (faster sendto).
 connected_fanout = true
-bind_ip = "127.0.0.1"
+bind_ip = "auto"
 interface = "auto_default_route_ethernet"
 
 [video]
@@ -96,3 +96,42 @@ student_fps_badge = true
 # Per ordinary file/completed ZIP, in MiB. Student updates use a separate limit.
 max_file_mb = 300
 connection_popup = false
+# A screen recording stops by itself after this many minutes (5..480).
+recording_max_minutes = 60
+
+[recording]
+# Output height: 360, 480, 720 or 1080 (width follows the screen's shape).
+height = 720
+fps = 30
+bitrate_kbps = 3000
+# Length of each MP4 part. chunk_minutes x bitrate_kbps must stay <= 100000.
+chunk_minutes = 10
+# Teacher folder for recordings; empty = the Desktop.
+folder = ""
+# Free-space limits in MiB: recording stops below *_stop_mb, warns below *_warn_mb.
+teacher_stop_mb = 1024
+teacher_warn_mb = 5120
+student_stop_mb = 512
+student_warn_mb = 2048
+# A Student out of touch with the Teacher this long stops recording (0 = never).
+gone_minutes = 30
+
+[class]
+# Warning shown on a Student before a requested restart/shutdown.
+power_grace_seconds = 15
+
+[activity]
+scan_seconds = 6
+live_apps = 3
+collect_clipboard = true
+collect_downloads = true
+alert_cooldown_seconds = 30
+# While AI websites are not blocked, a Student using one gets a screenshot as evidence.
+evidence = true
+evidence_per_site = 3
+evidence_first_seconds = 60
+evidence_gap_seconds = 180
+
+[transfer]
+# Speed of each file sent to a Student (KiB/s).
+rate_kib_s = 1000

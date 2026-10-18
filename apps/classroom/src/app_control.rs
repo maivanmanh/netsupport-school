@@ -28,6 +28,8 @@ use sha2::{Digest, Sha256};
 pub const MODE_BLOCK: &str = "block";
 pub const MODE_ALLOW_ONLY: &str = "allow_only";
 const MAX_IDS: usize = 400;
+const MAX_PATHS: usize = 100;
+const MAX_PATH_LEN: usize = 300;
 const ID_LEN: usize = 12;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -39,9 +41,21 @@ pub struct AppPolicy {
     /// [`MODE_ALLOW_ONLY`]: every *other* inventoried program cannot start.
     pub mode: String,
     pub ids: Vec<String>,
+    /// Independent of `enabled`/`ids`: executables (`C:\\Tools\\x.exe`) or folders
+    /// (every `.exe` below them, subfolders included) that cannot start. May
+    /// contain `%VAR%`, expanded on each Student. Empty = no path rules.
+    pub paths: Vec<String>,
 }
 impl AppPolicy {
+    /// Whether this policy restricts anything on a Student.
+    pub fn active(&self) -> bool {
+        self.enabled || !self.paths.is_empty()
+    }
     pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(self.paths.len() <= MAX_PATHS, "At most {MAX_PATHS} paths");
+        for path in &self.paths {
+            validate_path_rule(path)?;
+        }
         anyhow::ensure!(
             self.mode == MODE_BLOCK || self.mode == MODE_ALLOW_ONLY || !self.enabled,
             "Unknown application control mode"
@@ -62,12 +76,22 @@ impl AppPolicy {
 /// at a glance whether a computer that just joined or restarted has the
 /// class rule — and send it if not.
 pub fn policy_hash(policy: &AppPolicy) -> String {
-    if !policy.enabled {
+    if !policy.active() {
         return String::new();
     }
-    let mut ids = policy.ids.clone();
+    let mut ids = if policy.enabled { policy.ids.clone() } else { Vec::new() };
     ids.sort();
-    let digest = Sha256::digest(format!("{}|{}", policy.mode, ids.join(",")).as_bytes());
+    let mut text = format!("{}|{}", if policy.enabled { &policy.mode } else { "" }, ids.join(","));
+    if !policy.paths.is_empty() {
+        // Appended only when present, so a policy without path rules keeps the
+        // fingerprint older builds computed for it.
+        let mut paths: Vec<String> = policy.paths.iter().map(|p| p.trim().to_lowercase()).collect();
+        paths.sort();
+        paths.dedup();
+        text.push_str("|p:");
+        text.push_str(&paths.join(";"));
+    }
+    let digest = Sha256::digest(text.as_bytes());
     digest[..8].iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -170,11 +194,100 @@ pub fn is_protected(file_name: &str) -> bool {
     )
 }
 
+/// A path rule after `%VAR%` expansion: lowercase, `\\` separators, no trailing
+/// separator. A rule ending in `.exe` is one program; anything else is a folder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PathRule {
+    pub path: String,
+    pub folder: bool,
+}
+
+/// Shape check done by the Teacher before sending and again by the Student.
+pub fn validate_path_rule(raw: &str) -> anyhow::Result<()> {
+    let text = raw.trim();
+    anyhow::ensure!(!text.is_empty(), "A path is empty");
+    anyhow::ensure!(text.chars().count() <= MAX_PATH_LEN, "A path is too long");
+    anyhow::ensure!(
+        !text.chars().any(|c| c.is_control() || "\"<>|*?".contains(c)),
+        "A path contains characters Windows does not allow: {text}"
+    );
+    let bytes = text.as_bytes();
+    let drive = bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/');
+    anyhow::ensure!(
+        drive || text.starts_with("\\\\") || text.starts_with('%'),
+        "Use a full path such as C:\\Games or C:\\Tools\\app.exe: {text}"
+    );
+    Ok(())
+}
+
+/// Normalizes an already expanded path into a rule. Repeated separators are
+/// collapsed and `..` is refused, so two spellings of one place compare equal
+/// and a rule cannot dodge the system-folder check.
+pub fn parse_path_rule(expanded: &str) -> Option<PathRule> {
+    let text = expanded.trim().replace('/', "\\").to_lowercase();
+    let unc = text.starts_with("\\\\");
+    let parts: Vec<&str> = text.split('\\').filter(|p| !p.is_empty()).collect();
+    if parts.iter().any(|p| *p == ".." || *p == ".") {
+        return None;
+    }
+    // A drive alone ("c:") or a UNC server alone would cover everything.
+    if parts.len() < 2 || (parts[0].ends_with(':') && parts.len() < 2) {
+        return None;
+    }
+    let joined = parts.join("\\");
+    let path = if unc { format!("\\\\{joined}") } else { joined };
+    Some(PathRule { folder: !path.ends_with(".exe"), path })
+}
+
+/// Why a rule must never be enforced: it would reach into Windows itself or
+/// the Classroom program. `system_dirs` are refused with everything below them,
+/// `guarded_dirs` only as a whole (or as an ancestor). `None` when acceptable.
+pub fn rule_refusal(
+    rule: &PathRule,
+    system_dirs: &[String],
+    guarded_dirs: &[String],
+    own_dirs: &[String],
+) -> Option<&'static str> {
+    let p = rule.path.as_str();
+    // A bare drive ("c:\\") parses to "c:"; also refuse a folder that is a
+    // drive root or that contains a protected directory.
+    let encloses = |dir: &str| dir == p || (rule.folder && dir.starts_with(&format!("{p}\\")));
+    let inside = |dir: &str| p == dir || p.starts_with(&format!("{dir}\\"));
+    if system_dirs.iter().any(|d| encloses(d) || inside(d)) {
+        return Some("System folders cannot be blocked");
+    }
+    // Operating-system folders whose own subfolders are fine to block (a game
+    // under Program Files) but which must never be blocked as a whole.
+    if guarded_dirs.iter().any(|d| encloses(d)) {
+        return Some("System folders cannot be blocked");
+    }
+    if own_dirs.iter().any(|d| encloses(d) || inside(d)) {
+        return Some("The Classroom program folder cannot be blocked");
+    }
+    None
+}
+
+/// Whether the program at `exe` (normalized like a rule) is covered by a rule.
+pub fn path_blocked(rules: &[PathRule], exe: &str) -> bool {
+    rules.iter().any(|r| {
+        if r.folder {
+            exe.len() > r.path.len()
+                && exe.starts_with(&r.path)
+                && exe.as_bytes()[r.path.len()] == b'\\'
+        } else {
+            exe == r.path
+        }
+    })
+}
+
 #[cfg(windows)]
 mod windows_impl {
     use super::{
-        app_id, is_protected, normalize_name, policy_hash, AppInfo, AppPolicy, AppReport,
-        ListRequest, MODE_ALLOW_ONLY,
+        app_id, is_protected, normalize_name, parse_path_rule, path_blocked, policy_hash,
+        rule_refusal, AppInfo, AppPolicy, AppReport, ListRequest, PathRule, MODE_ALLOW_ONLY,
     };
     use anyhow::{Context, Result};
     use serde_json::{json, Value};
@@ -909,6 +1022,102 @@ mod windows_impl {
             })
             .unwrap_or_default()
     }
+    /// Everything the watcher enforces: executable names plus path rules.
+    #[derive(Default)]
+    struct Rules {
+        names: HashSet<String>,
+        paths: Vec<PathRule>,
+    }
+    fn read_rules() -> Rules {
+        let paths = read_state_value()
+            .and_then(|v| {
+                v["paths"].as_array().map(|a| {
+                    a.iter()
+                        .filter_map(|p| p.as_str().and_then(parse_path_rule))
+                        .collect()
+                })
+            })
+            .unwrap_or_default();
+        Rules {
+            names: read_state().into_iter().collect(),
+            paths,
+        }
+    }
+    fn normalized_dir(path: &Path) -> String {
+        path.to_string_lossy().replace('/', "\\").trim_end_matches('\\').to_lowercase()
+    }
+    /// Folders a path rule may never reach into or contain: Windows itself, the
+    /// folders it keeps its programs and profiles in, and the Classroom program
+    /// (its folder and the block-notice copy). Kept here, not shown to the Teacher.
+    fn protected_dirs() -> (Vec<String>, Vec<String>, Vec<String>) {
+        let env_dir = |name: &str| std::env::var_os(name).map(|d| normalized_dir(Path::new(&d)));
+        let system = vec![env_dir("SystemRoot").unwrap_or_else(|| "c:\\windows".into())];
+        let drive = env_dir("SystemDrive").unwrap_or_else(|| "c:".into());
+        let mut guarded: Vec<String> = [
+            "ProgramFiles",
+            "ProgramFiles(x86)",
+            "ProgramW6432",
+            "ProgramData",
+            "USERPROFILE",
+            "PUBLIC",
+        ]
+        .iter()
+        .filter_map(|name| env_dir(name))
+        .collect();
+        for folder in [
+            "users",
+            "program files",
+            "program files (x86)",
+            "programdata",
+            "recovery",
+            "boot",
+            "$recycle.bin",
+            "system volume information",
+            "perflogs",
+            "documents and settings",
+        ] {
+            guarded.push(format!("{drive}\\{folder}"));
+        }
+        guarded.sort();
+        guarded.dedup();
+        let mut own = Vec::new();
+        if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) {
+            own.push(normalized_dir(&dir));
+        }
+        if let Some(base) = std::env::var_os("ProgramData") {
+            own.push(normalized_dir(&Path::new(&base).join("Classroom")));
+        }
+        (system, guarded, own)
+    }
+    /// The Teacher's path entries, expanded, normalized and checked. Fails as a
+    /// whole so a rule is never silently dropped.
+    fn expand_rules(policy: &AppPolicy) -> Result<Vec<PathRule>> {
+        let (system, guarded, own) = protected_dirs();
+        let mut rules: Vec<PathRule> = Vec::new();
+        for raw in &policy.paths {
+            let rule = parse_path_rule(&expand_env(raw.trim()))
+                .with_context(|| format!("Not a usable path: {raw}"))?;
+            if let Some(reason) = rule_refusal(&rule, &system, &guarded, &own) {
+                anyhow::bail!("{reason}: {raw}");
+            }
+            if !rules.contains(&rule) {
+                rules.push(rule);
+            }
+        }
+        Ok(rules)
+    }
+    fn process_path(process: &sysinfo::Process) -> Option<String> {
+        process.exe().map(normalized_dir)
+    }
+    fn matches_path_rule(process: &sysinfo::Process, rules: &[PathRule]) -> Option<String> {
+        if rules.is_empty() || is_protected(&process.name().to_string_lossy()) {
+            return None;
+        }
+        process_path(process).filter(|exe| path_blocked(rules, exe))
+    }
+    fn refresh_kind() -> sysinfo::ProcessRefreshKind {
+        sysinfo::ProcessRefreshKind::nothing().with_exe(sysinfo::UpdateKind::OnlyIfNotSet)
+    }
     /// Fingerprint of the policy this computer enforces, or empty.
     pub fn applied_hash() -> String {
         read_state_value()
@@ -953,11 +1162,16 @@ mod windows_impl {
     /// Writes the registry side of `policy` and returns the lowercase
     /// executable names that must stay blocked (for the watcher).
     fn apply_registry(policy: &AppPolicy) -> Result<HashSet<String>> {
-        if !policy.enabled {
+        if !policy.active() {
             clear()?;
             return Ok(HashSet::new());
         }
-        let blocked = targets(policy);
+        let rules = expand_rules(policy)?;
+        let blocked = if policy.enabled {
+            targets(policy)
+        } else {
+            BTreeMap::new()
+        };
         let stub = stub_path()?;
         let debugger = debugger_value(&stub);
         let previous = read_state();
@@ -997,6 +1211,7 @@ mod windows_impl {
         let state = json!({
             "mode": policy.mode,
             "exes": sorted,
+            "paths": rules.iter().map(|r| r.path.as_str()).collect::<Vec<_>>(),
             "hash": policy_hash(policy),
             "day": crate::local_day::today(),
         })
@@ -1025,12 +1240,15 @@ mod windows_impl {
             system.refresh_processes_specifics(
                 sysinfo::ProcessesToUpdate::All,
                 true,
-                sysinfo::ProcessRefreshKind::nothing(),
+                refresh_kind(),
             );
             let running: Vec<_> = system
                 .processes()
                 .values()
-                .filter(|p| names.contains(&p.name().to_string_lossy().to_ascii_lowercase()))
+                .filter(|p| {
+                    names.contains(&p.name().to_string_lossy().to_ascii_lowercase())
+                        || matches_path_rule(p, &rules).is_some()
+                })
                 .collect();
             if running.is_empty() {
                 break;
@@ -1049,7 +1267,12 @@ mod windows_impl {
             }
             std::thread::sleep(Duration::from_millis(100));
         }
-        tracing::info!(count = names.len(), mode = %policy.mode, "application block applied");
+        tracing::info!(
+            count = names.len(),
+            paths = rules.len(),
+            mode = %policy.mode,
+            "application block applied"
+        );
         Ok(names)
     }
     fn clear() -> Result<()> {
@@ -1068,12 +1291,11 @@ mod windows_impl {
     /// reconnected to the Teacher.
     #[derive(Clone)]
     pub struct Enforcer {
-        blocked: Arc<Mutex<HashSet<String>>>,
+        blocked: Arc<Mutex<Rules>>,
     }
     impl Enforcer {
         pub fn start() -> Self {
-            let blocked: Arc<Mutex<HashSet<String>>> =
-                Arc::new(Mutex::new(read_state().into_iter().collect()));
+            let blocked: Arc<Mutex<Rules>> = Arc::new(Mutex::new(read_rules()));
             let shared = Arc::clone(&blocked);
             // Lives as long as the Student process; there is nothing to join.
             let _ = std::thread::Builder::new()
@@ -1085,7 +1307,7 @@ mod windows_impl {
             let outcome = apply_registry(policy);
             // A close failure can follow a successful registry write. Keep the
             // watcher enforcing that installed rule even while reporting it.
-            *self.blocked.lock().unwrap() = read_state().into_iter().collect();
+            *self.blocked.lock().unwrap() = read_rules();
             outcome.map(|_| ())
         }
         /// A block lasts until the Teacher changes it or the local day ends.
@@ -1119,24 +1341,53 @@ mod windows_impl {
             }
         }
     }
-    fn watch(shared: &Mutex<HashSet<String>>) {
+    fn watch(shared: &Mutex<Rules>) {
         let mut system = sysinfo::System::new();
+        let mut told: std::collections::HashMap<String, std::time::Instant> = Default::default();
+        let me = std::process::id();
         loop {
-            std::thread::sleep(Duration::from_millis(500));
-            let names = shared.lock().unwrap().clone();
-            if names.is_empty() {
+            // Path rules need a quicker look than names: nothing stops a program
+            // at launch for them, so the window it can show is this interval.
+            let quick = !shared.lock().unwrap().paths.is_empty();
+            std::thread::sleep(Duration::from_millis(if quick { 200 } else { 500 }));
+            let (names, paths) = {
+                let rules = shared.lock().unwrap();
+                (rules.names.clone(), rules.paths.clone())
+            };
+            if names.is_empty() && paths.is_empty() {
                 continue;
             }
             system.refresh_processes_specifics(
                 sysinfo::ProcessesToUpdate::All,
                 true,
-                sysinfo::ProcessRefreshKind::nothing(),
+                if paths.is_empty() {
+                    sysinfo::ProcessRefreshKind::nothing()
+                } else {
+                    refresh_kind()
+                },
             );
             for process in system.processes().values() {
+                if process.pid().as_u32() == me {
+                    continue;
+                }
                 if names.contains(&process.name().to_string_lossy().to_ascii_lowercase()) {
                     process.kill();
+                } else if let Some(exe) = matches_path_rule(process, &paths) {
+                    process.kill();
+                    // Say why, once in a while: the program just vanished.
+                    if told.get(&exe).is_none_or(|at| at.elapsed() > Duration::from_secs(5)) {
+                        told.insert(exe.clone(), std::time::Instant::now());
+                        if let Ok(stub) = stub_path() {
+                            let _ = Command::new(stub)
+                                .arg("--app-blocked")
+                                .arg(&exe)
+                                .creation_flags(NO_WINDOW)
+                                .spawn();
+                        }
+                    }
                 }
             }
+            told.retain(|_, at| at.elapsed() < Duration::from_secs(60));
         }
     }
     pub fn is_applied() -> bool {
@@ -1242,6 +1493,7 @@ mod tests {
             enabled: true,
             mode: MODE_BLOCK.into(),
             ids: vec!["b".repeat(12), "a".repeat(12)],
+            paths: vec![],
         };
         let b = AppPolicy {
             ids: vec!["a".repeat(12), "b".repeat(12)],
@@ -1274,6 +1526,7 @@ mod tests {
             enabled: true,
             mode: MODE_BLOCK.into(),
             ids: vec![app_id("Zoom")],
+            paths: vec![],
         };
         assert!(good.validate().is_ok());
         assert!(AppPolicy {
@@ -1304,5 +1557,72 @@ mod tests {
         // Teacher may choose to block it.
         assert!(!is_protected("taskmgr.exe"));
         assert!(!is_protected("chrome.exe"));
+    }
+
+    fn rule(text: &str) -> PathRule {
+        parse_path_rule(text).unwrap()
+    }
+    #[test]
+    fn path_rules_normalize_and_match_files_and_folders() {
+        assert_eq!(rule("C:/Games//Steam\\"), PathRule { path: "c:\\games\\steam".into(), folder: true });
+        assert_eq!(rule("D:\\Tools\\Run.EXE"), PathRule { path: "d:\\tools\\run.exe".into(), folder: false });
+        let rules = [rule("c:\\games"), rule("d:\\tools\\run.exe")];
+        assert!(path_blocked(&rules, "c:\\games\\launcher.exe"));
+        assert!(path_blocked(&rules, "c:\\games\\deep\\er\\x.exe"));
+        assert!(path_blocked(&rules, "d:\\tools\\run.exe"));
+        // A sibling that merely shares a prefix, or the same name elsewhere, is untouched.
+        assert!(!path_blocked(&rules, "c:\\gameszone\\x.exe"));
+        assert!(!path_blocked(&rules, "c:\\games"));
+        assert!(!path_blocked(&rules, "e:\\tools\\run.exe"));
+        assert!(!path_blocked(&rules, "d:\\tools\\run.exe.bak"));
+    }
+    #[test]
+    fn dangerous_or_ambiguous_paths_are_refused() {
+        for bad in ["C:\\", "c:", "C:\\Games\\..\\Windows", "\\\\server"] {
+            assert!(parse_path_rule(bad).is_none(), "{bad}");
+        }
+        let system = vec!["c:\\windows".to_string()];
+        let guarded = vec![
+            "c:\\program files".to_string(),
+            "c:\\program files (x86)".to_string(),
+            "c:\\programdata".to_string(),
+            "c:\\users".to_string(),
+            "c:\\users\\student".to_string(),
+        ];
+        let own = vec!["c:\\program files\\classroom".to_string()];
+        let refused = |text: &str| rule_refusal(&rule(text), &system, &guarded, &own).is_some();
+        // Windows itself: the folder and everything below it.
+        for text in ["c:\\windows", "c:\\windows\\system32", "c:\\windows\\system32\\x.exe"] {
+            assert!(refused(text), "{text}");
+        }
+        // Program and profile roots are refused as a whole (or as an ancestor), not below them.
+        for text in ["c:\\program files", "C:\\Program Files (x86)\\", "c:\\programdata", "c:\\users", "c:\\users\\student"] {
+            assert!(refused(text), "{text}");
+        }
+        for text in ["c:\\program files\\game", "c:\\users\\student\\downloads", "c:\\users\\other", "c:\\games", "d:\\windows"] {
+            assert!(!refused(text), "{text}");
+        }
+        // The Classroom program is protected in both directions.
+        assert!(refused("c:\\program files\\classroom\\a.exe"));
+        assert!(refused("c:\\program files\\classroom"));
+    }
+    #[test]
+    fn path_policy_validation_and_hash() {
+        let paths_only = AppPolicy { paths: vec!["C:\\Games".into()], ..Default::default() };
+        assert!(paths_only.active() && paths_only.validate().is_ok());
+        assert!(!AppPolicy::default().active());
+        for bad in ["", "games", "C:\\a|b", "relative\\x.exe", "C:\\a?.exe"] {
+            let policy = AppPolicy { paths: vec![bad.into()], ..Default::default() };
+            assert!(policy.validate().is_err(), "{bad:?}");
+        }
+        assert!(AppPolicy { paths: vec!["%USERPROFILE%\\Downloads".into()], ..Default::default() }.validate().is_ok());
+        assert!(AppPolicy { paths: vec!["C:\\x".into(); 101], ..Default::default() }.validate().is_err());
+        // Path rules change the fingerprint; order and case do not; no paths keeps the old one.
+        let a = AppPolicy { paths: vec!["C:\\A".into(), "C:\\B".into()], ..Default::default() };
+        let b = AppPolicy { paths: vec!["c:\\b".into(), "c:\\a".into()], ..Default::default() };
+        assert_eq!(policy_hash(&a), policy_hash(&b));
+        assert!(!policy_hash(&a).is_empty());
+        let ids = AppPolicy { enabled: true, mode: MODE_BLOCK.into(), ids: vec!["a".repeat(12)], paths: vec![] };
+        assert_ne!(policy_hash(&ids), policy_hash(&AppPolicy { paths: vec!["C:\\A".into()], ..ids.clone() }));
     }
 }

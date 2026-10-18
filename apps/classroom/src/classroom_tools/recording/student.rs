@@ -1,6 +1,6 @@
 use super::{
-    atomic_json, configure, epoch, packet, read, send, sha256_file, BLOCK, MAX_CHUNK_BYTES,
-    MAX_SECONDS, PACE,
+    atomic_json, configure, epoch, packet, read, send, sha256_file, RecordingOptions, BLOCK,
+    MAX_CHUNK_BYTES, MAX_SECONDS, PACE,
 };
 use anyhow::{Context, Result};
 use protocol::ToolPacket;
@@ -13,7 +13,7 @@ use std::{
     net::{SocketAddrV4, TcpStream},
     path::{Path, PathBuf},
     process::Child,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     sync::{
         mpsc::{self, SyncSender},
         Arc, Mutex,
@@ -28,9 +28,15 @@ pub(super) struct Metadata {
     pub identity: String,
     pub address: SocketAddrV4,
     pub expires: u64,
+    /// How to record; absent in sessions started before the Teacher chose these.
+    #[serde(default)]
+    pub options: RecordingOptions,
 }
+/// Largest Teacher-clock lead over this Student's clock that is still accepted.
+const CLOCK_SKEW_SECONDS: u64 = 600;
 pub(crate) struct Student {
     tx: SyncSender<ToolPacket>,
+    contact: Arc<AtomicU64>,
     reports: Arc<Mutex<HashMap<String, ToolPacket>>>,
     stop: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
@@ -42,9 +48,13 @@ impl Student {
         let flag = Arc::clone(&stop);
         let reports = Arc::new(Mutex::new(HashMap::new()));
         let worker_reports = Arc::clone(&reports);
+        let contact = Arc::new(AtomicU64::new(epoch()));
+        let worker_contact = Arc::clone(&contact);
         let worker = thread::spawn(move || {
             let _ = fs::create_dir_all(&root);
             let mut active: Option<(String, PathBuf, Child)> = None;
+            // Seconds of silence from the Teacher after which the capture ends (0 = never).
+            let mut gone_seconds = RecordingOptions::default().gone_seconds;
             // A restarted Agent resumes transfers, never silently restarts capture.
             if let Ok(dirs) = fs::read_dir(&root) {
                 for dir in dirs.flatten().take(32) {
@@ -94,10 +104,17 @@ impl Student {
                                     && meta.address == address,
                                 "Recording command belongs to another session"
                             );
-                            if p.action == "recording_stop" {
+                            if p.action == "recording_stop" || p.action == "recording_discard" {
                                 fs::write(dir.join("stop"), b"")?;
                             }
+                            if p.action == "recording_discard" {
+                                // Removed (with anything not yet uploaded) once capture has ended.
+                                fs::write(dir.join("discard"), b"")?;
+                            }
                             return Ok(()); // Retried Start never creates a second helper.
+                        }
+                        if p.action == "recording_discard" {
+                            return Ok(()); // Nothing of it here.
                         }
                         if p.action == "recording_stop" {
                             fs::create_dir_all(&dir)?;
@@ -109,6 +126,7 @@ impl Student {
                                     identity: identity.clone(),
                                     address,
                                     expires: epoch(),
+                                    options: RecordingOptions::default(),
                                 },
                             )?;
                             atomic_json(
@@ -127,8 +145,15 @@ impl Student {
                         let expires = v["expires"]
                             .as_u64()
                             .context("Missing recording deadline")?;
+                        let options = serde_json::from_value::<RecordingOptions>(v["options"].clone())
+                            .unwrap_or_default()
+                            .sanitized();
+                        // The deadline is the Teacher's clock plus the longest recording.
+                        // Student clocks drift by seconds (or minutes on an unsynced lab
+                        // PC), so the upper bound must not reject a Teacher that is
+                        // merely ahead of this Student.
                         anyhow::ensure!(
-                            expires > epoch() && expires <= epoch() + MAX_SECONDS,
+                            expires > epoch() && expires <= epoch() + MAX_SECONDS + CLOCK_SKEW_SECONDS,
                             "Invalid recording deadline"
                         );
                         fs::create_dir(&dir)?;
@@ -140,8 +165,10 @@ impl Student {
                                 identity: identity.clone(),
                                 address,
                                 expires,
+                                options: options.clone(),
                             },
                         )?;
+                        gone_seconds = options.gone_seconds;
                         atomic_json(&dir.join("status.json"), &json!({"phase":"starting"}))?;
                         atomic_json(&dir.join("heartbeat.json"), &epoch())?;
                         match spawn(&dir) {
@@ -168,6 +195,13 @@ impl Student {
                     heartbeat = Instant::now();
                     if let Some((_, dir, _)) = &active {
                         let _ = atomic_json(&dir.join("heartbeat.json"), &epoch());
+                        if gone_seconds > 0
+                            && epoch().saturating_sub(worker_contact.load(Ordering::Acquire))
+                                > gone_seconds
+                            && !dir.join("stop").exists()
+                        {
+                            let _ = fs::write(dir.join("stop"), b"teacher_unreachable");
+                        }
                     }
                 }
                 if let Some((_, dir, child)) = active.as_mut() {
@@ -203,10 +237,15 @@ impl Student {
         });
         Self {
             tx,
+            contact,
             reports,
             stop,
             worker: Some(worker),
         }
+    }
+    /// Called while the Teacher connection is alive; resets the unreachable timer.
+    pub fn note_contact(&self) {
+        self.contact.store(epoch(), Ordering::Release);
     }
     pub fn statuses(&self) -> Vec<ToolPacket> {
         self.reports
@@ -386,6 +425,18 @@ fn transfer_loop(
                 if meta.address != address || meta.identity != identity {
                     continue;
                 }
+                if dir.join("discard").exists() {
+                    // The Teacher deleted this recording. Keep nothing, upload nothing,
+                    // but never pull the directory out from under a running capture.
+                    let phase = load_json(&dir.join("status.json")).unwrap_or_default();
+                    if matches!(
+                        phase["phase"].as_str(),
+                        Some("stopped" | "error" | "interrupted")
+                    ) {
+                        let _ = fs::remove_dir_all(&dir);
+                    }
+                    continue;
+                }
                 let mut chunks: Vec<_> = fs::read_dir(&dir)
                     .into_iter()
                     .flatten()
@@ -518,6 +569,7 @@ mod tests {
                 identity: "s".into(),
                 address: "127.0.0.1:1".parse().unwrap(),
                 expires: epoch() + MAX_SECONDS,
+                options: RecordingOptions::default(),
             },
         )
         .unwrap();

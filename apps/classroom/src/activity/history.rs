@@ -50,14 +50,21 @@ pub struct History {
     /// Results of expensive lookups (executable icons, tab addresses from a
     /// browser's history database, site icons), so a 6-second scan does not
     /// re-copy databases for something it already resolved.
-    lookups: Mutex<HashMap<String, (Option<String>, i64)>>,
+    lookups: Mutex<HashMap<String, (Option<String>, i64, u32)>>,
     /// Newest first; capped at [`MAX_CLIPBOARD`].
     clipboard: Mutex<std::collections::VecDeque<ClipboardEntry>>,
 }
 
 /// A failed lookup is retried after this long (a page may simply not be in
 /// the browser's history database yet).
-const RETRY_MISSING_MS: i64 = 60_000;
+/// A lookup that found nothing is tried again soon (a page just opened is not
+/// in the browser history yet), then less and less often so a title that never
+/// resolves does not keep copying the history database.
+const RETRY_FIRST_MS: i64 = 8_000;
+const RETRY_MAX_MS: i64 = 120_000;
+fn retry_delay_ms(misses: u32) -> i64 {
+    (RETRY_FIRST_MS << misses.min(6)).min(RETRY_MAX_MS)
+}
 const MAX_LOOKUPS: usize = 2_000;
 
 pub enum Lookup {
@@ -221,8 +228,10 @@ impl History {
     }
     pub fn lookup(&self, key: &str) -> Lookup {
         match self.lookups.lock().unwrap().get(key) {
-            Some((Some(value), _)) => Lookup::Known(Some(value.clone())),
-            Some((None, tried)) if now_ms() - tried < RETRY_MISSING_MS => Lookup::Known(None),
+            Some((Some(value), _, _)) => Lookup::Known(Some(value.clone())),
+            Some((None, tried, misses)) if now_ms() - tried < retry_delay_ms(*misses) => {
+                Lookup::Known(None)
+            }
             _ => Lookup::Needed,
         }
     }
@@ -231,7 +240,12 @@ impl History {
         if map.len() >= MAX_LOOKUPS {
             map.clear();
         }
-        map.insert(key.to_owned(), (value, now_ms()));
+        let misses = match (&value, map.get(key)) {
+            (None, Some((None, _, before))) => before.saturating_add(1),
+            (None, _) => 0,
+            (Some(_), _) => 0,
+        };
+        map.insert(key.to_owned(), (value, now_ms(), misses));
     }
     pub fn set_downloads(&self, downloads: Vec<DownloadEntry>) {
         *self.downloads.lock().unwrap() = downloads;
@@ -304,6 +318,23 @@ mod tests {
         assert!(matches!(history.lookup("k"), Lookup::Known(Some(v)) if v == "v"));
         history.remember("miss", None);
         assert!(matches!(history.lookup("miss"), Lookup::Known(None)));
+    }
+
+    #[test]
+    fn a_missing_page_is_retried_quickly_at_first_then_less_often() {
+        assert_eq!(retry_delay_ms(0), 8_000);
+        assert_eq!(retry_delay_ms(1), 16_000);
+        assert_eq!(retry_delay_ms(3), 64_000);
+        assert_eq!(retry_delay_ms(30), RETRY_MAX_MS, "never longer than two minutes");
+        let history = History::default();
+        history.remember("t", None);
+        history.remember("t", None);
+        history.remember("t", None);
+        assert_eq!(history.lookups.lock().unwrap()["t"].2, 2);
+        // Finding it resets the count, and the answer is kept.
+        history.remember("t", Some("https://x".into()));
+        assert_eq!(history.lookups.lock().unwrap()["t"].2, 0);
+        assert!(matches!(history.lookup("t"), Lookup::Known(Some(_))));
     }
 
     #[test]

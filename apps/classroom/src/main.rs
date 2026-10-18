@@ -78,6 +78,7 @@ mod student_presentation;
 mod student_settings;
 mod student_tools_ui;
 mod teacher_agent;
+mod teacher_discovery;
 mod teacher_dashboard;
 mod text_editor;
 mod teacher_repair;
@@ -85,6 +86,7 @@ mod udp_ingress;
 mod udp_sender;
 mod vscode_control;
 mod app_control;
+mod ai_sites;
 mod class_rules;
 mod local_day;
 use process_metrics::ProcessMetrics;
@@ -447,6 +449,7 @@ async fn run(
                     config.apply_saved(&toml::to_string(&table)?)?;
                 }
             }
+            reset_session_performance(&mut config);
             let prefs = store.list(classroom_store::ns::PREFS)?;
             saved_bind_ip = prefs
                 .get("bind_ip")
@@ -617,8 +620,13 @@ async fn run(
             };
             info!(role = %role, bind_ip = %bind_ip, "starting Classroom");
             if cli.teacher_agent {
+                let wireless = {
+                    let kind = adapter.candidate.kind.to_ascii_lowercase();
+                    kind.contains("wireless") || kind.contains("wifi") || kind.contains("802.11")
+                };
                 if teacher_agent::run(
                     &config,
+                    wireless,
                     bind_ip,
                     cli.display_index,
                     cli.ipc_file
@@ -657,17 +665,24 @@ async fn run(
             let teacher_ip = if cli.loopback {
                 Ipv4Addr::LOCALHOST
             } else {
-                infer_teacher_address(
+                // The configured address leads while it answers; otherwise the one
+                // that last worked, then the room convention. See teacher_discovery.
+                teacher_discovery::resolve_initial(
                     adapter.address,
                     config.network.teacher_ip,
-                    &config.network.teacher_ip_mode,
+                    config.network.teacher_ip_mode == "explicit",
+                    config.network.teacher_discovery,
+                    config.network.control_port,
+                    &profile_path,
                 )
+                .await
             };
             info!(role = %role, %teacher_ip, "starting Classroom");
             let media_endpoint_ip = student_media_endpoint_ip(teacher_ip, adapter.address);
             if run_student_media(
                 &config,
                 teacher_ip,
+                adapter.address,
                 media_endpoint_ip,
                 cli.share_seconds,
                 cli.headless,
@@ -1073,6 +1088,13 @@ fn choose_role(configured: &str) -> Result<Role> {
         "2" | "student" | "s" => Ok(Role::Student),
         _ => bail!("invalid role selection"),
     }
+}
+
+/// The performance mode is a per-session choice: a Teacher who clicked
+/// "economy" or "minimal" must not find the room stuck there after a restart,
+/// so every start returns to high performance whatever was saved.
+fn reset_session_performance(config: &mut Config) {
+    config.performance.mode = "normal".to_owned();
 }
 
 fn resolve_bind_ip(configured: &str, selected: Ipv4Addr) -> Result<Ipv4Addr> {
@@ -2069,6 +2091,7 @@ fn run_teacher_media_inner(
 async fn run_student_media(
     config: &Config,
     teacher_ip: Ipv4Addr,
+    local_ip: Ipv4Addr,
     media_endpoint_ip: Ipv4Addr,
     share_seconds: Option<u64>,
     headless: bool,
@@ -2145,6 +2168,19 @@ async fn run_student_media(
         )
     });
     info!("student background agent ready; waiting for Teacher presentation");
+    // Finds the Teacher again if it moves or was not on when this started, and
+    // hears it when it starts later. The Teacher address the subsystems above
+    // were built with only changes by restarting, which is what happens when
+    // a different, verified Teacher turns up.
+    let (knocks, _knock_listener) = teacher_discovery::listen(config.network.control_port);
+    let mut finder = teacher_discovery::Finder::new(
+        local_ip,
+        config.network.control_port,
+        teacher_ip,
+        config.network.teacher_ip,
+        config.network.teacher_ip_mode == "explicit",
+        config.network.teacher_discovery && !teacher_ip.is_loopback(),
+    );
     let started = Instant::now();
     let ends = share_seconds.map(|seconds| started + Duration::from_secs(seconds));
     'agent: loop {
@@ -2180,10 +2216,21 @@ async fn run_student_media(
         }
         let registration_future = register_student_for_presentation(teacher, registration.clone());
         tokio::pin!(registration_future);
+        let attempt_started = Instant::now();
         let registered = loop {
             tokio::select! {
                 result = &mut registration_future => break result,
                 () = tokio::time::sleep(Duration::from_millis(20)) => {
+                    // A host that is not there can hold a connect for ~13 s on some
+                    // systems; give up on an attempt after 5 s so the next try (and
+                    // the search for the Teacher) is not stuck behind it.
+                    if attempt_started.elapsed() >= Duration::from_secs(5) {
+                        break Err(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "Teacher did not answer within 5 s",
+                        )
+                        .into());
+                    }
                     if inbox.update_exit.load(Ordering::Acquire) { break 'agent; }
                     if let Some(desktop) = desktop.as_mut() {
                         desktop.pump(&format!("Connecting to Teacher {teacher_ip}"), false);
@@ -2201,10 +2248,35 @@ async fn run_student_media(
             Ok(registered) => registered,
             Err(error) => {
                 warn!(%teacher, %error, "student control registration failed; retrying");
-                tokio::time::sleep(Duration::from_millis(500)).await;
+                let delay = finder.failed();
+                for candidate in finder.alternatives(&knocks).await {
+                    // Answering on the control port proves nothing; registering does.
+                    let target = SocketAddrV4::new(candidate, config.network.control_port);
+                    info!(%candidate, "student trying a possible Teacher");
+                    let verified = matches!(
+                        tokio::time::timeout(
+                            Duration::from_secs(6),
+                            register_student_for_presentation(target, registration.clone()),
+                        )
+                        .await,
+                        Ok(Ok(_))
+                    );
+                    if verified {
+                        info!(%candidate, previous = %teacher_ip, "found the Teacher at a new address; restarting to use it");
+                        teacher_discovery::save_last_good(profile_path, candidate);
+                        restart_requested = true;
+                        break 'agent;
+                    }
+                }
+                // A Teacher that has just started knocks; do not sit out the back-off.
+                knocks.wait(delay).await;
                 continue;
             }
         };
+        finder.connected();
+        if teacher_discovery::load_last_good(profile_path).map(|(ip, _)| ip) != Some(teacher_ip) {
+            teacher_discovery::save_last_good(profile_path, teacher_ip);
+        }
         info!(client_id, %teacher, "student room connection ready");
         let mut next = presentation;
         let mut last_probe = Instant::now();
@@ -3189,10 +3261,11 @@ fn run_student_receiver(
                     missing_packets: stats.late_or_missing_packets,
                     decoded_frames,
                     rendered_frames,
-                    receive_bitrate_bps: received_bytes
-                        .saturating_mul(8)
-                        .checked_div(started.elapsed().as_secs().max(1))
-                        .unwrap_or(0),
+                    // Current rate (this interval), not the average since the
+                    // presentation began, so the Teacher sees what arrives now.
+                    receive_bitrate_bps: (interval_received_bytes as f64 * 8.0
+                        / elapsed.as_secs_f64().max(0.001))
+                        as u64,
                     jitter_delay_ms: config.video.jitter_buffer_ms,
                     control_rtt_us,
                     control_rtt_samples,
@@ -3852,6 +3925,18 @@ mod tests {
         ])
         .unwrap();
         assert!(!should_show_launcher(&benchmark));
+    }
+
+    #[test]
+    fn saved_performance_mode_does_not_survive_a_restart() {
+        let mut config = Config::load(None).unwrap().0;
+        config
+            .apply_saved("[performance]\nmode = \"minimal\"\n")
+            .unwrap();
+        assert_eq!(config.performance.mode, "minimal");
+        reset_session_performance(&mut config);
+        assert_eq!(config.performance.mode, "normal");
+        assert_eq!(config.active_mode(false), ("normal", ""));
     }
 
     #[test]

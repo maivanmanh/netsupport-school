@@ -20,7 +20,7 @@ use std::{
 const MAX_CONCURRENT: usize = 4;
 
 impl Hub {
-    pub fn vscode_list(&self, student: &str) -> Result<String> {
+    pub fn vscode_list(&self, student: &str, icons_for: &[String]) -> Result<String> {
         {
             let st = self.0.lock().unwrap();
             anyhow::ensure!(st.peers.contains_key(student), "Student is offline");
@@ -33,6 +33,7 @@ impl Hub {
         let token = super::nonce()?;
         self.fs_register_slot(&id, student, &token, None, false);
         let mut request = packet("vscode_list");
+        request.text = serde_json::json!({"icons_for": icons_for}).to_string();
         request.id.clone_from(&id);
         request.token = token;
         self.fs_enqueue(student, request);
@@ -60,7 +61,10 @@ pub(super) fn run(
     thread::spawn(move || {
         let _slot = slot;
         let outcome = (|| -> Result<()> {
-            let report = crate::vscode_control::list_extensions();
+            let request: crate::vscode_control::ListRequest =
+                serde_json::from_str(&p.text).unwrap_or_default();
+            let mut report = crate::vscode_control::list_extensions();
+            crate::vscode_control::attach_icons(&mut report, &request);
             let body = serde_json::to_string(&report)?;
             let mut s = TcpStream::connect_timeout(&address.into(), Duration::from_secs(2))?;
             configure(&s)?;

@@ -149,3 +149,38 @@ Teacher restart, Agent crash/restart; full disks/backlog; resolution/lock change
 and 1/5/10/20/40 physical-PC resource/network measurements. Preserve the existing
 broadcast acceptance criteria. Fresh paired packages were built and the two test
 Students updated through Classroom; no public release or classroom-scale pass is claimed.
+
+## Automatic stop and disk guards — 2026-10-16
+
+A recording a teacher forgot, or one that can no longer be collected, must not run
+until a disk fills. These guards end capture by themselves; each records a reason
+that the dialog explains in plain language. Anything already recorded stays queued on
+the Student and uploads once the cause is fixed.
+
+| Situation | Behaviour |
+| --- | --- |
+| Session length | New sessions stop after **60 minutes** by default, set in Teacher Settings → *Truyền tệp* (`tools.recording_max_minutes`, 5–480; the video is cut into 10-minute MP4 parts as it goes). The eight-hour value is now only the protocol/journal ceiling; journals written before the change keep their old deadline. The dialog shows the stop time and warns in the last 10 minutes. Reason `time_limit`. |
+| Teacher disk at Start | Refused unless the Desktop drive has 2 GiB plus 0.5 GiB per recorded Student free. |
+| Teacher disk while recording | Checked every 5 s (on status reports and polls). Under 5 GiB the dialog warns; under **1 GiB** every live session is stopped, reason `teacher_disk_low`. Students keep their finished chunks and retry the upload automatically after space is freed. |
+| Student disk at Start | The helper refuses to start with under 1 GiB free. |
+| Student disk while recording | Reports `free_bytes`; under 2 GiB the dialog warns for that machine; under 512 MiB capture stops after finalizing the current part (`student_disk_low`). |
+| Student backlog | 8 GiB of unuploaded video stops capture (`spool_full`), now with an explanatory message. |
+| Teacher unreachable | A Student that has had no live Teacher connection for **30 minutes** stops its capture (`teacher_unreachable`): nobody can see, stop or collect it. |
+
+Not covered (see the owner's list): rolling over on a resolution change instead of
+stopping, locked/black-screen detection, per-session size caps, Student sleep/logoff
+(the next start reports `interrupted`), low memory, (the session length is now selectable in Settings).
+The Student-side guards need an updated Student; the Teacher-side ones do not.
+
+### Dialog behaviour (2026-10-16)
+
+- Before a Student's first progress report the card says it is waiting calmly; it
+  turns red only after 45 s of silence or a real fault.
+- Running time is shown in red while recording; the status mark blinks.
+- A session that was recording or waiting stays in the first tab while the dialog is
+  open, so a Stop does not make it vanish; it appears under History when the dialog
+  is reopened. Delete exists only in History.
+- History shows one status icon per session (complete, error, interrupted, automatic
+  stop by reason); the text is its tooltip.
+- Stopping one computer from the right-click menu shows where the video is saved
+  with an *Open folder* action.

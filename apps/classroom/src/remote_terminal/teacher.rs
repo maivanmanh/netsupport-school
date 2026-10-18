@@ -276,7 +276,11 @@ impl Manager {
         if let Some(f) = initial {
             wire::write(&mut writer, &f).await?;
         }
-        let mut timer = tokio::time::interval(Duration::from_secs(1));
+        // Status is pushed the moment it changes (checked every 50 ms) so the UI
+        // never waits out a heartbeat to learn the shell is connected; an
+        // unchanged status is still repeated every second as a liveness signal.
+        let mut timer = tokio::time::interval(Duration::from_millis(50));
+        let mut last_status: Option<(Vec<u8>, Instant)> = None;
         loop {
             tokio::select! {
                 f=frames.recv()=>{
@@ -309,12 +313,16 @@ impl Manager {
                 _=timer.tick()=>{
                     if s.closed.load(Ordering::Acquire){break;}
                     let mut status=s.status.lock().unwrap().clone();
-                    if status["state"]=="connecting" && s.created.elapsed()>wire::GRACE {
-                        wire::write(&mut writer,&Frame::new(wire::EXIT,0,b"Student terminal did not start. Check Student connection, version and worker permissions.".to_vec())).await?;
+                    if status["state"]=="connecting" && s.created.elapsed()>wire::CONNECT_GRACE {
+                        wire::write(&mut writer,&Frame::new(wire::EXIT,0,"Máy học viên không khởi động được terminal sau 30 giây. Hãy kiểm tra máy đang bật, đã kết nối mạng và đúng phiên bản, rồi mở phiên mới.".as_bytes().to_vec())).await?;
                         self.close(id);break;
                     }
                     status["connected"]=json!(s.network.load(Ordering::Acquire));
-                    wire::write(&mut writer,&Frame::new(wire::READY,0,serde_json::to_vec(&status)?)).await?;
+                    let encoded=serde_json::to_vec(&status)?;
+                    if last_status.as_ref().is_none_or(|(sent,at)|*sent!=encoded||at.elapsed()>=Duration::from_secs(1)) {
+                        wire::write(&mut writer,&Frame::new(wire::READY,0,encoded.clone())).await?;
+                        last_status=Some((encoded,Instant::now()));
+                    }
                 }
             }
         }

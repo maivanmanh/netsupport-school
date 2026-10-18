@@ -7,8 +7,9 @@ use serde_json::Value;
 use std::{process::Command, sync::Arc, thread, time::Duration};
 use tracing::info;
 
-/// Grace period before restart/shutdown so the Student sees it coming.
-const GRACE_SECONDS: u32 = 15;
+/// Grace period before restart/shutdown so the Student sees it coming; the
+/// Teacher chooses it (Settings), this is only the fallback for older Teachers.
+const DEFAULT_GRACE_SECONDS: u32 = 15;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Op {
@@ -34,12 +35,12 @@ fn parse(op: &str) -> Option<Op> {
 }
 
 #[cfg(windows)]
-fn system(op: Op) -> Result<()> {
+fn system(op: Op, grace_seconds: u32) -> Result<()> {
     use std::os::windows::process::CommandExt;
     let mut command = Command::new("shutdown.exe");
     match op {
-        Op::Reboot => command.args(["/r", "/f", "/t", &GRACE_SECONDS.to_string(), "/c", "Restarting: requested by your teacher"]),
-        Op::Shutdown => command.args(["/s", "/f", "/t", &GRACE_SECONDS.to_string(), "/c", "Shutting down: requested by your teacher"]),
+        Op::Reboot => command.args(["/r", "/f", "/t", &grace_seconds.to_string(), "/c", "Restarting: requested by your teacher"]),
+        Op::Shutdown => command.args(["/s", "/f", "/t", &grace_seconds.to_string(), "/c", "Shutting down: requested by your teacher"]),
         _ => command.arg("/l"),
     };
     command.creation_flags(0x0800_0000);
@@ -48,7 +49,7 @@ fn system(op: Op) -> Result<()> {
     Ok(())
 }
 #[cfg(not(windows))]
-fn system(op: Op) -> Result<()> {
+fn system(op: Op, grace_seconds: u32) -> Result<()> {
     // loginwindow handles these events without a confirmation sheet.
     let event = match op {
         Op::Reboot => "aevtrrst",
@@ -56,7 +57,7 @@ fn system(op: Op) -> Result<()> {
         _ => "aevtrlgo",
     };
     if matches!(op, Op::Reboot | Op::Shutdown) {
-        thread::sleep(Duration::from_secs(u64::from(GRACE_SECONDS)));
+        thread::sleep(Duration::from_secs(u64::from(grace_seconds)));
     }
     let status = Command::new("osascript")
         .args(["-e", &format!("tell application \"loginwindow\" to «event {event}»")])
@@ -100,10 +101,14 @@ pub(super) fn run(p: ToolPacket, inbox: Arc<Inbox>) {
             // Report first; the command may end this process and connection.
             inbox.event(&p.id, "complete", "", 0);
             let id = p.id;
+            let grace = request["grace"]
+                .as_u64()
+                .and_then(|g| u32::try_from(g).ok())
+                .map_or(DEFAULT_GRACE_SECONDS, |g| g.min(300));
             thread::spawn(move || {
                 thread::sleep(Duration::from_millis(2500));
                 info!(job_id=%id,?op,"Student executing power action");
-                if let Err(error) = system(op) {
+                if let Err(error) = system(op, grace) {
                     info!(job_id=%id,%error,"Student power action failed");
                 }
             });
