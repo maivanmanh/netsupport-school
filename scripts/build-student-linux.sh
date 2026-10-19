@@ -50,6 +50,8 @@ fi
 cp "$BINARY" "$STAGING/$NAME/ClassroomStudent"
 chmod 755 "$STAGING/$NAME/ClassroomStudent"
 cp docs/28_UBUNTU_STUDENT.md "$STAGING/$NAME/README.md"
+cp scripts/install-student-linux.sh "$STAGING/$NAME/install.sh"
+chmod 755 "$STAGING/$NAME/install.sh"
 printf '%s\n' "$DEPENDENCIES" > "$STAGING/$NAME/linked-libraries.txt"
 python3 scripts/student-linux-build-info.py --target "$HOST" \
   --output "$STAGING/$NAME/build-info.json" --verify "$STAGING/$NAME/build-info.json"
