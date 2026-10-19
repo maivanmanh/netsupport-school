@@ -64,30 +64,45 @@ fn system(op: Op, grace_seconds: u32) -> Result<()> {
 }
 #[cfg(target_os = "linux")]
 fn system(op: Op, grace_seconds: u32) -> Result<()> {
-    // Local active-session users may reboot/power off through logind without root.
     if matches!(op, Op::Reboot | Op::Shutdown) {
         thread::sleep(Duration::from_secs(u64::from(grace_seconds)));
     }
-    let mut command = match op {
+    let ok = |mut command: Command| command.status().is_ok_and(|s| s.success());
+    let gnome = |method: &str, argument: Option<&str>| {
+        let mut c = Command::new("gdbus");
+        c.args([
+            "call", "--session", "--dest", "org.gnome.SessionManager",
+            "--object-path", "/org/gnome/SessionManager",
+            "--method", &format!("org.gnome.SessionManager.{method}"),
+        ]);
+        c.args(argument);
+        c
+    };
+    // logind first (no desktop needed); polkit refuses it unless this process is in
+    // the active local session, so fall back to the GNOME session manager, which
+    // acts with the desktop session's own authority.
+    let done = match op {
         Op::Reboot => {
             let mut c = Command::new("systemctl");
             c.arg("reboot");
-            c
+            ok(c) || ok(gnome("RequestReboot", None)) || ok(gnome("Reboot", None))
         }
         Op::Shutdown => {
             let mut c = Command::new("systemctl");
             c.arg("poweroff");
-            c
+            ok(c) || ok(gnome("RequestShutdown", None)) || ok(gnome("Shutdown", None))
         }
         _ => {
-            let mut c = Command::new("loginctl");
-            c.arg("terminate-session")
-                .arg(std::env::var("XDG_SESSION_ID").unwrap_or_default());
-            c
+            // 1 = log out without the confirmation dialog.
+            ok(gnome("Logout", Some("1"))) || {
+                let mut c = Command::new("loginctl");
+                c.arg("terminate-session")
+                    .arg(std::env::var("XDG_SESSION_ID").unwrap_or_default());
+                ok(c)
+            }
         }
     };
-    let status = command.status().context("Could not run systemctl/loginctl")?;
-    anyhow::ensure!(status.success(), "The system refused the request ({status})");
+    anyhow::ensure!(done, "The system and the desktop session both refused the request");
     Ok(())
 }
 #[cfg(not(any(windows, target_os = "linux")))]
