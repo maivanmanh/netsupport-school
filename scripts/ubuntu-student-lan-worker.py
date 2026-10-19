@@ -43,6 +43,21 @@ def desktop_environment(user):
     return values
 
 
+def xvfb_environment(root, user):
+    # Fallback when nobody is logged in to the desktop: an owned virtual X server.
+    # It verifies network/decode/present, not compositor fullscreen behaviour.
+    display = ':97'
+    log = (root / 'xvfb.log').open('w')
+    child = subprocess.Popen(['runuser', '-u', user, '--', 'Xvfb', display,
+                              '-screen', '0', '1920x1080x24', '-nolisten', 'tcp'],
+                             stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    for _ in range(50):
+        if Path('/tmp/.X11-unix/X97').exists():
+            return {'DISPLAY': display}, child.pid
+        time.sleep(.1)
+    raise RuntimeError('Xvfb did not start')
+
+
 def status(root, state):
     path = root / state.get('log', 'student-1.log')
     text = path.read_text(errors='replace') if path.exists() else ''
@@ -83,7 +98,11 @@ def main():
     parser.add_argument('--run', required=True)
     parser.add_argument('--user', default='parallels')
     parser.add_argument('--teacher-ip', default='10.211.55.2')
+    parser.add_argument('--interface', default='auto')
+    parser.add_argument('--source', default='/tmp/classroom-ubuntu-validation/source/target/debug/ClassroomStudent')
+    parser.add_argument('--xvfb', action='store_true', help='use an owned Xvfb instead of the logged-in desktop')
     parser.add_argument('--control-port', type=int, default=49000)
+    parser.add_argument('--stop-xvfb', action='store_true')
     args = parser.parse_args()
     if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', args.run):
         parser.error('Invalid isolated run identifier')
@@ -96,15 +115,21 @@ def main():
                 print(json.dumps(state))
                 return
             raise RuntimeError('Run directory exists without a matching test journal')
-        source = Path('/tmp/classroom-ubuntu-validation/source/target/debug/ClassroomStudent')
+        source = Path(args.source)
         root.mkdir(mode=0o755)
         account = pwd.getpwnam(args.user)
         os.chown(root, account.pw_uid, account.pw_gid)
         binary = root / 'ClassroomStudent'
         shutil.copyfile(source, binary)
         binary.chmod(0o755)
+        xvfb_pid = None
+        if args.xvfb:
+            desktop, xvfb_pid = xvfb_environment(root, args.user)
+        else:
+            desktop = desktop_environment(args.user)
         state = {'binary': str(binary), 'generation': 0, 'sha256': digest(binary),
-                 'desktop': desktop_environment(args.user), 'user': args.user,
+                 'desktop': desktop, 'user': args.user, 'xvfb_pid': xvfb_pid,
+                 'interface': args.interface,
                  'teacher_ip': args.teacher_ip, 'control_port': args.control_port}
         state_path.write_text(json.dumps(state))
         print(json.dumps(state))
@@ -124,7 +149,7 @@ def main():
         command = ['runuser', '-u', state['user'], '--', 'env',
                    *[f'{key}={value}' for key, value in state['desktop'].items()],
                    state['binary'], '--teacher-ip', state['teacher_ip'],
-                   '--interface', 'enp0s5', '--control-port', str(state['control_port']),
+                   '--interface', state.get('interface', 'auto'), '--control-port', str(state['control_port']),
                    '--media-port', str(state['control_port'] + 10),
                    '--feedback-port', str(state['control_port'] + 11),
                    '--launch-profile', str(profile / 'profile.toml'), '--remember',
@@ -137,9 +162,15 @@ def main():
     elif args.action == 'stop':
         stop(state)
     elif args.action == 'logs':
-        print(json.dumps({p.name: p.read_text(errors='replace')
-                          for p in root.glob('student-*.*')
-                          if p.suffix in ('.log', '.stdout')}))
+        logs = {p.name: p.read_text(errors='replace')
+                for p in root.glob('student-*.*')
+                if p.suffix in ('.log', '.stdout')}
+        if state.get('xvfb_pid') and args.stop_xvfb and not alive(state):
+            try:
+                os.killpg(state['xvfb_pid'], signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        print(json.dumps(logs))
         return
     print(json.dumps(status(root, state)))
 

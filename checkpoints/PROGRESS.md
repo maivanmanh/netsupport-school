@@ -5450,3 +5450,15 @@ Owner reports Windows 10 lab PCs (Defender real-time) delete the unzipped Studen
 - Not done: USB storage still does not dismount (open handles stay usable until restart; needs
   an owner decision on forced dismount); microphone cut-off on open capture not tested;
   media measurements, black one-shot screenshot, ARM recovery time still open.
+
+## Ubuntu Student re-validation on 26.04 ARM64 (2026-10-19)
+
+Changed: LAN harness/worker generalized (VM name, Student binary, interface,
+`--xvfb` fallback, `--fps`, longer Parallels retry). Verified: native build, codec/
+renderer tests, `--diagnose`, full functional LAN harness at 5 and 30 FPS against the
+Mac Teacher on Xvfb (30 FPS decode/render, 0 missing packets, ~34 % one-core CPU).
+VM changes: Shared NIC `net1` added (VM restarted); Wi-Fi bridge Mac<->VM was flaky.
+Risks: no real GNOME/Wayland-session fullscreen test (VM sits at GDM login after
+restart; owner login or autologin needed), content was low-motion, not 1080p/wired.
+Next: log into the VM desktop, run harness without `--xvfb`, visual QA, then per-user
+launcher/autostart.

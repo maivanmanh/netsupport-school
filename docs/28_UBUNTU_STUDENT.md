@@ -158,6 +158,20 @@ silent-control timeout/recovery and a three-minute session. It used an isolated
 room and a five-FPS test profile on the slow VM, with no performance assertions.
 See [functional evidence and limits](../checkpoints/diagnostics/2026-10-13-ubuntu-student-lan.md).
 
+Validation on **Ubuntu 26.04 ARM64** (2026-10-19, VM `Ubuntu 26.04 ARM64`, 2 vCPU,
+Shared NIC `eth1` 10.211.55.12; the bridged Wi-Fi NIC could not reach the Mac Teacher
+reliably): native `build-student-linux.sh` succeeded (Rust 1.99.1), codec/renderer
+tests passed (including the Xvfb renderer test) and `--diagnose` passed. The real
+macOS Teacher (1512×982 capture) drove the full functional harness on an owned Xvfb
+(`--xvfb`): first screen, Teacher report, Stop, active late join, Teacher restart,
+silent-Teacher release and soak passed at 5 FPS and at the product 30 FPS profile.
+At 30 FPS: decode/render ≈ 30 FPS (brief 24–26 FPS dips), 0 missing packets, decode
+p95 ≈ 10–13 ms, Student CPU ≈ 34 % of one core, RSS ≈ 120–140 MB. Content was mostly
+static (0.1–3.6 Mbps), so this is not a 1080p/heavy-motion or wired-LAN result.
+Not covered: real GNOME session (26.04 is Wayland-only; fullscreen/ABOVE through
+XWayland), visual QA, display changes. Harness flags: `--xvfb`, `--fps`,
+`--student-source`, `--student-interface`.
+
 Next gate: desktop launcher/per-user installation and graphical-session autostart,
 then Ubuntu bootstrap/updater integration. Visual cursor/text/aspect QA and display
 mode changes remain pending. Linux x86_64 runtime,

@@ -105,9 +105,13 @@ def wait_for(label, probe, timeout=90, interval=2):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--vm', default='Ubuntu 22.04 ARM64')
+    parser.add_argument('--vm', default='Ubuntu 26.04 ARM64')
+    parser.add_argument('--student-source', default='/home/parallels/src/netsupport-school/target/ubuntu-student/Classroom-Student-Ubuntu-aarch64/ClassroomStudent')
+    parser.add_argument('--student-interface', default='eth1')
+    parser.add_argument('--xvfb', action='store_true', help='no logged-in desktop: use an owned Xvfb')
     parser.add_argument('--teacher-ip', default='10.211.55.2')
     parser.add_argument('--control-port', type=int, default=49000)
+    parser.add_argument('--fps', type=int, default=5, help='Teacher max FPS; 5 keeps the functional profile')
     parser.add_argument('--soak-seconds', type=int, default=180)
     parser.add_argument('--teacher-binary', type=Path, default=ROOT / 'target/Classroom Console.app/Contents/Helpers/Classroom Agent.app/Contents/MacOS/Classroom')
     args = parser.parse_args()
@@ -130,12 +134,15 @@ def main():
                 'teacher_sha256': hashlib.sha256(teacher.read_bytes()).hexdigest(),
                 'teacher_reused_existing_package': True, 'vm': args.vm,
                 'teacher_ip': args.teacher_ip, 'control_port': args.control_port,
-                'functional_only': True, 'run': tag, 'max_fps': 5}
+                'functional_only': args.fps == 5, 'run': tag, 'max_fps': args.fps}
     # Preserve screen geometry; a low configured cadence keeps this a functional
     # lifecycle check on the owner's slow two-core VM, not a speed benchmark.
     config = run / 'functional.toml'
-    config.write_text('[video]\nmax_fps = 5\nadaptive_idle_fps = 2\n'
-                      'adaptive_typing_fps = 5\ntarget_bitrate_kbps = 2000\n')
+    if args.fps == 5:
+        config.write_text('[video]\nmax_fps = 5\nadaptive_idle_fps = 2\n'
+                          'adaptive_typing_fps = 5\ntarget_bitrate_kbps = 2000\n')
+    else:
+        config.write_text(f'[video]\nmax_fps = {args.fps}\n')
     (run / 'manifest.json').write_text(json.dumps(manifest, indent=2))
     handler = partial(SimpleHTTPRequestHandler, directory=str(transfer))
     server = ThreadingHTTPServer((args.teacher_ip, 0), handler)
@@ -159,7 +166,10 @@ def main():
     def remote(action):
         return json.loads(guest('python3', guest_worker, action, '--run', tag,
                                 '--teacher-ip', args.teacher_ip,
-                                '--control-port', args.control_port))
+                                '--control-port', args.control_port,
+                                '--source', args.student_source,
+                                '--interface', args.student_interface,
+                                *(['--xvfb', '--stop-xvfb'] if args.xvfb else [])))
 
     owned, teacher_process, ipc, configured = [], None, None, False
     result = {'checks': {}, 'functional_only': True}
