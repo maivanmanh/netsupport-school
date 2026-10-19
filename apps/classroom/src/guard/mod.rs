@@ -110,7 +110,8 @@ pub fn fingerprint(internet: &InternetPolicy) -> String {
     }
     let mut rules = internet.rules.clone();
     rules.sort();
-    let digest = Sha256::digest(format!("{}|{}", internet.mode.name(), rules.join("\n")).as_bytes());
+    let digest =
+        Sha256::digest(format!("{}|{}", internet.mode.name(), rules.join("\n")).as_bytes());
     digest[..8].iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -293,7 +294,8 @@ impl Guard {
         // fall back to the old lease once, and are stamped when resumed.
         let live = saved.filter(|s| {
             if s.day == 0 {
-                unix_secs().saturating_sub(s.last_seen_unix) < u64::from(s.policy.lease_minutes) * 60
+                unix_secs().saturating_sub(s.last_seen_unix)
+                    < u64::from(s.policy.lease_minutes) * 60
             } else {
                 s.day == crate::local_day::today()
             }
@@ -509,7 +511,10 @@ mod tests {
         guard.tick();
         assert_eq!(guard.mode(), "block_all");
         // The same file stamped with another day is void.
-        let stale = Saved { day: today - 1, ..saved };
+        let stale = Saved {
+            day: today - 1,
+            ..saved
+        };
         write_saved(&dir, &stale);
         let next = Guard::new(&dir, vec![Box::new(Recorder(log.clone()))], true);
         next.restore();
@@ -523,11 +528,23 @@ mod tests {
 
     #[test]
     fn fingerprints_ignore_rule_order_and_open_is_empty() {
-        let a = InternetPolicy { mode: Mode::AllowOnly, rules: vec!["a.com".into(), "b.com".into()] };
-        let b = InternetPolicy { mode: Mode::AllowOnly, rules: vec!["b.com".into(), "a.com".into()] };
+        let a = InternetPolicy {
+            mode: Mode::AllowOnly,
+            rules: vec!["a.com".into(), "b.com".into()],
+        };
+        let b = InternetPolicy {
+            mode: Mode::AllowOnly,
+            rules: vec!["b.com".into(), "a.com".into()],
+        };
         assert_eq!(fingerprint(&a), fingerprint(&b));
         assert_eq!(fingerprint(&InternetPolicy::default()), "");
-        assert_ne!(fingerprint(&a), fingerprint(&InternetPolicy { mode: Mode::BlockOnly, ..a.clone() }));
+        assert_ne!(
+            fingerprint(&a),
+            fingerprint(&InternetPolicy {
+                mode: Mode::BlockOnly,
+                ..a.clone()
+            })
+        );
     }
 
     #[test]

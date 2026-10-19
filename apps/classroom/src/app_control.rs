@@ -79,13 +79,25 @@ pub fn policy_hash(policy: &AppPolicy) -> String {
     if !policy.active() {
         return String::new();
     }
-    let mut ids = if policy.enabled { policy.ids.clone() } else { Vec::new() };
+    let mut ids = if policy.enabled {
+        policy.ids.clone()
+    } else {
+        Vec::new()
+    };
     ids.sort();
-    let mut text = format!("{}|{}", if policy.enabled { &policy.mode } else { "" }, ids.join(","));
+    let mut text = format!(
+        "{}|{}",
+        if policy.enabled { &policy.mode } else { "" },
+        ids.join(",")
+    );
     if !policy.paths.is_empty() {
         // Appended only when present, so a policy without path rules keeps the
         // fingerprint older builds computed for it.
-        let mut paths: Vec<String> = policy.paths.iter().map(|p| p.trim().to_lowercase()).collect();
+        let mut paths: Vec<String> = policy
+            .paths
+            .iter()
+            .map(|p| p.trim().to_lowercase())
+            .collect();
         paths.sort();
         paths.dedup();
         text.push_str("|p:");
@@ -208,7 +220,9 @@ pub fn validate_path_rule(raw: &str) -> anyhow::Result<()> {
     anyhow::ensure!(!text.is_empty(), "A path is empty");
     anyhow::ensure!(text.chars().count() <= MAX_PATH_LEN, "A path is too long");
     anyhow::ensure!(
-        !text.chars().any(|c| c.is_control() || "\"<>|*?".contains(c)),
+        !text
+            .chars()
+            .any(|c| c.is_control() || "\"<>|*?".contains(c)),
         "A path contains characters Windows does not allow: {text}"
     );
     let bytes = text.as_bytes();
@@ -239,7 +253,10 @@ pub fn parse_path_rule(expanded: &str) -> Option<PathRule> {
     }
     let joined = parts.join("\\");
     let path = if unc { format!("\\\\{joined}") } else { joined };
-    Some(PathRule { folder: !path.ends_with(".exe"), path })
+    Some(PathRule {
+        folder: !path.ends_with(".exe"),
+        path,
+    })
 }
 
 /// Why a rule must never be enforced: it would reach into Windows itself or
@@ -1044,7 +1061,10 @@ mod windows_impl {
         }
     }
     fn normalized_dir(path: &Path) -> String {
-        path.to_string_lossy().replace('/', "\\").trim_end_matches('\\').to_lowercase()
+        path.to_string_lossy()
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_lowercase()
     }
     /// Folders a path rule may never reach into or contain: Windows itself, the
     /// folders it keeps its programs and profiles in, and the Classroom program
@@ -1081,7 +1101,10 @@ mod windows_impl {
         guarded.sort();
         guarded.dedup();
         let mut own = Vec::new();
-        if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) {
+        if let Some(dir) = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(Path::to_path_buf))
+        {
             own.push(normalized_dir(&dir));
         }
         if let Some(base) = std::env::var_os("ProgramData") {
@@ -1375,7 +1398,10 @@ mod windows_impl {
                 } else if let Some(exe) = matches_path_rule(process, &paths) {
                     process.kill();
                     // Say why, once in a while: the program just vanished.
-                    if told.get(&exe).is_none_or(|at| at.elapsed() > Duration::from_secs(5)) {
+                    if told
+                        .get(&exe)
+                        .is_none_or(|at| at.elapsed() > Duration::from_secs(5))
+                    {
                         told.insert(exe.clone(), std::time::Instant::now());
                         if let Ok(stub) = stub_path() {
                             let _ = Command::new(stub)
@@ -1564,8 +1590,20 @@ mod tests {
     }
     #[test]
     fn path_rules_normalize_and_match_files_and_folders() {
-        assert_eq!(rule("C:/Games//Steam\\"), PathRule { path: "c:\\games\\steam".into(), folder: true });
-        assert_eq!(rule("D:\\Tools\\Run.EXE"), PathRule { path: "d:\\tools\\run.exe".into(), folder: false });
+        assert_eq!(
+            rule("C:/Games//Steam\\"),
+            PathRule {
+                path: "c:\\games\\steam".into(),
+                folder: true
+            }
+        );
+        assert_eq!(
+            rule("D:\\Tools\\Run.EXE"),
+            PathRule {
+                path: "d:\\tools\\run.exe".into(),
+                folder: false
+            }
+        );
         let rules = [rule("c:\\games"), rule("d:\\tools\\run.exe")];
         assert!(path_blocked(&rules, "c:\\games\\launcher.exe"));
         assert!(path_blocked(&rules, "c:\\games\\deep\\er\\x.exe"));
@@ -1592,14 +1630,30 @@ mod tests {
         let own = vec!["c:\\program files\\classroom".to_string()];
         let refused = |text: &str| rule_refusal(&rule(text), &system, &guarded, &own).is_some();
         // Windows itself: the folder and everything below it.
-        for text in ["c:\\windows", "c:\\windows\\system32", "c:\\windows\\system32\\x.exe"] {
+        for text in [
+            "c:\\windows",
+            "c:\\windows\\system32",
+            "c:\\windows\\system32\\x.exe",
+        ] {
             assert!(refused(text), "{text}");
         }
         // Program and profile roots are refused as a whole (or as an ancestor), not below them.
-        for text in ["c:\\program files", "C:\\Program Files (x86)\\", "c:\\programdata", "c:\\users", "c:\\users\\student"] {
+        for text in [
+            "c:\\program files",
+            "C:\\Program Files (x86)\\",
+            "c:\\programdata",
+            "c:\\users",
+            "c:\\users\\student",
+        ] {
             assert!(refused(text), "{text}");
         }
-        for text in ["c:\\program files\\game", "c:\\users\\student\\downloads", "c:\\users\\other", "c:\\games", "d:\\windows"] {
+        for text in [
+            "c:\\program files\\game",
+            "c:\\users\\student\\downloads",
+            "c:\\users\\other",
+            "c:\\games",
+            "d:\\windows",
+        ] {
             assert!(!refused(text), "{text}");
         }
         // The Classroom program is protected in both directions.
@@ -1608,21 +1662,54 @@ mod tests {
     }
     #[test]
     fn path_policy_validation_and_hash() {
-        let paths_only = AppPolicy { paths: vec!["C:\\Games".into()], ..Default::default() };
+        let paths_only = AppPolicy {
+            paths: vec!["C:\\Games".into()],
+            ..Default::default()
+        };
         assert!(paths_only.active() && paths_only.validate().is_ok());
         assert!(!AppPolicy::default().active());
         for bad in ["", "games", "C:\\a|b", "relative\\x.exe", "C:\\a?.exe"] {
-            let policy = AppPolicy { paths: vec![bad.into()], ..Default::default() };
+            let policy = AppPolicy {
+                paths: vec![bad.into()],
+                ..Default::default()
+            };
             assert!(policy.validate().is_err(), "{bad:?}");
         }
-        assert!(AppPolicy { paths: vec!["%USERPROFILE%\\Downloads".into()], ..Default::default() }.validate().is_ok());
-        assert!(AppPolicy { paths: vec!["C:\\x".into(); 101], ..Default::default() }.validate().is_err());
+        assert!(AppPolicy {
+            paths: vec!["%USERPROFILE%\\Downloads".into()],
+            ..Default::default()
+        }
+        .validate()
+        .is_ok());
+        assert!(AppPolicy {
+            paths: vec!["C:\\x".into(); 101],
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
         // Path rules change the fingerprint; order and case do not; no paths keeps the old one.
-        let a = AppPolicy { paths: vec!["C:\\A".into(), "C:\\B".into()], ..Default::default() };
-        let b = AppPolicy { paths: vec!["c:\\b".into(), "c:\\a".into()], ..Default::default() };
+        let a = AppPolicy {
+            paths: vec!["C:\\A".into(), "C:\\B".into()],
+            ..Default::default()
+        };
+        let b = AppPolicy {
+            paths: vec!["c:\\b".into(), "c:\\a".into()],
+            ..Default::default()
+        };
         assert_eq!(policy_hash(&a), policy_hash(&b));
         assert!(!policy_hash(&a).is_empty());
-        let ids = AppPolicy { enabled: true, mode: MODE_BLOCK.into(), ids: vec!["a".repeat(12)], paths: vec![] };
-        assert_ne!(policy_hash(&ids), policy_hash(&AppPolicy { paths: vec!["C:\\A".into()], ..ids.clone() }));
+        let ids = AppPolicy {
+            enabled: true,
+            mode: MODE_BLOCK.into(),
+            ids: vec!["a".repeat(12)],
+            paths: vec![],
+        };
+        assert_ne!(
+            policy_hash(&ids),
+            policy_hash(&AppPolicy {
+                paths: vec!["C:\\A".into()],
+                ..ids.clone()
+            })
+        );
     }
 }

@@ -24,20 +24,52 @@ const SOURCES: &[(&str, Convert, bool)] = &[
     ("console-settings.json", prefs, false),
     ("teacher-settings.toml", config, false),
     ("known-students.json", roster, false),
-    ("app-inventory.json", |b| whole(b, ns::INVENTORY, "cache"), false),
-    ("monitoring-badges.json", |b| whole(b, ns::BADGES, "enabled"), false),
-    ("recording-sessions.json", |b| whole(b, ns::RECORDINGS, "journal"), false),
-    ("hardware-policy.json", |b| whole(b, ns::HARDWARE, "policy"), false),
+    (
+        "app-inventory.json",
+        |b| whole(b, ns::INVENTORY, "cache"),
+        false,
+    ),
+    (
+        "monitoring-badges.json",
+        |b| whole(b, ns::BADGES, "enabled"),
+        false,
+    ),
+    (
+        "recording-sessions.json",
+        |b| whole(b, ns::RECORDINGS, "journal"),
+        false,
+    ),
+    (
+        "hardware-policy.json",
+        |b| whole(b, ns::HARDWARE, "policy"),
+        false,
+    ),
     ("class-rules.json", |b| whole(b, ns::RULES, "today"), false),
     ("profile.toml", |b| toml_doc(b, "launch"), true),
     ("device-id.txt", device_id, true),
     ("teacher-ip.txt", teacher_ip, true),
-    ("ui-preferences.toml", |b| toml_doc(b, "ui_preferences"), true),
+    (
+        "ui-preferences.toml",
+        |b| toml_doc(b, "ui_preferences"),
+        true,
+    ),
     ("student-settings.toml", |b| toml_doc(b, "settings"), true),
     ("connection-popup.txt", connection_popup, true),
-    ("monitoring-badge.json", |b| whole(b, ns::PROFILE, "badge"), true),
-    ("activity-monitoring.json", |b| whole(b, ns::PROFILE, "activity_monitoring"), true),
-    ("guard-policy.json", |b| whole(b, ns::PROFILE, "guard_policy"), true),
+    (
+        "monitoring-badge.json",
+        |b| whole(b, ns::PROFILE, "badge"),
+        true,
+    ),
+    (
+        "activity-monitoring.json",
+        |b| whole(b, ns::PROFILE, "activity_monitoring"),
+        true,
+    ),
+    (
+        "guard-policy.json",
+        |b| whole(b, ns::PROFILE, "guard_policy"),
+        true,
+    ),
 ];
 
 fn json_value(bytes: &[u8]) -> std::result::Result<Value, String> {
@@ -70,22 +102,44 @@ fn config(bytes: &[u8]) -> std::result::Result<Vec<(&'static str, String, Value)
     Ok(vec![(ns::CONFIG, "overlay".to_owned(), value)])
 }
 
-fn toml_doc(bytes: &[u8], key: &str) -> std::result::Result<Vec<(&'static str, String, Value)>, String> {
+fn toml_doc(
+    bytes: &[u8],
+    key: &str,
+) -> std::result::Result<Vec<(&'static str, String, Value)>, String> {
     let text = std::str::from_utf8(bytes).map_err(|e| e.to_string())?;
     let table: toml::Value = toml::from_str(text).map_err(|e| e.to_string())?;
-    Ok(vec![(ns::PROFILE, key.to_owned(), serde_json::to_value(table).map_err(|e| e.to_string())?)])
+    Ok(vec![(
+        ns::PROFILE,
+        key.to_owned(),
+        serde_json::to_value(table).map_err(|e| e.to_string())?,
+    )])
 }
 
-fn connection_popup(bytes: &[u8]) -> std::result::Result<Vec<(&'static str, String, Value)>, String> {
-    match std::str::from_utf8(bytes).map_err(|e| e.to_string())?.trim() {
-        "on" => Ok(vec![(ns::PROFILE, "connection_popup".to_owned(), json!(true))]),
-        "off" => Ok(vec![(ns::PROFILE, "connection_popup".to_owned(), json!(false))]),
+fn connection_popup(
+    bytes: &[u8],
+) -> std::result::Result<Vec<(&'static str, String, Value)>, String> {
+    match std::str::from_utf8(bytes)
+        .map_err(|e| e.to_string())?
+        .trim()
+    {
+        "on" => Ok(vec![(
+            ns::PROFILE,
+            "connection_popup".to_owned(),
+            json!(true),
+        )]),
+        "off" => Ok(vec![(
+            ns::PROFILE,
+            "connection_popup".to_owned(),
+            json!(false),
+        )]),
         other => Err(format!("unexpected popup preference '{other}'")),
     }
 }
 
 fn device_id(bytes: &[u8]) -> std::result::Result<Vec<(&'static str, String, Value)>, String> {
-    let id = std::str::from_utf8(bytes).map_err(|e| e.to_string())?.trim();
+    let id = std::str::from_utf8(bytes)
+        .map_err(|e| e.to_string())?
+        .trim();
     if id.is_empty() || id.len() > 64 || !id.chars().all(|c| c.is_ascii_digit() || c == '-') {
         return Err("invalid device identity".into());
     }
@@ -93,8 +147,11 @@ fn device_id(bytes: &[u8]) -> std::result::Result<Vec<(&'static str, String, Val
 }
 
 fn teacher_ip(bytes: &[u8]) -> std::result::Result<Vec<(&'static str, String, Value)>, String> {
-    let text = std::str::from_utf8(bytes).map_err(|e| e.to_string())?.trim();
-    text.parse::<std::net::Ipv4Addr>().map_err(|e| e.to_string())?;
+    let text = std::str::from_utf8(bytes)
+        .map_err(|e| e.to_string())?
+        .trim();
+    text.parse::<std::net::Ipv4Addr>()
+        .map_err(|e| e.to_string())?;
     Ok(vec![(ns::PROFILE, "teacher_ip".to_owned(), json!(text))])
 }
 
@@ -149,7 +206,11 @@ pub(crate) fn import(store: &Store, dir: &Path) -> Result<ImportReport> {
                     .into_iter()
                     .map(|(namespace, key, value)| (namespace.to_owned(), key, Some(value)))
                     .collect();
-                changes.push((ns::META.to_owned(), flag, Some(json!({"at": crate::now_ms()}))));
+                changes.push((
+                    ns::META.to_owned(),
+                    flag,
+                    Some(json!({"at": crate::now_ms()})),
+                ));
                 store.apply_many(&changes)?;
                 report.imported.push((*name).to_owned());
                 if !keep {
@@ -165,7 +226,6 @@ pub(crate) fn import(store: &Store, dir: &Path) -> Result<ImportReport> {
     }
     Ok(report)
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -185,7 +245,11 @@ mod tests {
             r#"{"view":"list","grid_size":380.0,"apps_policy":null,"launch_items":[{"id":"a"}]}"#,
         )
         .unwrap();
-        std::fs::write(dir.join("teacher-settings.toml"), "[network]\ncontrol_port = 47800\n[tools]\nmax_file_mb = 300\n").unwrap();
+        std::fs::write(
+            dir.join("teacher-settings.toml"),
+            "[network]\ncontrol_port = 47800\n[tools]\nmax_file_mb = 300\n",
+        )
+        .unwrap();
         std::fs::write(
             dir.join("known-students.json"),
             r#"{"room":"10.0.0.1:47800","students":[{"id":"s1","name":"PC","ip":"10.0.0.2"}]}"#,
@@ -194,19 +258,42 @@ mod tests {
         std::fs::write(dir.join("monitoring-badges.json"), r#"{"s1":true}"#).unwrap();
         std::fs::write(dir.join("recording-sessions.json"), "[]").unwrap();
         std::fs::write(dir.join("hardware-policy.json"), r#"{"revision":"r"}"#).unwrap();
-        std::fs::write(dir.join("class-rules.json"), r#"{"day":20261012,"activity":true}"#).unwrap();
-        std::fs::write(dir.join("app-inventory.json"), r#"{"saved_ms":1,"apps":[]}"#).unwrap();
+        std::fs::write(
+            dir.join("class-rules.json"),
+            r#"{"day":20261012,"activity":true}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("app-inventory.json"),
+            r#"{"saved_ms":1,"apps":[]}"#,
+        )
+        .unwrap();
         let store = Store::open_in_memory().unwrap();
         let report = store.import_legacy(&dir).unwrap();
         assert_eq!(report.imported.len(), 8);
         assert!(report.invalid.is_empty());
         let prefs = store.list(ns::PREFS).unwrap();
         assert_eq!(prefs["view"], json!("list"));
-        assert!(!prefs.contains_key("apps_policy"), "null preference is absent, not stored");
-        assert_eq!(store.get(ns::CONFIG, "overlay").unwrap().unwrap()["network"]["control_port"], json!(47800));
-        assert_eq!(store.get(ns::ROSTER, "__room").unwrap(), Some(json!("10.0.0.1:47800")));
-        assert_eq!(store.get(ns::ROSTER, "s1").unwrap().unwrap()["name"], json!("PC"));
-        assert_eq!(store.get(ns::BADGES, "enabled").unwrap(), Some(json!({"s1": true})));
+        assert!(
+            !prefs.contains_key("apps_policy"),
+            "null preference is absent, not stored"
+        );
+        assert_eq!(
+            store.get(ns::CONFIG, "overlay").unwrap().unwrap()["network"]["control_port"],
+            json!(47800)
+        );
+        assert_eq!(
+            store.get(ns::ROSTER, "__room").unwrap(),
+            Some(json!("10.0.0.1:47800"))
+        );
+        assert_eq!(
+            store.get(ns::ROSTER, "s1").unwrap().unwrap()["name"],
+            json!("PC")
+        );
+        assert_eq!(
+            store.get(ns::BADGES, "enabled").unwrap(),
+            Some(json!({"s1": true}))
+        );
         assert!(!dir.join("console-settings.json").exists());
         assert!(dir.join("console-settings.json.migrated").exists());
         // An older build recreating a file must not override the database.
@@ -239,30 +326,72 @@ mod profile_tests {
     fn student_files_are_imported_but_left_in_place_for_rollback() {
         let dir = std::env::temp_dir().join(format!("legacy-student-{}", crate::now_ms()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("profile.toml"), "role = \"student\"\nteacher_ip = \"192.168.50.206\"\n").unwrap();
+        std::fs::write(
+            dir.join("profile.toml"),
+            "role = \"student\"\nteacher_ip = \"192.168.50.206\"\n",
+        )
+        .unwrap();
         std::fs::write(dir.join("device-id.txt"), "1790990215628075000-4419\n").unwrap();
         std::fs::write(dir.join("teacher-ip.txt"), "192.168.50.206\n").unwrap();
-        std::fs::write(dir.join("student-settings.toml"), "[network]\nteacher_ip = \"192.168.50.206\"\ncontrol_port = 47800\n").unwrap();
+        std::fs::write(
+            dir.join("student-settings.toml"),
+            "[network]\nteacher_ip = \"192.168.50.206\"\ncontrol_port = 47800\n",
+        )
+        .unwrap();
         std::fs::write(dir.join("connection-popup.txt"), "off").unwrap();
         std::fs::write(dir.join("monitoring-badge.json"), r#"{"enabled":true}"#).unwrap();
-        std::fs::write(dir.join("activity-monitoring.json"), r#"{"on":true,"day":20261012}"#).unwrap();
+        std::fs::write(
+            dir.join("activity-monitoring.json"),
+            r#"{"on":true,"day":20261012}"#,
+        )
+        .unwrap();
         std::fs::write(dir.join("guard-policy.json"), r#"{"day":20261012}"#).unwrap();
         let store = Store::open_in_memory().unwrap();
         let report = store.import_legacy(&dir).unwrap();
         assert_eq!(report.imported.len(), 8, "{report:?}");
-        assert_eq!(store.get(ns::PROFILE, "connection_popup").unwrap(), Some(json!(false)));
-        assert_eq!(store.get(ns::PROFILE, "launch").unwrap().unwrap()["role"], json!("student"));
-        assert_eq!(store.get(ns::PROFILE, "device_id").unwrap(), Some(json!("1790990215628075000-4419")));
-        assert_eq!(store.get(ns::PROFILE, "teacher_ip").unwrap(), Some(json!("192.168.50.206")));
-        assert_eq!(store.get(ns::PROFILE, "settings").unwrap().unwrap()["network"]["control_port"], json!(47800));
-        assert_eq!(store.get(ns::PROFILE, "badge").unwrap(), Some(json!({"enabled": true})));
-        for file in ["profile.toml", "device-id.txt", "teacher-ip.txt", "student-settings.toml", "guard-policy.json"] {
-            assert!(dir.join(file).exists(), "{file} must stay for an older build");
+        assert_eq!(
+            store.get(ns::PROFILE, "connection_popup").unwrap(),
+            Some(json!(false))
+        );
+        assert_eq!(
+            store.get(ns::PROFILE, "launch").unwrap().unwrap()["role"],
+            json!("student")
+        );
+        assert_eq!(
+            store.get(ns::PROFILE, "device_id").unwrap(),
+            Some(json!("1790990215628075000-4419"))
+        );
+        assert_eq!(
+            store.get(ns::PROFILE, "teacher_ip").unwrap(),
+            Some(json!("192.168.50.206"))
+        );
+        assert_eq!(
+            store.get(ns::PROFILE, "settings").unwrap().unwrap()["network"]["control_port"],
+            json!(47800)
+        );
+        assert_eq!(
+            store.get(ns::PROFILE, "badge").unwrap(),
+            Some(json!({"enabled": true}))
+        );
+        for file in [
+            "profile.toml",
+            "device-id.txt",
+            "teacher-ip.txt",
+            "student-settings.toml",
+            "guard-policy.json",
+        ] {
+            assert!(
+                dir.join(file).exists(),
+                "{file} must stay for an older build"
+            );
         }
         // Importing again never re-reads (and never overrides) the database.
         std::fs::write(dir.join("monitoring-badge.json"), r#"{"enabled":false}"#).unwrap();
         assert!(store.import_legacy(&dir).unwrap().imported.is_empty());
-        assert_eq!(store.get(ns::PROFILE, "badge").unwrap(), Some(json!({"enabled": true})));
+        assert_eq!(
+            store.get(ns::PROFILE, "badge").unwrap(),
+            Some(json!({"enabled": true}))
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 

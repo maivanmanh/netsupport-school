@@ -50,8 +50,14 @@ pub fn student_identity(path: &Path, port: u16) -> Result<String> {
     );
     // Two processes starting together must agree on one identity.
     let store = classroom_store::open_shared(path.parent().unwrap_or_else(|| Path::new(".")))?;
-    store.insert_if_absent(classroom_store::ns::PROFILE, "device_id", &serde_json::json!(generated))?;
-    let id: String = doc.read()?.context("device identity missing after creation")?;
+    store.insert_if_absent(
+        classroom_store::ns::PROFILE,
+        "device_id",
+        &serde_json::json!(generated),
+    )?;
+    let id: String = doc
+        .read()?
+        .context("device identity missing after creation")?;
     anyhow::ensure!(
         !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_digit() || c == '-'),
         "invalid saved device identity"
@@ -151,7 +157,8 @@ impl Default for UiPreferences {
 impl UiPreferences {
     pub fn load(profile: &Path) -> Self {
         let read = || -> Option<Self> {
-            let v: serde_json::Value = profile_doc(profile, "ui_preferences").ok()?.read().ok()??;
+            let v: serde_json::Value =
+                profile_doc(profile, "ui_preferences").ok()?.read().ok()??;
             let value = Self {
                 list: v.get("list")?.as_bool()?,
                 width: usize::try_from(v.get("width")?.as_i64()?).ok()?,

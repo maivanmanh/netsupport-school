@@ -145,15 +145,17 @@ impl Student {
                         let expires = v["expires"]
                             .as_u64()
                             .context("Missing recording deadline")?;
-                        let options = serde_json::from_value::<RecordingOptions>(v["options"].clone())
-                            .unwrap_or_default()
-                            .sanitized();
+                        let options =
+                            serde_json::from_value::<RecordingOptions>(v["options"].clone())
+                                .unwrap_or_default()
+                                .sanitized();
                         // The deadline is the Teacher's clock plus the longest recording.
                         // Student clocks drift by seconds (or minutes on an unsynced lab
                         // PC), so the upper bound must not reject a Teacher that is
                         // merely ahead of this Student.
                         anyhow::ensure!(
-                            expires > epoch() && expires <= epoch() + MAX_SECONDS + CLOCK_SKEW_SECONDS,
+                            expires > epoch()
+                                && expires <= epoch() + MAX_SECONDS + CLOCK_SKEW_SECONDS,
                             "Invalid recording deadline"
                         );
                         fs::create_dir(&dir)?;

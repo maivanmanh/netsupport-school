@@ -109,9 +109,10 @@ impl View {
     /// A completed receiver is retained for UI diagnostics/reconnect, but must
     /// not block a new presentation explicitly requested by the teacher.
     pub fn retire_finished(view: &mut Option<Self>) {
-        if view.as_ref().is_some_and(|view| {
-            matches!(view.state()["phase"].as_str(), Some("ended" | "error"))
-        }) {
+        if view
+            .as_ref()
+            .is_some_and(|view| matches!(view.state()["phase"].as_str(), Some("ended" | "error")))
+        {
             view.take();
         }
     }

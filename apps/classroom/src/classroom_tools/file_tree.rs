@@ -296,10 +296,15 @@ pub fn plan(
             .trim()
             .to_owned();
         if meta.is_file() {
-            plan.add_file(root.clone(), base, meta.len(), &Filter {
-                exts: Vec::new(),
-                ..filter.clone()
-            });
+            plan.add_file(
+                root.clone(),
+                base,
+                meta.len(),
+                &Filter {
+                    exts: Vec::new(),
+                    ..filter.clone()
+                },
+            );
         } else if meta.is_dir() {
             let prefix = if keep_root { base } else { String::new() };
             if keep_root && filter.exts.is_empty() {
@@ -826,7 +831,10 @@ mod tests {
         let mut rels: Vec<_> = p.items.iter().map(|i| i.rel.as_str()).collect();
         rels.sort_unstable();
         assert_eq!(rels, ["a.docx", "sub/c.DOCX"]);
-        assert_eq!(p.skipped, 1, "oversized file is reported, not silently lost");
+        assert_eq!(
+            p.skipped, 1,
+            "oversized file is reported, not silently lost"
+        );
         let shallow = Filter {
             recursive: false,
             ..filter
@@ -871,9 +879,11 @@ mod tests {
             fs::read_to_string(dst.join("PC-01/root-1.txt")).unwrap(),
             "changed"
         );
-        assert!(!fs::read_dir(dst.join("PC-01"))
+        assert!(!fs::read_dir(dst.join("PC-01")).unwrap().any(|e| e
             .unwrap()
-            .any(|e| e.unwrap().file_name().to_string_lossy().ends_with(".part")));
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".part")));
         fs::remove_dir_all(src).unwrap();
         fs::remove_dir_all(dst).unwrap();
     }

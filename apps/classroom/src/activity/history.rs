@@ -128,7 +128,10 @@ fn update(map: &mut HashMap<String, Track>, seen: &[Seen], now: i64) {
 /// Collapsed-whitespace, lowercased form used only to compare two copies —
 /// never stored or shown.
 fn normalize_for_compare(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 /// Character bigrams of `text`, capped so a very long copy cannot make
 /// every later comparison expensive; single-character strings have none.
@@ -151,7 +154,11 @@ pub(crate) fn similar(a: &str, b: &str) -> bool {
     }
     // Dice's coefficient is at most 2*min(|A|,|B|)/(|A|+|B|); below this
     // length ratio it cannot reach 0.9, so skip the set work entirely.
-    let (shorter, longer) = if a.len() <= b.len() { (a.len(), b.len()) } else { (b.len(), a.len()) };
+    let (shorter, longer) = if a.len() <= b.len() {
+        (a.len(), b.len())
+    } else {
+        (b.len(), a.len())
+    };
     if (shorter as f64) < (longer as f64) * 0.8 {
         return false;
     }
@@ -177,12 +184,24 @@ fn app_entries(map: &HashMap<String, Track>, now: i64) -> Vec<AppEntry> {
             open: t.open,
             opened_ms: t.opened_ms,
             closed_ms: t.closed_ms,
-            total_open_ms: t.total_open_ms + if t.open { (now - t.opened_ms).max(0) } else { 0 },
+            total_open_ms: t.total_open_ms
+                + if t.open {
+                    (now - t.opened_ms).max(0)
+                } else {
+                    0
+                },
             reopened: t.reopened,
             icon_png_base64: t.favicon_png_base64.clone(),
         })
         .collect();
-    entries.sort_by(|a, b| order(a.open, a.closed_ms.max(a.opened_ms), b.open, b.closed_ms.max(b.opened_ms)));
+    entries.sort_by(|a, b| {
+        order(
+            a.open,
+            a.closed_ms.max(a.opened_ms),
+            b.open,
+            b.closed_ms.max(b.opened_ms),
+        )
+    });
     entries
 }
 fn tab_entries(map: &HashMap<String, Track>, now: i64) -> Vec<TabEntry> {
@@ -195,12 +214,24 @@ fn tab_entries(map: &HashMap<String, Track>, now: i64) -> Vec<TabEntry> {
             open: t.open,
             opened_ms: t.opened_ms,
             closed_ms: t.closed_ms,
-            total_open_ms: t.total_open_ms + if t.open { (now - t.opened_ms).max(0) } else { 0 },
+            total_open_ms: t.total_open_ms
+                + if t.open {
+                    (now - t.opened_ms).max(0)
+                } else {
+                    0
+                },
             reopened: t.reopened,
             active: false,
         })
         .collect();
-    entries.sort_by(|a, b| order(a.open, a.closed_ms.max(a.opened_ms), b.open, b.closed_ms.max(b.opened_ms)));
+    entries.sort_by(|a, b| {
+        order(
+            a.open,
+            a.closed_ms.max(a.opened_ms),
+            b.open,
+            b.closed_ms.max(b.opened_ms),
+        )
+    });
     entries
 }
 
@@ -325,7 +356,11 @@ mod tests {
         assert_eq!(retry_delay_ms(0), 8_000);
         assert_eq!(retry_delay_ms(1), 16_000);
         assert_eq!(retry_delay_ms(3), 64_000);
-        assert_eq!(retry_delay_ms(30), RETRY_MAX_MS, "never longer than two minutes");
+        assert_eq!(
+            retry_delay_ms(30),
+            RETRY_MAX_MS,
+            "never longer than two minutes"
+        );
         let history = History::default();
         history.remember("t", None);
         history.remember("t", None);
@@ -358,7 +393,13 @@ mod clipboard_tests {
     use crate::activity::ClipboardEntry;
 
     fn entry(text: &str, unix_ms: i64) -> ClipboardEntry {
-        ClipboardEntry { text: text.into(), truncated: false, app: "notepad.exe".into(), unix_ms, duplicates: 0 }
+        ClipboardEntry {
+            text: text.into(),
+            truncated: false,
+            app: "notepad.exe".into(),
+            unix_ms,
+            duplicates: 0,
+        }
     }
 
     #[test]
@@ -397,8 +438,14 @@ mod clipboard_tests {
             "function add(a, b) { return a + b; }",
             "function add(a, b) { return a + b }",
         ));
-        assert!(!similar("https://example.com/a", "https://example.com/b/totally/different/path"));
-        assert!(!similar("short", "a completely unrelated and much longer piece of text"));
+        assert!(!similar(
+            "https://example.com/a",
+            "https://example.com/b/totally/different/path"
+        ));
+        assert!(!similar(
+            "short",
+            "a completely unrelated and much longer piece of text"
+        ));
         assert!(!similar("", ""));
         assert!(!similar("a", ""));
     }

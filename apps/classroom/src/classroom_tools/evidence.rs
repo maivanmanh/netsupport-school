@@ -109,9 +109,12 @@ impl Watcher {
             title: tab.map_or("", |t| t.title.as_str()),
             idle_ms: idle_ms(),
         };
-        let plan = self
-            .planner
-            .observe(&self.matcher, &seen, &self.settings, crate::local_day::today())?;
+        let plan = self.planner.observe(
+            &self.matcher,
+            &seen,
+            &self.settings,
+            crate::local_day::today(),
+        )?;
         if let Ok(bytes) = serde_json::to_vec(&self.planner.counts()) {
             let _ = fs::write(&self.counts_path, bytes);
         }
@@ -134,7 +137,9 @@ impl Watcher {
         thread::spawn(move || {
             let outcome = take_and_send(&plan, teacher, &identity, &state_dir, &cancel);
             match outcome {
-                Ok(()) => tracing::info!(site = %plan.label, reason = plan.reason, "AI evidence sent"),
+                Ok(()) => {
+                    tracing::info!(site = %plan.label, reason = plan.reason, "AI evidence sent")
+                }
                 Err(error) => tracing::warn!(%error, site = %plan.label, "AI evidence not sent"),
             }
             busy.store(false, Ordering::Release);
@@ -194,7 +199,10 @@ pub(super) fn png_to_jpeg(png_path: &Path, jpeg_path: &Path) -> Result<()> {
     let mut buffer = vec![0; reader.output_buffer_size()];
     let info = reader.next_frame(&mut buffer)?;
     let (width, height) = (info.width, info.height);
-    anyhow::ensure!(width > 0 && height > 0 && width <= 4096 && height <= 4096, "Invalid screenshot size");
+    anyhow::ensure!(
+        width > 0 && height > 0 && width <= 4096 && height <= 4096,
+        "Invalid screenshot size"
+    );
     let channels = match info.color_type {
         png::ColorType::Rgba => 4,
         png::ColorType::Rgb => 3,
@@ -350,7 +358,13 @@ impl Store {
 
     /// May this picture be accepted? `Err` carries the reason shown to nobody
     /// but the log: the Student simply drops it.
-    pub fn admit(&self, student: &str, label: &str, size: u64, per_site: u32) -> Result<(), &'static str> {
+    pub fn admit(
+        &self,
+        student: &str,
+        label: &str,
+        size: u64,
+        per_site: u32,
+    ) -> Result<(), &'static str> {
         if !self.enabled() {
             return Err("evidence is switched off");
         }
@@ -462,10 +476,16 @@ fn receive(s: &mut TcpStream, p: &ToolPacket, hub: &Hub) -> Result<()> {
         let mut state = hub.0.lock().unwrap();
         state.evidence.roll_day(crate::local_day::today());
         let listed = state.ai_matcher.matching(&address).as_deref() == Some(label.as_str());
-        let admit = state
-            .evidence
-            .admit(&p.student, &label, p.size, state.tuning.activity.evidence_per_site);
-        (listed.then_some(admit), state.tuning.activity.evidence_per_site)
+        let admit = state.evidence.admit(
+            &p.student,
+            &label,
+            p.size,
+            state.tuning.activity.evidence_per_site,
+        );
+        (
+            listed.then_some(admit),
+            state.tuning.activity.evidence_per_site,
+        )
     };
     let _ = per_site;
     match allowed {
@@ -501,7 +521,10 @@ fn receive(s: &mut TcpStream, p: &ToolPacket, hub: &Hub) -> Result<()> {
             left -= n as u64;
         }
         file.sync_all()?;
-        anyhow::ensure!(format!("{:x}", hash.finalize()) == p.hash, "Evidence checksum mismatch");
+        anyhow::ensure!(
+            format!("{:x}", hash.finalize()) == p.hash,
+            "Evidence checksum mismatch"
+        );
         anyhow::ensure!(first == [0xFF, 0xD8], "Evidence is not a JPEG picture");
         fs::rename(&temporary, &full)?;
         Ok(())
@@ -515,8 +538,18 @@ fn receive(s: &mut TcpStream, p: &ToolPacket, hub: &Hub) -> Result<()> {
         student: p.student.clone(),
         label,
         address,
-        title: meta["title"].as_str().unwrap_or("").chars().take(120).collect(),
-        reason: meta["reason"].as_str().unwrap_or("").chars().take(24).collect(),
+        title: meta["title"]
+            .as_str()
+            .unwrap_or("")
+            .chars()
+            .take(120)
+            .collect(),
+        reason: meta["reason"]
+            .as_str()
+            .unwrap_or("")
+            .chars()
+            .take(24)
+            .collect(),
         taken_ms: crate::activity::now_ms(),
         file: relative,
         bytes: p.size,
@@ -570,7 +603,11 @@ mod tests {
         .unwrap();
         let store = Store::open(&root, 20261016);
         assert!(!root.join("20261015").exists(), "older days are removed");
-        assert_eq!(store.items().len(), 1, "an entry without its file is dropped");
+        assert_eq!(
+            store.items().len(),
+            1,
+            "an entry without its file is dropped"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -586,7 +623,10 @@ mod tests {
         assert!(!store.roll_day(20261016), "same day: nothing happens");
         assert!(store.roll_day(20261017));
         assert!(store.items().is_empty());
-        assert!(!root.join("20261016").exists(), "yesterday's pictures are gone");
+        assert!(
+            !root.join("20261016").exists(),
+            "yesterday's pictures are gone"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -599,11 +639,22 @@ mod tests {
             store.add(item(&n.to_string(), "s", "chatgpt.com", "x.jpg"));
         }
         assert!(store.admit("s", "chatgpt.com", 100, 3).is_err());
-        assert_eq!(store.admit("s", "claude.ai", 100, 3), Ok(()), "another site");
-        assert_eq!(store.admit("other", "chatgpt.com", 100, 3), Ok(()), "another Student");
+        assert_eq!(
+            store.admit("s", "claude.ai", 100, 3),
+            Ok(()),
+            "another site"
+        );
+        assert_eq!(
+            store.admit("other", "chatgpt.com", 100, 3),
+            Ok(()),
+            "another Student"
+        );
         assert!(store.admit("s", "claude.ai", 0, 3).is_err());
         assert!(store.admit("s", "claude.ai", MAX_BYTES + 1, 3).is_err());
-        assert!(Store::default().admit("s", "a", 10, 3).is_err(), "off until a folder is set");
+        assert!(
+            Store::default().admit("s", "a", 10, 3).is_err(),
+            "off until a folder is set"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -628,8 +679,14 @@ mod tests {
         let mut encoder = png::Encoder::new(fs::File::create(&png_path).unwrap(), 64, 48);
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
-        let pixels: Vec<u8> = (0..64 * 48).flat_map(|i| [(i % 251) as u8, 90, 200, 255]).collect();
-        encoder.write_header().unwrap().write_image_data(&pixels).unwrap();
+        let pixels: Vec<u8> = (0..64 * 48)
+            .flat_map(|i| [(i % 251) as u8, 90, 200, 255])
+            .collect();
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&pixels)
+            .unwrap();
         png_to_jpeg(&png_path, &jpeg_path).unwrap();
         jpeg_path
     }
@@ -692,7 +749,10 @@ mod tests {
         // Not on the Teacher's list.
         let (addr, server) = teacher(Arc::clone(&hub));
         let refused = upload(&plan("tinteo.vn"), addr, "pc01", &jpeg);
-        assert!(refused.unwrap_err().to_string().contains("not a listed AI site"));
+        assert!(refused
+            .unwrap_err()
+            .to_string()
+            .contains("not a listed AI site"));
         server.join().unwrap().unwrap();
         // Over the allowance: three are kept, the fourth is turned away.
         for n in 0..4 {
@@ -701,7 +761,10 @@ mod tests {
             server.join().unwrap().unwrap();
             assert_eq!(result.is_ok(), n < 3, "picture {n}");
         }
-        assert_eq!(hub.evidence_snapshot()["items"].as_array().unwrap().len(), 3);
+        assert_eq!(
+            hub.evidence_snapshot()["items"].as_array().unwrap().len(),
+            3
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -724,9 +787,15 @@ mod tests {
         send(&mut s, &p).unwrap();
         assert_eq!(read(&mut s).unwrap().action, "ready");
         s.write_all(body).unwrap();
-        assert!(read(&mut s).is_err(), "no confirmation for something that is not a JPEG");
+        assert!(
+            read(&mut s).is_err(),
+            "no confirmation for something that is not a JPEG"
+        );
         assert!(server.join().unwrap().is_err());
-        assert!(hub.evidence_snapshot()["items"].as_array().unwrap().is_empty());
+        assert!(hub.evidence_snapshot()["items"]
+            .as_array()
+            .unwrap()
+            .is_empty());
         fs::remove_dir_all(root).unwrap();
     }
 }

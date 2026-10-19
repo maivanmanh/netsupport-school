@@ -86,7 +86,9 @@ mod imp {
         match args.first().map(String::as_str) {
             Some("--install") => install(&args[1..]),
             Some("--uninstall") => uninstall(),
-            Some(other) => anyhow::bail!("Unknown argument '{other}'; use --install or --uninstall"),
+            Some(other) => {
+                anyhow::bail!("Unknown argument '{other}'; use --install or --uninstall")
+            }
             None => run_as_service(),
         }
     }
@@ -124,7 +126,9 @@ mod imp {
                 stderr = %String::from_utf8_lossy(&o.stderr).trim(),
                 "Classroom Guard service install did not report success"
             ),
-            Err(error) => tracing::warn!(%error, "Could not run ClassroomGuardService.exe --install"),
+            Err(error) => {
+                tracing::warn!(%error, "Could not run ClassroomGuardService.exe --install")
+            }
         }
     }
 
@@ -174,11 +178,16 @@ mod imp {
         }
         lock_down_folder(&dir);
 
-        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE)
-            .context("Could not open the Service Control Manager (run this as administrator)")?;
+        let manager = ServiceManager::local_computer(
+            None::<&str>,
+            ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE,
+        )
+        .context("Could not open the Service Control Manager (run this as administrator)")?;
         // A previous install's service must be removed first: create_service
         // fails outright if the name already exists.
-        if let Ok(existing) = manager.open_service(SERVICE_NAME, ServiceAccess::STOP | ServiceAccess::DELETE) {
+        if let Ok(existing) =
+            manager.open_service(SERVICE_NAME, ServiceAccess::STOP | ServiceAccess::DELETE)
+        {
             let _ = existing.stop();
             std::thread::sleep(Duration::from_secs(1));
             let _ = existing.delete();
@@ -198,10 +207,12 @@ mod imp {
         let service = manager
             .create_service(&info, ServiceAccess::CHANGE_CONFIG | ServiceAccess::START)
             .context("Could not register the Classroom Guard service")?;
-        let _ = service.set_description("Keeps the Classroom Student running for the active class session.");
+        let _ = service
+            .set_description("Keeps the Classroom Student running for the active class session.");
         drop(service);
 
-        harden_service_acl().context("Could not lock the service down against non-administrators")?;
+        harden_service_acl()
+            .context("Could not lock the service down against non-administrators")?;
         configure_service_recovery().context("Could not configure service auto-restart")?;
         if let Err(error) = register_launch_task(&student_exe) {
             // Not fatal: the running service retries this on every poll.
@@ -220,11 +231,17 @@ mod imp {
 
     fn uninstall() -> Result<()> {
         let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
-            .context("Could not open the Service Control Manager (run this as administrator)")?;
-        if let Ok(service) = manager.open_service(SERVICE_NAME, ServiceAccess::STOP | ServiceAccess::DELETE) {
+            .context(
+            "Could not open the Service Control Manager (run this as administrator)",
+        )?;
+        if let Ok(service) =
+            manager.open_service(SERVICE_NAME, ServiceAccess::STOP | ServiceAccess::DELETE)
+        {
             let _ = service.stop();
             std::thread::sleep(Duration::from_secs(1));
-            service.delete().context("Could not remove the Classroom Guard service")?;
+            service
+                .delete()
+                .context("Could not remove the Classroom Guard service")?;
         }
         let _ = Command::new("schtasks.exe")
             .args(["/Delete", "/TN", TASK_NAME, "/F"])
@@ -256,7 +273,9 @@ mod imp {
                     let _ = stop_tx.send(());
                     ServiceControlHandlerResult::NoError
                 }
-                windows_service::service::ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
+                windows_service::service::ServiceControl::Interrogate => {
+                    ServiceControlHandlerResult::NoError
+                }
                 _ => ServiceControlHandlerResult::NotImplemented,
             }
         };
@@ -278,7 +297,10 @@ mod imp {
             windows_service::service::ServiceControlAccept::empty(),
         );
         let student_exe = exe_dir()?.join("ClassroomStudent.exe");
-        set_status(ServiceState::Running, windows_service::service::ServiceControlAccept::STOP);
+        set_status(
+            ServiceState::Running,
+            windows_service::service::ServiceControlAccept::STOP,
+        );
         tracing::info!("Classroom Guard service running");
         let hardware_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let hardware_cancel = std::sync::Arc::clone(&hardware_stop);
@@ -311,11 +333,19 @@ mod imp {
 
     fn student_running() -> bool {
         Command::new("tasklist.exe")
-            .args(["/FI", "IMAGENAME eq ClassroomStudent.exe", "/FO", "CSV", "/NH"])
+            .args([
+                "/FI",
+                "IMAGENAME eq ClassroomStudent.exe",
+                "/FO",
+                "CSV",
+                "/NH",
+            ])
             .creation_flags(NO_WINDOW)
             .output()
             .is_ok_and(|o| {
-                String::from_utf8_lossy(&o.stdout).to_ascii_lowercase().contains("classroomstudent.exe")
+                String::from_utf8_lossy(&o.stdout)
+                    .to_ascii_lowercase()
+                    .contains("classroomstudent.exe")
             })
     }
 
@@ -345,7 +375,9 @@ mod imp {
 
     fn register_launch_task(student_exe: &Path) -> Result<()> {
         let user = active_console_user()?;
-        let dir = student_exe.parent().context("Student executable has no parent folder")?;
+        let dir = student_exe
+            .parent()
+            .context("Student executable has no parent folder")?;
         let saved = saved_launch_args();
         let argument_line = if saved.is_empty() {
             String::new()

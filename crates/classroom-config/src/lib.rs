@@ -588,8 +588,14 @@ impl Config {
         let v = &mut out.video;
         limit_picture(v, profile);
         v.target_bitrate_kbps = v.target_bitrate_kbps.min(profile.target_kbps);
-        v.max_bitrate_kbps = v.max_bitrate_kbps.min(profile.max_kbps).max(v.target_bitrate_kbps);
-        v.min_bitrate_kbps = v.min_bitrate_kbps.min(profile.min_kbps).min(v.target_bitrate_kbps);
+        v.max_bitrate_kbps = v
+            .max_bitrate_kbps
+            .min(profile.max_kbps)
+            .max(v.target_bitrate_kbps);
+        v.min_bitrate_kbps = v
+            .min_bitrate_kbps
+            .min(profile.min_kbps)
+            .min(v.target_bitrate_kbps);
         v.refine_bitrate_percent = v.refine_bitrate_percent.min(profile.refine_percent);
         // One-to-one sessions use the class profile: a weak Student is the one
         // that would otherwise have to encode the 60 fps hardware profile.
@@ -619,8 +625,8 @@ impl Config {
             return self.clone();
         }
         let mut out = self.clone();
-        let each = (u64::from(cap) * 1000 * 75 / 100 / (recipients.max(1) as u64))
-            .max(CAP_FLOOR_KBPS);
+        let each =
+            (u64::from(cap) * 1000 * 75 / 100 / (recipients.max(1) as u64)).max(CAP_FLOOR_KBPS);
         let each = u32::try_from(each).unwrap_or(u32::MAX);
         let v = &mut out.video;
         match each {
@@ -692,7 +698,9 @@ impl Config {
             ));
         }
         if r.folder.len() > 400 || r.folder.contains('\0') {
-            return Err(ConfigError::Validation("recording.folder is invalid".into()));
+            return Err(ConfigError::Validation(
+                "recording.folder is invalid".into(),
+            ));
         }
         let class = &self.class;
         if class.power_grace_seconds > 300 {
@@ -921,7 +929,11 @@ mod tests {
         assert_eq!((c.activity.scan_seconds, c.activity.live_apps), (6, 3));
         assert!(c.activity.evidence);
         assert_eq!(
-            (c.activity.evidence_per_site, c.activity.evidence_first_seconds, c.activity.evidence_gap_seconds),
+            (
+                c.activity.evidence_per_site,
+                c.activity.evidence_first_seconds,
+                c.activity.evidence_gap_seconds
+            ),
             (3, 60, 180)
         );
         assert_eq!(c.transfer.rate_kib_s, 1000);
@@ -1078,7 +1090,12 @@ mod tests {
 
     #[test]
     fn a_mode_only_lowers_values_and_stays_valid() {
-        for chosen in [(1920, 1080, 30, 6000), (1600, 900, 24, 4000), (1280, 720, 15, 1500), (640, 360, 10, 800)] {
+        for chosen in [
+            (1920, 1080, 30, 6000),
+            (1600, 900, 24, 4000),
+            (1280, 720, 15, 1500),
+            (640, 360, 10, 800),
+        ] {
             let mut original = base();
             original.video.width = chosen.0;
             original.video.height = chosen.1;
@@ -1091,11 +1108,21 @@ mod tests {
             for mode in ["economy", "minimal"] {
                 original.performance.mode = mode.into();
                 let e = original.with_profile(false);
-                e.validate().unwrap_or_else(|error| panic!("{mode} {chosen:?}: {error}"));
-                assert!(e.video.width <= original.video.width && e.video.height <= original.video.height);
+                e.validate()
+                    .unwrap_or_else(|error| panic!("{mode} {chosen:?}: {error}"));
+                assert!(
+                    e.video.width <= original.video.width
+                        && e.video.height <= original.video.height
+                );
                 assert!(e.video.max_fps <= original.video.max_fps);
                 assert!(e.video.target_bitrate_kbps <= original.video.target_bitrate_kbps);
-                assert!(e.video.max_bitrate_kbps <= original.video.max_bitrate_kbps.max(e.video.target_bitrate_kbps));
+                assert!(
+                    e.video.max_bitrate_kbps
+                        <= original
+                            .video
+                            .max_bitrate_kbps
+                            .max(e.video.target_bitrate_kbps)
+                );
                 assert!(e.video.adaptive_idle_fps <= e.video.max_fps);
                 assert!(e.observe.max_fps <= original.observe.max_fps && !e.observe.enhanced);
                 assert!(e.monitoring.interval_ms >= original.monitoring.interval_ms);
@@ -1116,7 +1143,10 @@ mod tests {
         assert_eq!(economy.monitoring.quality_floor, 60);
         assert!(!economy.monitoring.hidpi);
         // The wire budget is not shrunk by a mode: a class of 40 at 3 Mbps needs 120 Mbps.
-        assert_eq!(economy.network.send_pacing_mbps, base().network.send_pacing_mbps);
+        assert_eq!(
+            economy.network.send_pacing_mbps,
+            base().network.send_pacing_mbps
+        );
         let minimal = with_mode("minimal").with_profile(false);
         assert_eq!((minimal.video.width, minimal.video.height), (960, 540));
         assert_eq!(minimal.video.max_fps, 12);
@@ -1154,7 +1184,10 @@ mod tests {
         // picture shrinks to 640x360 at 10 fps with it.
         let each = c.for_stream(40);
         assert_eq!(each.video.target_bitrate_kbps, 562);
-        assert_eq!((each.video.width, each.video.height, each.video.max_fps), (640, 360, 10));
+        assert_eq!(
+            (each.video.width, each.video.height, each.video.max_fps),
+            (640, 360, 10)
+        );
         assert!(each.video.max_bitrate_kbps >= each.video.target_bitrate_kbps);
         assert!(each.video.min_bitrate_kbps <= each.video.target_bitrate_kbps);
         // Budget: 2.4 x the cap, so the video (75 % of the cap) leaves room for keyframes.
@@ -1165,10 +1198,19 @@ mod tests {
         assert_eq!(few.video.target_bitrate_kbps, 6000);
         assert_eq!((few.video.width, few.video.max_fps), (1920, 30));
         // The picture steps down with the share each Student gets.
-        for (mbps, students, size) in [(64, 8, (1920, 1080)), (32, 8, (1280, 720)), (16, 8, (960, 540)), (6, 8, (640, 360))] {
+        for (mbps, students, size) in [
+            (64, 8, (1920, 1080)),
+            (32, 8, (1280, 720)),
+            (16, 8, (960, 540)),
+            (6, 8, (640, 360)),
+        ] {
             c.performance.bandwidth_cap_mbps = mbps;
             let step = c.for_stream(students);
-            assert_eq!((step.video.width, step.video.height), size, "{mbps} Mbps / {students}");
+            assert_eq!(
+                (step.video.width, step.video.height),
+                size,
+                "{mbps} Mbps / {students}"
+            );
             step.validate().unwrap();
         }
         c.performance.bandwidth_cap_mbps = 30;
@@ -1187,13 +1229,19 @@ mod tests {
     #[test]
     fn performance_settings_are_validated_and_survive_the_saved_overlay() {
         let mut c = base();
-        c.apply_saved("[performance]\nmode = \"economy\"\nauto_wifi = true\nbandwidth_cap_mbps = 50\n").unwrap();
+        c.apply_saved(
+            "[performance]\nmode = \"economy\"\nauto_wifi = true\nbandwidth_cap_mbps = 50\n",
+        )
+        .unwrap();
         assert_eq!(c.performance.mode, "economy");
         assert!(c.performance.auto_wifi);
         assert_eq!(c.performance.bandwidth_cap_mbps, 50);
         // The video values the Teacher chose are untouched by the mode.
         assert_eq!(c.video.width, 1920);
-        for bad in ["[performance]\nmode = \"turbo\"\n", "[performance]\nbandwidth_cap_mbps = 1\n"] {
+        for bad in [
+            "[performance]\nmode = \"turbo\"\n",
+            "[performance]\nbandwidth_cap_mbps = 1\n",
+        ] {
             let mut other = base();
             assert!(other.apply_saved(bad).is_err(), "{bad}");
         }

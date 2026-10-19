@@ -315,8 +315,14 @@ impl StudentDesktop {
             self.host.update();
         }
         if let Some(tray) = self.tray.as_mut() {
-            let terminals = self.connection_preference.as_ref().map_or(0, |i| i.terminal_active.load(std::sync::atomic::Ordering::Acquire));
-            let status = if terminals > 0 { format!("{status} · Administrator remote terminal active ({terminals})") } else { status.to_owned() };
+            let terminals = self.connection_preference.as_ref().map_or(0, |i| {
+                i.terminal_active.load(std::sync::atomic::Ordering::Acquire)
+            });
+            let status = if terminals > 0 {
+                format!("{status} · Administrator remote terminal active ({terminals})")
+            } else {
+                status.to_owned()
+            };
             tray.update(&status, !presenting);
             if let Some(command) = tray.poll() {
                 tracing::info!(?command, presenting, "Student tray command");

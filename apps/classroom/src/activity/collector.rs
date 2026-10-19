@@ -54,7 +54,10 @@ impl Collector {
                 }
             }
         });
-        Self { stop, worker: Some(worker) }
+        Self {
+            stop,
+            worker: Some(worker),
+        }
     }
 }
 impl Drop for Collector {

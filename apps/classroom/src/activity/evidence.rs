@@ -192,7 +192,9 @@ impl Planner {
 }
 
 fn path_of(address: &str) -> String {
-    address.split_once('/').map_or(String::new(), |(_, p)| p.to_owned())
+    address
+        .split_once('/')
+        .map_or(String::new(), |(_, p)| p.to_owned())
 }
 
 #[cfg(test)]
@@ -207,7 +209,11 @@ mod tests {
         ])
     }
     fn settings() -> Settings {
-        Settings { per_site: 3, first_seconds: 60, gap_seconds: 180 }
+        Settings {
+            per_site: 3,
+            first_seconds: 60,
+            gap_seconds: 180,
+        }
     }
     /// Feeds one observation per `step` seconds for `seconds`, returning the
     /// second at which each plan was produced.
@@ -225,7 +231,12 @@ mod tests {
         let mut t = 0;
         while t <= seconds {
             let title = title(t);
-            let seen = Seen { now_ms: (from + t) * 1000, address, title: &title, idle_ms: idle };
+            let seen = Seen {
+                now_ms: (from + t) * 1000,
+                address,
+                title: &title,
+                idle_ms: idle,
+            };
             if let Some(plan) = planner.observe(&m, &seen, &settings(), 20261016) {
                 out.push((from + t, plan));
             }
@@ -241,10 +252,26 @@ mod tests {
     fn a_page_that_just_loaded_is_not_photographed() {
         let mut p = Planner::new(20261016);
         // 50 s on an unchanged page, typing the whole time: still too early.
-        let plans = run(&mut p, 0, 50, 5, Some("chatgpt.com"), fixed("ChatGPT"), Some(1000));
+        let plans = run(
+            &mut p,
+            0,
+            50,
+            5,
+            Some("chatgpt.com"),
+            fixed("ChatGPT"),
+            Some(1000),
+        );
         assert!(plans.is_empty());
         // ...a little later it is taken, once the Student has really been using it.
-        let plans = run(&mut p, 55, 20, 5, Some("chatgpt.com"), fixed("ChatGPT"), Some(1000));
+        let plans = run(
+            &mut p,
+            55,
+            20,
+            5,
+            Some("chatgpt.com"),
+            fixed("ChatGPT"),
+            Some(1000),
+        );
         assert_eq!(plans.len(), 1);
         assert_eq!(plans[0].1.reason, "in_use");
         assert!((60..=65).contains(&plans[0].0), "taken at {}", plans[0].0);
@@ -262,7 +289,12 @@ mod tests {
             } else {
                 ("chatgpt.com/c/abc", "Giải bài tập hình học")
             };
-            let seen = Seen { now_ms: t * 1000, address: Some(addr), title, idle_ms: Some(2000) };
+            let seen = Seen {
+                now_ms: t * 1000,
+                address: Some(addr),
+                title,
+                idle_ms: Some(2000),
+            };
             if let Some(plan) = p.observe(&m, &seen, &settings(), 20261016) {
                 plans.push((t, plan));
             }
@@ -270,30 +302,75 @@ mod tests {
         assert_eq!(plans.len(), 1);
         assert_eq!(plans[0].1.reason, "conversation");
         assert_eq!(plans[0].1.label, "chatgpt.com");
-        assert!(plans[0].0 >= 30 && plans[0].0 <= 36, "taken at {}", plans[0].0);
+        assert!(
+            plans[0].0 >= 30 && plans[0].0 <= 36,
+            "taken at {}",
+            plans[0].0
+        );
         assert_eq!(plans[0].1.title, "Giải bài tập hình học");
     }
 
     #[test]
     fn time_away_from_the_page_does_not_count() {
         let mut p = Planner::new(20261016);
-        assert!(run(&mut p, 0, 40, 5, Some("chatgpt.com"), fixed("ChatGPT"), Some(500)).is_empty());
+        assert!(run(
+            &mut p,
+            0,
+            40,
+            5,
+            Some("chatgpt.com"),
+            fixed("ChatGPT"),
+            Some(500)
+        )
+        .is_empty());
         // Five minutes in another window (front window is not a browser).
         assert!(run(&mut p, 45, 300, 5, None, fixed("Code"), Some(500)).is_empty());
         // Back on the page: only ~40 s of use so far, so nothing yet...
-        let early = run(&mut p, 350, 10, 5, Some("chatgpt.com"), fixed("ChatGPT"), Some(500));
+        let early = run(
+            &mut p,
+            350,
+            10,
+            5,
+            Some("chatgpt.com"),
+            fixed("ChatGPT"),
+            Some(500),
+        );
         assert!(early.is_empty());
         // ...and it is taken once ~60 s of use have really accumulated.
-        let later = run(&mut p, 365, 40, 5, Some("chatgpt.com"), fixed("ChatGPT"), Some(500));
+        let later = run(
+            &mut p,
+            365,
+            40,
+            5,
+            Some("chatgpt.com"),
+            fixed("ChatGPT"),
+            Some(500),
+        );
         assert_eq!(later.len(), 1);
     }
 
     #[test]
     fn nothing_is_taken_while_the_student_is_not_touching_the_computer() {
         let mut p = Planner::new(20261016);
-        let idle = run(&mut p, 0, 200, 5, Some("chatgpt.com"), fixed("ChatGPT"), Some(120_000));
+        let idle = run(
+            &mut p,
+            0,
+            200,
+            5,
+            Some("chatgpt.com"),
+            fixed("ChatGPT"),
+            Some(120_000),
+        );
         assert!(idle.is_empty(), "walked away from the keyboard");
-        let back = run(&mut p, 205, 10, 5, Some("chatgpt.com"), fixed("ChatGPT"), Some(1_000));
+        let back = run(
+            &mut p,
+            205,
+            10,
+            5,
+            Some("chatgpt.com"),
+            fixed("ChatGPT"),
+            Some(1_000),
+        );
         assert_eq!(back.len(), 1, "the moment they type again");
     }
 
@@ -309,64 +386,162 @@ mod tests {
                 title += 1;
             }
             let name = format!("Cuộc trò chuyện {title}");
-            let seen = Seen { now_ms: t * 1000, address: Some("chatgpt.com/c/x"), title: &name, idle_ms: Some(1000) };
+            let seen = Seen {
+                now_ms: t * 1000,
+                address: Some("chatgpt.com/c/x"),
+                title: &name,
+                idle_ms: Some(1000),
+            };
             if p.observe(&m, &seen, &settings(), 20261016).is_some() {
                 all.push(t);
             }
         }
         assert_eq!(all.len(), 3, "never more than three: {all:?}");
-        assert!(all[1] - all[0] >= 180 && all[2] - all[1] >= 180, "spaced out: {all:?}");
+        assert!(
+            all[1] - all[0] >= 180 && all[2] - all[1] >= 180,
+            "spaced out: {all:?}"
+        );
     }
 
     #[test]
     fn each_site_has_its_own_allowance_and_other_sites_are_ignored() {
         let mut p = Planner::new(20261016);
-        let a = run(&mut p, 0, 70, 5, Some("chatgpt.com"), fixed("ChatGPT"), Some(100));
-        let b = run(&mut p, 75, 70, 5, Some("claude.ai"), fixed("Claude"), Some(100));
+        let a = run(
+            &mut p,
+            0,
+            70,
+            5,
+            Some("chatgpt.com"),
+            fixed("ChatGPT"),
+            Some(100),
+        );
+        let b = run(
+            &mut p,
+            75,
+            70,
+            5,
+            Some("claude.ai"),
+            fixed("Claude"),
+            Some(100),
+        );
         assert_eq!((a.len(), b.len()), (1, 1));
         assert_eq!(b[0].1.label, "claude.ai");
-        let other = run(&mut p, 150, 600, 5, Some("tinteo.vn"), fixed("Tin tức"), Some(100));
+        let other = run(
+            &mut p,
+            150,
+            600,
+            5,
+            Some("tinteo.vn"),
+            fixed("Tin tức"),
+            Some(100),
+        );
         assert!(other.is_empty());
         // A site listed with a path is only watched under that path.
-        let github = run(&mut p, 800, 200, 5, Some("github.com/rust-lang/rust"), fixed("rust"), Some(100));
+        let github = run(
+            &mut p,
+            800,
+            200,
+            5,
+            Some("github.com/rust-lang/rust"),
+            fixed("rust"),
+            Some(100),
+        );
         assert!(github.is_empty());
-        let copilot = run(&mut p, 1100, 80, 5, Some("github.com/features/copilot"), fixed("Copilot"), Some(100));
+        let copilot = run(
+            &mut p,
+            1100,
+            80,
+            5,
+            Some("github.com/features/copilot"),
+            fixed("Copilot"),
+            Some(100),
+        );
         assert_eq!(copilot.len(), 1);
     }
 
     #[test]
     fn a_new_day_starts_again_and_counts_survive_a_restart() {
         let mut p = Planner::new(20261016);
-        assert_eq!(run(&mut p, 0, 70, 5, Some("chatgpt.com"), fixed("ChatGPT"), Some(100)).len(), 1);
+        assert_eq!(
+            run(
+                &mut p,
+                0,
+                70,
+                5,
+                Some("chatgpt.com"),
+                fixed("ChatGPT"),
+                Some(100)
+            )
+            .len(),
+            1
+        );
         let saved = p.counts();
         assert_eq!(saved.taken["chatgpt.com"], 1);
         // Restarted the same day: the picture already taken is remembered.
         let mut again = Planner::restore(&saved, 20261016);
         assert_eq!(again.counts().taken["chatgpt.com"], 1);
-        let s = Settings { per_site: 1, ..settings() };
+        let s = Settings {
+            per_site: 1,
+            ..settings()
+        };
         let m = matcher();
-        let seen = Seen { now_ms: 10_000_000, address: Some("chatgpt.com"), title: "x", idle_ms: Some(0) };
+        let seen = Seen {
+            now_ms: 10_000_000,
+            address: Some("chatgpt.com"),
+            title: "x",
+            idle_ms: Some(0),
+        };
         for i in 0..100 {
-            let seen = Seen { now_ms: seen.now_ms + i * 5000, ..Seen { ..seen_clone(&seen) } };
-            assert!(again.observe(&m, &seen, &s, 20261016).is_none(), "allowance already used");
+            let seen = Seen {
+                now_ms: seen.now_ms + i * 5000,
+                ..Seen {
+                    ..seen_clone(&seen)
+                }
+            };
+            assert!(
+                again.observe(&m, &seen, &s, 20261016).is_none(),
+                "allowance already used"
+            );
         }
         // The next day the old counts are void.
         let next = Planner::restore(&saved, 20261017);
         assert!(next.counts().taken.is_empty());
         // And a planner that sees the date change resets itself.
         let mut p2 = Planner::restore(&saved, 20261016);
-        let seen = Seen { now_ms: 0, address: None, title: "", idle_ms: None };
+        let seen = Seen {
+            now_ms: 0,
+            address: None,
+            title: "",
+            idle_ms: None,
+        };
         p2.observe(&m, &seen, &settings(), 20261017);
         assert!(p2.counts().taken.is_empty());
     }
     fn seen_clone<'a>(s: &Seen<'a>) -> Seen<'a> {
-        Seen { now_ms: s.now_ms, address: s.address, title: s.title, idle_ms: s.idle_ms }
+        Seen {
+            now_ms: s.now_ms,
+            address: s.address,
+            title: s.title,
+            idle_ms: s.idle_ms,
+        }
     }
 
     #[test]
     fn unknown_idle_time_is_treated_as_active() {
         let mut p = Planner::new(20261016);
-        let plans = run(&mut p, 0, 70, 5, Some("chatgpt.com"), fixed("ChatGPT"), None);
-        assert_eq!(plans.len(), 1, "platforms that cannot report idle time still work");
+        let plans = run(
+            &mut p,
+            0,
+            70,
+            5,
+            Some("chatgpt.com"),
+            fixed("ChatGPT"),
+            None,
+        );
+        assert_eq!(
+            plans.len(),
+            1,
+            "platforms that cannot report idle time still work"
+        );
     }
 }

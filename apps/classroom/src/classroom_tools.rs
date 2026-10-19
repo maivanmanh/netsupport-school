@@ -27,13 +27,13 @@ const CHUNK: usize = 64 * 1024;
 pub const MAX_FILE: u64 = 4 * 1024 * 1024 * 1024;
 mod activity_jobs;
 mod app_jobs;
+mod evidence;
 mod file_tree;
 mod fs_jobs;
 mod hardware;
 mod launch;
 mod power;
 pub(crate) mod recording;
-mod evidence;
 pub(crate) mod screenshot;
 mod vscode_jobs;
 fn packet(action: &str) -> ToolPacket {
@@ -386,7 +386,13 @@ impl Hub {
         }
         Ok(())
     }
-    pub fn terminal_start(&self, student: &str, id: &str, compatibility: bool, authorization: String) -> Result<()> {
+    pub fn terminal_start(
+        &self,
+        student: &str,
+        id: &str,
+        compatibility: bool,
+        authorization: String,
+    ) -> Result<()> {
         let mut state = self.0.lock().unwrap();
         anyhow::ensure!(
             state.peers.contains_key(student),
@@ -535,7 +541,11 @@ impl Hub {
     }
     /// Midnight: yesterday's evidence is deleted.
     pub fn evidence_roll(&self) {
-        self.0.lock().unwrap().evidence.roll_day(crate::local_day::today());
+        self.0
+            .lock()
+            .unwrap()
+            .evidence
+            .roll_day(crate::local_day::today());
     }
     /// What the Students are told to collect: the Teacher's choices, plus the AI
     /// sites to watch for while they are not blocked.
@@ -543,7 +553,11 @@ impl Hub {
         let state = self.0.lock().unwrap();
         let mut options = state.tuning.activity.clone();
         options.evidence = options.evidence && !state.ai_blocking;
-        options.watch = if options.evidence { state.ai_entries.clone() } else { Vec::new() };
+        options.watch = if options.evidence {
+            state.ai_entries.clone()
+        } else {
+            Vec::new()
+        };
         options
     }
     fn tuning(&self) -> Tuning {
@@ -742,7 +756,12 @@ impl Hub {
                 p.text.len() <= 48_000,
                 "The application list is too long to send (keep it under about 400 entries)"
             );
-            p.name = if policy.active() { "app_block" } else { "app_open" }.into();
+            p.name = if policy.active() {
+                "app_block"
+            } else {
+                "app_open"
+            }
+            .into();
             None
         } else if action == "power" {
             let op = input["op"].as_str().unwrap_or("");
@@ -766,8 +785,8 @@ impl Hub {
                 .chars()
                 .take(200)
                 .collect();
-            p.text = json!({"op":op,"message":message,"grace":self.tuning().power_grace})
-                .to_string();
+            p.text =
+                json!({"op":op,"message":message,"grace":self.tuning().power_grace}).to_string();
             p.name = op.into();
             None
         } else if action == "website" {
@@ -1098,9 +1117,12 @@ impl Hub {
             if let Some(entry) = capabilities.get_mut(student) {
                 match j.packet.action.as_str() {
                     "policy" => {
-                        if let Ok(policy) = serde_json::from_str::<crate::guard::Policy>(&j.packet.text) {
+                        if let Ok(policy) =
+                            serde_json::from_str::<crate::guard::Policy>(&j.packet.text)
+                        {
                             entry["internet"] = json!(policy.internet.mode.name());
-                            entry["internet_fp"] = json!(crate::guard::fingerprint(&policy.internet));
+                            entry["internet_fp"] =
+                                json!(crate::guard::fingerprint(&policy.internet));
                         }
                     }
                     "copilot_policy" => {
@@ -1109,14 +1131,19 @@ impl Hub {
                         entry["copilot_blocked"] = json!(u8::from(on));
                     }
                     "vscode_policy" => {
-                        if let Ok(policy) =
-                            serde_json::from_str::<crate::vscode_control::VsCodePolicy>(&j.packet.text)
+                        if let Ok(policy) = serde_json::from_str::<
+                            crate::vscode_control::VsCodePolicy,
+                        >(&j.packet.text)
                         {
                             entry["vscode_fp"] = json!(policy.fingerprint());
                         }
                     }
                     "power" => {
-                        match serde_json::from_str::<Value>(&j.packet.text).ok().and_then(|v| v["op"].as_str().map(str::to_owned)).as_deref() {
+                        match serde_json::from_str::<Value>(&j.packet.text)
+                            .ok()
+                            .and_then(|v| v["op"].as_str().map(str::to_owned))
+                            .as_deref()
+                        {
                             Some("clipboard_block") => entry["clipboard_blocked"] = json!(1),
                             Some("clipboard_allow") => entry["clipboard_blocked"] = json!(0),
                             _ => {}
@@ -1576,7 +1603,8 @@ fn serve(
                 let activity_options = hub.activity_options_to_send();
                 if activity_supported
                     && (last_activity_monitoring != Some(monitoring)
-                        || (monitoring && last_activity_options.as_ref() != Some(&activity_options)))
+                        || (monitoring
+                            && last_activity_options.as_ref() != Some(&activity_options)))
                 {
                     let mut preference = packet("activity_status");
                     preference.status = if monitoring { "on" } else { "off" }.into();
@@ -2097,14 +2125,17 @@ pub fn student(
                     capabilities["vscode_blocked"] =
                         json!(u8::from(super::vscode_control::is_applied()));
                     capabilities["apps"] = json!(u8::from(super::app_control::supported()));
-                    capabilities["apps_blocked"] = json!(u8::from(super::app_control::is_applied()));
+                    capabilities["apps_blocked"] =
+                        json!(u8::from(super::app_control::is_applied()));
                     capabilities["apps_policy"] = json!(super::app_control::applied_hash());
                     capabilities["monitoring_badge"] =
                         json!(u8::from(crate::monitoring_badge::supported()));
                     capabilities["badge_enabled"] = json!(inbox.badge.lock().unwrap().enabled);
-                    capabilities["screenshot"] = json!(u8::from(cfg!(any(windows, target_os = "macos"))));
+                    capabilities["screenshot"] =
+                        json!(u8::from(cfg!(any(windows, target_os = "macos"))));
                     capabilities["recording"] = json!(u8::from(cfg!(windows)));
-                    capabilities["website"] = json!(u8::from(cfg!(any(windows, target_os = "macos"))));
+                    capabilities["website"] =
+                        json!(u8::from(cfg!(any(windows, target_os = "macos"))));
                     capabilities["terminal"] = json!(u8::from(crate::remote_terminal::available()));
                     hello.text = capabilities.to_string();
                     send(&mut s, &hello)?;
@@ -2126,7 +2157,8 @@ pub fn student(
                             .store(terminals.len(), Ordering::Release);
                         recorder.note_contact();
                         if activity_monitoring
-                            && last_live_sent.is_none_or(|at| at.elapsed() >= Duration::from_secs(3))
+                            && last_live_sent
+                                .is_none_or(|at| at.elapsed() >= Duration::from_secs(3))
                         {
                             let summary = activity_lifecycle
                                 .live()
@@ -2158,14 +2190,13 @@ pub fn student(
                                 }
                             }
                         }
-                        if activity_monitoring && last_evidence_check.elapsed() >= Duration::from_secs(2) {
+                        if activity_monitoring
+                            && last_evidence_check.elapsed() >= Duration::from_secs(2)
+                        {
                             last_evidence_check = Instant::now();
-                            let plan = activity_lifecycle
-                                .live()
-                                .lock()
-                                .unwrap()
-                                .as_ref()
-                                .and_then(|report| ai_watcher.observe(report, crate::activity::now_ms()));
+                            let plan = activity_lifecycle.live().lock().unwrap().as_ref().and_then(
+                                |report| ai_watcher.observe(report, crate::activity::now_ms()),
+                            );
                             if let Some(plan) = plan {
                                 ai_watcher.capture(
                                     plan,
@@ -2317,14 +2348,19 @@ pub fn student(
                                     "Invalid activity monitoring preference"
                                 );
                                 activity_monitoring = p.status == "on";
-                                if let Ok(options) = serde_json::from_str::<crate::activity::ActivityOptions>(&p.text) {
+                                if let Ok(options) = serde_json::from_str::<
+                                    crate::activity::ActivityOptions,
+                                >(&p.text)
+                                {
                                     ai_watcher.configure(&options);
                                     activity_lifecycle.set_options(options);
                                 }
                                 activity_lifecycle.set_enabled(activity_monitoring);
                                 if let Some(doc) = &activity_doc {
                                     let _ = if activity_monitoring {
-                                        doc.write(&json!({"on": true, "day": crate::local_day::today()}))
+                                        doc.write(
+                                            &json!({"on": true, "day": crate::local_day::today()}),
+                                        )
                                     } else {
                                         doc.clear()
                                     };
@@ -2374,9 +2410,9 @@ pub fn student(
                                 let inbox = Arc::clone(&inbox);
                                 let enforcer = app_enforcer.clone();
                                 thread::spawn(move || {
-                                    let outcome = serde_json::from_str::<crate::app_control::AppPolicy>(
-                                        &p.text,
-                                    )
+                                    let outcome = serde_json::from_str::<
+                                        crate::app_control::AppPolicy,
+                                    >(&p.text)
                                     .context("Invalid application policy")
                                     .and_then(|policy| {
                                         policy.validate()?;
@@ -2856,31 +2892,38 @@ pub fn collection_root(label: &str) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn a_student_on_an_ai_site_is_flagged_in_the_snapshot_even_with_the_browser_in_the_background() {
+    fn a_student_on_an_ai_site_is_flagged_in_the_snapshot_even_with_the_browser_in_the_background()
+    {
         let hub = Hub::default();
         hub.0.lock().unwrap().peers.insert("s1".into(), 1);
         hub.set_activity_monitoring(true);
         hub.set_ai_sites(&crate::ai_sites::defaults());
         let mut p = packet("activity_live");
         p.text = json!({"apps":[{"app":"Code.exe","title":"main.rs"}],
-                        "url":"https://docs.rs","hosts":["docs.rs","chatgpt.com"]}).to_string();
+                        "url":"https://docs.rs","hosts":["docs.rs","chatgpt.com"]})
+        .to_string();
         hub.activity_live("s1", &p).unwrap();
         let shown = hub.snapshot()["activity_live"]["s1"].clone();
         assert_eq!(shown["ai"], json!(["chatgpt.com"]));
         assert!(shown.get("hosts").is_none(), "raw hosts are not published");
         // A tab whose address is not known yet is still recognised by its title.
         p.text = json!({"apps":[{"app":"Code.exe","title":"x"}],
-                        "hosts":["tinteo.vn"],"titles":["tinteo.vn","ChatGPT"]}).to_string();
+                        "hosts":["tinteo.vn"],"titles":["tinteo.vn","ChatGPT"]})
+        .to_string();
         hub.activity_live("s1", &p).unwrap();
         let shown = hub.snapshot()["activity_live"]["s1"].clone();
         assert_eq!(shown["ai"], json!(["chatgpt.com"]));
-        assert!(shown.get("titles").is_none(), "raw titles are not published");
+        assert!(
+            shown.get("titles").is_none(),
+            "raw titles are not published"
+        );
         // Not flagged when nothing on the list is open.
         p.text = json!({"apps":[{"app":"Code.exe","title":"x"}],"hosts":["docs.rs"]}).to_string();
         hub.activity_live("s1", &p).unwrap();
         assert!(hub.snapshot()["activity_live"]["s1"].get("ai").is_none());
         // The list is the Teacher's: with an empty one nobody is flagged.
-        p.text = json!({"apps":[{"app":"Code.exe","title":"x"}],"hosts":["chatgpt.com"]}).to_string();
+        p.text =
+            json!({"apps":[{"app":"Code.exe","title":"x"}],"hosts":["chatgpt.com"]}).to_string();
         hub.activity_live("s1", &p).unwrap();
         hub.set_ai_sites(&[]);
         assert!(hub.snapshot()["activity_live"]["s1"].get("ai").is_none());

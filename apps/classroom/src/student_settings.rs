@@ -13,7 +13,9 @@ const HEIGHT: usize = 600;
 const PAGES: [&str; 3] = ["Connection", "Presentation", "Diagnostics"];
 
 pub fn apply_saved(config: &mut Config, profile: &Path) -> Result<()> {
-    if let Some(saved) = super::startup::profile_doc(profile, "settings")?.read::<serde_json::Value>()? {
+    if let Some(saved) =
+        super::startup::profile_doc(profile, "settings")?.read::<serde_json::Value>()?
+    {
         let table = super::json_to_toml(&saved).context("saved Student settings are empty")?;
         config
             .apply_saved(&toml::to_string(&table)?)
@@ -118,7 +120,9 @@ fn candidate(config: &Config, fields: &[Field], level: &str) -> Result<Config> {
     updated.network.teacher_discovery = match fields[4].value.trim() {
         "1" => true,
         "0" => false,
-        _ => anyhow::bail!("Enter 1 to find the Teacher automatically or 0 to use only its address"),
+        _ => {
+            anyhow::bail!("Enter 1 to find the Teacher automatically or 0 to use only its address")
+        }
     };
     updated.video.jitter_buffer_ms = fields[5]
         .value

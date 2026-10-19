@@ -145,7 +145,11 @@ fn glob(pattern: &[u8], text: &[u8]) -> bool {
 }
 
 pub fn is_private(ip: Ipv4Addr) -> bool {
-    ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_multicast() || ip.is_unspecified()
+    ip.is_private()
+        || ip.is_loopback()
+        || ip.is_link_local()
+        || ip.is_multicast()
+        || ip.is_unspecified()
 }
 
 #[cfg(test)]
@@ -203,7 +207,14 @@ mod tests {
 
     #[test]
     fn private_ranges() {
-        for ip in ["10.0.0.5", "172.16.49.233", "192.168.1.1", "127.0.0.1", "169.254.1.1", "224.0.0.251"] {
+        for ip in [
+            "10.0.0.5",
+            "172.16.49.233",
+            "192.168.1.1",
+            "127.0.0.1",
+            "169.254.1.1",
+            "224.0.0.251",
+        ] {
             assert!(is_private(ip.parse().unwrap()), "{ip}");
         }
         assert!(!is_private("8.8.8.8".parse().unwrap()));

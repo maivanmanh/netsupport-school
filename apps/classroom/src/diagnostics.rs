@@ -436,17 +436,29 @@ mod tests {
         let cancel = Arc::new(AtomicBool::new(false));
         let service = Arc::new(Service::default());
         *service.expected.lock().unwrap() = Some(Expected {
-            id: "fixture".into(), token: "fixture".into(), student: "fixture".into(), response: None,
+            id: "fixture".into(),
+            token: "fixture".into(),
+            student: "fixture".into(),
+            response: None,
         });
         let worker_state = Arc::clone(&state);
         let worker_cancel = Arc::clone(&cancel);
         let worker = thread::spawn(move || {
-            while !worker_cancel.load(Ordering::Acquire) { thread::yield_now(); }
+            while !worker_cancel.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
             *worker_state.lock().unwrap() = json!({"phase":"complete"});
         });
         let mut collector = Collector {
-            service, source: Source { metadata: json!({}), log: PathBuf::new() },
-            folder: PathBuf::new(), state, cancel, worker: Some(worker),
+            service,
+            source: Source {
+                metadata: json!({}),
+                log: PathBuf::new(),
+            },
+            folder: PathBuf::new(),
+            state,
+            cancel,
+            worker: Some(worker),
         };
         collector.cancel();
         assert_eq!(collector.snapshot()["phase"], "cancelled");

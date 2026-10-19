@@ -360,12 +360,7 @@ impl Firewall for WfpFirewall {
 
 fn powershell(script: &str) -> Result<String> {
     let output = Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            script,
-        ])
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
         .creation_flags(NO_WINDOW)
         .output()
         .context("Could not run PowerShell")?;

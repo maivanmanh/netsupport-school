@@ -39,8 +39,22 @@ fn system(op: Op, grace_seconds: u32) -> Result<()> {
     use std::os::windows::process::CommandExt;
     let mut command = Command::new("shutdown.exe");
     match op {
-        Op::Reboot => command.args(["/r", "/f", "/t", &grace_seconds.to_string(), "/c", "Restarting: requested by your teacher"]),
-        Op::Shutdown => command.args(["/s", "/f", "/t", &grace_seconds.to_string(), "/c", "Shutting down: requested by your teacher"]),
+        Op::Reboot => command.args([
+            "/r",
+            "/f",
+            "/t",
+            &grace_seconds.to_string(),
+            "/c",
+            "Restarting: requested by your teacher",
+        ]),
+        Op::Shutdown => command.args([
+            "/s",
+            "/f",
+            "/t",
+            &grace_seconds.to_string(),
+            "/c",
+            "Shutting down: requested by your teacher",
+        ]),
         _ => command.arg("/l"),
     };
     command.creation_flags(0x0800_0000);
@@ -60,7 +74,10 @@ fn system(op: Op, grace_seconds: u32) -> Result<()> {
         thread::sleep(Duration::from_secs(u64::from(grace_seconds)));
     }
     let status = Command::new("osascript")
-        .args(["-e", &format!("tell application \"loginwindow\" to «event {event}»")])
+        .args([
+            "-e",
+            &format!("tell application \"loginwindow\" to «event {event}»"),
+        ])
         .status()
         .context("Could not run osascript")?;
     anyhow::ensure!(

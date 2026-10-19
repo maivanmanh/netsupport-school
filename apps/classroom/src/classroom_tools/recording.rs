@@ -94,7 +94,11 @@ impl RecordingOptions {
         self.chunk_seconds = self.chunk_seconds.min(largest.max(60));
         self.student_stop_bytes = self.student_stop_bytes.max(256 * MIB);
         self.student_warn_bytes = self.student_warn_bytes.max(self.student_stop_bytes);
-        self.gone_seconds = if self.gone_seconds == 0 { 0 } else { self.gone_seconds.clamp(300, 14_400) };
+        self.gone_seconds = if self.gone_seconds == 0 {
+            0
+        } else {
+            self.gone_seconds.clamp(300, 14_400)
+        };
         self
     }
     /// Capture bounds: 16:9 at the chosen height (smaller screens keep their shape).
@@ -355,7 +359,10 @@ impl Hub {
             super::user_folder("Desktop")?
         } else {
             let folder = PathBuf::from(policy.folder.trim());
-            anyhow::ensure!(folder.is_absolute(), "Thư mục ghi hình phải là đường dẫn đầy đủ");
+            anyhow::ensure!(
+                folder.is_absolute(),
+                "Thư mục ghi hình phải là đường dẫn đầy đủ"
+            );
             fs::create_dir_all(&folder)
                 .context("Không tạo hoặc mở được thư mục lưu ghi hình đã chọn")?;
             folder
@@ -411,8 +418,10 @@ impl Hub {
                     )))),
             "A selected Student already has a recording session; stop it first"
         );
-        let free = fs2::available_space(desktop).context("Cannot read free space of the Desktop")?;
-        let needed = policy.stop_bytes + START_MARGIN_BYTES + START_PER_STUDENT * recipients.len() as u64;
+        let free =
+            fs2::available_space(desktop).context("Cannot read free space of the Desktop")?;
+        let needed =
+            policy.stop_bytes + START_MARGIN_BYTES + START_PER_STUDENT * recipients.len() as u64;
         anyhow::ensure!(
             free >= needed,
             "Ổ đĩa giảng viên còn {} GiB, cần ít nhất {} GiB để ghi {} máy (đổi ngưỡng trong Cài đặt → Ghi màn hình)",
@@ -528,7 +537,9 @@ impl Hub {
             let session = &state.sessions[index];
             for target in session.targets.values() {
                 let phase = target.report["phase"].as_str().unwrap_or("pending");
-                let live = target.seen.is_some_and(|at| at.elapsed() < Duration::from_secs(10));
+                let live = target
+                    .seen
+                    .is_some_and(|at| at.elapsed() < Duration::from_secs(10));
                 anyhow::ensure!(
                     !(live && matches!(phase, "recording" | "starting")),
                     "Hãy dừng ghi trước khi xóa phiên này"
@@ -551,7 +562,8 @@ impl Hub {
         } else {
             session.root.clone()
         };
-        let mut folders: Vec<PathBuf> = session.targets.values().map(|t| t.folder.clone()).collect();
+        let mut folders: Vec<PathBuf> =
+            session.targets.values().map(|t| t.folder.clone()).collect();
         folders.push(session.folder.clone());
         folders.dedup();
         Ok(delete_recording_files(&desktop, &folders))
@@ -615,7 +627,9 @@ impl Hub {
 
 /// `Part-0001.mp4`, or the `.Part-0001.mp4.partial` temporary of one.
 fn is_recording_file(name: &str) -> bool {
-    let name = name.strip_prefix('.').map_or(name, |n| n.strip_suffix(".partial").unwrap_or(n));
+    let name = name
+        .strip_prefix('.')
+        .map_or(name, |n| n.strip_suffix(".partial").unwrap_or(n));
     name.strip_prefix("Part-")
         .and_then(|n| n.strip_suffix(".mp4"))
         .is_some_and(|digits| digits.len() == 4 && digits.bytes().all(|b| b.is_ascii_digit()))
@@ -634,7 +648,10 @@ fn delete_recording_files(desktop: &Path, folders: &[PathBuf]) -> usize {
                 let path = entry.path();
                 let is_file = entry.file_type().is_ok_and(|t| t.is_file());
                 if is_file
-                    && path.file_name().and_then(|n| n.to_str()).is_some_and(is_recording_file)
+                    && path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(is_recording_file)
                     && fs::remove_file(&path).is_ok()
                 {
                     deleted += 1;
@@ -845,7 +862,13 @@ mod tests {
         let outside = root.join("Elsewhere");
         fs::create_dir_all(&outside).unwrap();
         fs::write(outside.join("Part-0001.mp4"), b"x").unwrap();
-        let folders = vec![one.clone(), two.clone(), outside.clone(), session.clone(), desktop.clone()];
+        let folders = vec![
+            one.clone(),
+            two.clone(),
+            outside.clone(),
+            session.clone(),
+            desktop.clone(),
+        ];
         assert_eq!(delete_recording_files(&desktop, &folders), 3);
         // Emptied folders go; a folder holding someone's own file stays, and so does its parent.
         assert!(!one.exists());
@@ -946,7 +969,10 @@ mod tests {
             .recording_start_at(
                 &[("a".into(), "PC".into())],
                 &root,
-                &StartPolicy { limit_seconds: 45 * 60, ..StartPolicy::default() },
+                &StartPolicy {
+                    limit_seconds: 45 * 60,
+                    ..StartPolicy::default()
+                },
             )
             .unwrap();
         let snapshot = hub.recording_snapshot(&hub.0.lock().unwrap().peers);
@@ -958,7 +984,14 @@ mod tests {
         );
         // Absurd values are clamped rather than trusted.
         let other = hub
-            .recording_start_at(&[("b".into(), "PC2".into())], &root, &StartPolicy { limit_seconds: 1, ..StartPolicy::default() })
+            .recording_start_at(
+                &[("b".into(), "PC2".into())],
+                &root,
+                &StartPolicy {
+                    limit_seconds: 1,
+                    ..StartPolicy::default()
+                },
+            )
             .map(|_| ());
         assert!(other.is_err(), "unknown Student b is refused");
         let _ = fs::remove_dir_all(&root);
@@ -969,7 +1002,11 @@ mod tests {
         let one = policy.stop_bytes + START_MARGIN_BYTES + START_PER_STUDENT;
         let forty = policy.stop_bytes + START_MARGIN_BYTES + START_PER_STUDENT * 40;
         assert!(forty > one);
-        assert_eq!(policy.stop_bytes + START_MARGIN_BYTES, 2 * GIB, "same as before the setting existed");
+        assert_eq!(
+            policy.stop_bytes + START_MARGIN_BYTES,
+            2 * GIB,
+            "same as before the setting existed"
+        );
         assert!(policy.stop_bytes < policy.warn_bytes);
     }
     #[test]
@@ -977,8 +1014,22 @@ mod tests {
         let d = RecordingOptions::default();
         assert_eq!(d.bounds(), (1280, 720));
         assert_eq!(d.max_samples(), 18_200);
-        assert_eq!(RecordingOptions { height: 1080, ..d.clone() }.bounds(), (1920, 1080));
-        assert_eq!(RecordingOptions { height: 480, ..d.clone() }.bounds(), (854, 480));
+        assert_eq!(
+            RecordingOptions {
+                height: 1080,
+                ..d.clone()
+            }
+            .bounds(),
+            (1920, 1080)
+        );
+        assert_eq!(
+            RecordingOptions {
+                height: 480,
+                ..d.clone()
+            }
+            .bounds(),
+            (854, 480)
+        );
         let wild = RecordingOptions {
             height: 999,
             fps: 500,
@@ -997,9 +1048,22 @@ mod tests {
         assert!(wild.student_warn_bytes >= wild.student_stop_bytes);
         assert_eq!(wild.gone_seconds, 300);
         // A big bitrate shortens the part so it stays under the file limit.
-        let hi = RecordingOptions { bitrate_kbps: 12_000, chunk_seconds: 1800, ..d.clone() }.sanitized();
+        let hi = RecordingOptions {
+            bitrate_kbps: 12_000,
+            chunk_seconds: 1800,
+            ..d.clone()
+        }
+        .sanitized();
         assert!(hi.chunk_seconds * u64::from(hi.bitrate_kbps) / 8 * 1000 < MAX_CHUNK_BYTES);
-        assert_eq!(RecordingOptions { gone_seconds: 0, ..d }.sanitized().gone_seconds, 0);
+        assert_eq!(
+            RecordingOptions {
+                gone_seconds: 0,
+                ..d
+            }
+            .sanitized()
+            .gone_seconds,
+            0
+        );
     }
     #[test]
     fn selection_auth_stop_and_reconnect() {
@@ -1079,7 +1143,11 @@ mod tests {
         }
         hub.load_recordings(test_journal()).unwrap();
         let id = hub
-            .recording_start_at(&[("s".into(), "PC01".into())], &root, &StartPolicy::default())
+            .recording_start_at(
+                &[("s".into(), "PC01".into())],
+                &root,
+                &StartPolicy::default(),
+            )
             .unwrap();
         let p = hub.recording_poll("s").unwrap();
         let meta = student::Metadata {

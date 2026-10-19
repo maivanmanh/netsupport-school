@@ -135,13 +135,13 @@ pub fn merge_into(internet: &InternetPolicy, sites: &[String]) -> InternetPolicy
         },
         Mode::BlockOnly => {
             let mut rules = internet.rules.clone();
-            let have: std::collections::HashSet<String> = rules
-                .iter()
-                .filter_map(|r| host_of(r).ok())
-                .collect();
-            rules.extend(sites.into_iter().filter(|s| {
-                host_of(s).is_ok_and(|h| !have.contains(&h))
-            }));
+            let have: std::collections::HashSet<String> =
+                rules.iter().filter_map(|r| host_of(r).ok()).collect();
+            rules.extend(
+                sites
+                    .into_iter()
+                    .filter(|s| host_of(s).is_ok_and(|h| !have.contains(&h))),
+            );
             InternetPolicy {
                 mode: Mode::BlockOnly,
                 rules,
@@ -165,9 +165,7 @@ pub fn merge_into(internet: &InternetPolicy, sites: &[String]) -> InternetPolicy
                 })
                 .cloned()
                 .collect();
-            let anything_left = rules
-                .iter()
-                .any(|r| matches!(parse_line(r), Ok(Some(_))));
+            let anything_left = rules.iter().any(|r| matches!(parse_line(r), Ok(Some(_))));
             if anything_left {
                 InternetPolicy {
                     mode: Mode::AllowOnly,
@@ -190,7 +188,8 @@ pub fn effective_policy_input(input: &Value, sites: Option<&[String]>) -> Value 
     let Some(sites) = sites else {
         return input.clone();
     };
-    let Ok(internet) = serde_json::from_value::<InternetPolicy>(input["policy"]["internet"].clone())
+    let Ok(internet) =
+        serde_json::from_value::<InternetPolicy>(input["policy"]["internet"].clone())
     else {
         return input.clone();
     };
@@ -214,17 +213,35 @@ enum Title {
 const TITLES: &[(&str, &[Title])] = &[
     ("chatgpt.com", &[Title::Anywhere("chatgpt")]),
     ("claude.ai", &[Title::Leading("claude")]),
-    ("gemini.google.com", &[Title::Leading("gemini"), Title::Leading("google gemini")]),
+    (
+        "gemini.google.com",
+        &[Title::Leading("gemini"), Title::Leading("google gemini")],
+    ),
     ("www.perplexity.ai", &[Title::Anywhere("perplexity")]),
     ("grok.com", &[Title::Leading("grok")]),
-    ("copilot.microsoft.com", &[Title::Leading("microsoft copilot"), Title::Leading("copilot")]),
+    (
+        "copilot.microsoft.com",
+        &[
+            Title::Leading("microsoft copilot"),
+            Title::Leading("copilot"),
+        ],
+    ),
     ("chat.deepseek.com", &[Title::Anywhere("deepseek")]),
     ("chat.qwen.ai", &[Title::Anywhere("qwen")]),
     ("kimi.com", &[Title::Leading("kimi")]),
-    ("chat.mistral.ai", &[Title::Leading("le chat"), Title::Leading("mistral")]),
+    (
+        "chat.mistral.ai",
+        &[Title::Leading("le chat"), Title::Leading("mistral")],
+    ),
     ("poe.com", &[Title::Leading("poe")]),
     ("notebooklm.google.com", &[Title::Anywhere("notebooklm")]),
-    ("aistudio.google.com", &[Title::Leading("google ai studio"), Title::Leading("ai studio")]),
+    (
+        "aistudio.google.com",
+        &[
+            Title::Leading("google ai studio"),
+            Title::Leading("ai studio"),
+        ],
+    ),
     ("huggingface.co", &[Title::Anywhere("hugging face")]),
     ("openrouter.ai", &[Title::Anywhere("openrouter")]),
     ("www.midjourney.com", &[Title::Anywhere("midjourney")]),
@@ -256,10 +273,15 @@ fn title_matches(title: &str, pattern: &Title) -> bool {
 /// The path part of a listed entry (`/features/copilot`), lower-cased and
 /// without a trailing slash; `None` for a plain host.
 fn path_of(entry: &str) -> Option<String> {
-    let rest = entry.trim().split_once("://").map_or(entry.trim(), |(_, r)| r);
+    let rest = entry
+        .trim()
+        .split_once("://")
+        .map_or(entry.trim(), |(_, r)| r);
     let slash = rest.find('/')?;
     let end = rest.find(['?', '#']).unwrap_or(rest.len());
-    let path = rest[slash..end.max(slash)].trim_end_matches('/').to_ascii_lowercase();
+    let path = rest[slash..end.max(slash)]
+        .trim_end_matches('/')
+        .to_ascii_lowercase();
     (!path.is_empty()).then_some(path)
 }
 
@@ -357,7 +379,10 @@ mod tests {
         let list = defaults();
         let clean = normalize_list(&list).unwrap();
         assert_eq!(clean.len(), 56, "no entry is rejected or merged");
-        assert_eq!(host_of("https://www.adobe.com/products/firefly.html").unwrap(), "www.adobe.com");
+        assert_eq!(
+            host_of("https://www.adobe.com/products/firefly.html").unwrap(),
+            "www.adobe.com"
+        );
         assert_eq!(host_of("https://chatgpt.com").unwrap(), "chatgpt.com");
     }
 
@@ -374,7 +399,9 @@ mod tests {
         assert!(normalize_list(&["10.0.0.1".into()]).is_err());
         assert!(normalize_list(&["*.ai".into()]).is_err());
         assert!(normalize_list(&["not a host!".into()]).is_err());
-        let many: Vec<String> = (0..=MAX_SITES).map(|i| format!("site{i}.example")).collect();
+        let many: Vec<String> = (0..=MAX_SITES)
+            .map(|i| format!("site{i}.example"))
+            .collect();
         assert!(normalize_list(&many).is_err());
     }
 
@@ -386,13 +413,25 @@ mod tests {
         assert_eq!(open.mode, Mode::BlockOnly);
         assert_eq!(open.rules, ai);
         // Teacher already blocks some sites (one of them an AI site): the union, once.
-        let both = merge_into(&policy(Mode::BlockOnly, &["facebook.com", "claude.ai"]), &ai);
+        let both = merge_into(
+            &policy(Mode::BlockOnly, &["facebook.com", "claude.ai"]),
+            &ai,
+        );
         assert_eq!(both.mode, Mode::BlockOnly);
-        assert_eq!(both.rules, ["facebook.com", "claude.ai", "https://chatgpt.com"]);
+        assert_eq!(
+            both.rules,
+            ["facebook.com", "claude.ai", "https://chatgpt.com"]
+        );
         // Everything is already blocked.
-        assert_eq!(merge_into(&policy(Mode::BlockAll, &[]), &ai), policy(Mode::BlockAll, &[]));
+        assert_eq!(
+            merge_into(&policy(Mode::BlockAll, &[]), &ai),
+            policy(Mode::BlockAll, &[])
+        );
         // Switch off / empty list: the Teacher's own rule exactly.
-        assert_eq!(merge_into(&policy(Mode::BlockOnly, &["a.com"]), &[]), policy(Mode::BlockOnly, &["a.com"]));
+        assert_eq!(
+            merge_into(&policy(Mode::BlockOnly, &["a.com"]), &[]),
+            policy(Mode::BlockOnly, &["a.com"])
+        );
     }
 
     #[test]
@@ -400,7 +439,10 @@ mod tests {
         let ai = vec!["chatgpt.com".to_owned()];
         // The allow-list names an AI site and its sub-domain: both come out.
         let allow = merge_into(
-            &policy(Mode::AllowOnly, &["wikipedia.org", "chatgpt.com", "api.chatgpt.com"]),
+            &policy(
+                Mode::AllowOnly,
+                &["wikipedia.org", "chatgpt.com", "api.chatgpt.com"],
+            ),
             &ai,
         );
         assert_eq!(allow, policy(Mode::AllowOnly, &["wikipedia.org"]));
@@ -422,7 +464,10 @@ mod tests {
             policy(Mode::BlockAll, &[]),
         ] {
             let merged = merge_into(&base, &ai);
-            let candidate = crate::guard::Policy { internet: merged, ..Default::default() };
+            let candidate = crate::guard::Policy {
+                internet: merged,
+                ..Default::default()
+            };
             candidate.validate().unwrap();
         }
     }
@@ -444,7 +489,9 @@ mod tests {
     fn an_entry_with_a_path_only_matches_that_part_of_the_site() {
         let matcher = Matcher::new(&defaults());
         // Ordinary GitHub is not an AI site; its Copilot page is.
-        assert!(matcher.hits(&["github.com".into(), "github.com/rust-lang/rust".into()]).is_empty());
+        assert!(matcher
+            .hits(&["github.com".into(), "github.com/rust-lang/rust".into()])
+            .is_empty());
         assert_eq!(
             matcher.hits(&["github.com/features/copilot".into()]),
             ["github.com/features/copilot"]
@@ -453,21 +500,41 @@ mod tests {
             matcher.hits(&["github.com/features/copilot/plans".into()]),
             ["github.com/features/copilot"]
         );
-        assert!(matcher.hits(&["github.com/features/copilotx".into()]).is_empty());
+        assert!(matcher
+            .hits(&["github.com/features/copilotx".into()])
+            .is_empty());
         assert!(matcher.hits(&["www.notion.so/product".into()]).is_empty());
-        assert_eq!(matcher.hits(&["www.notion.so/product/ai".into()]), ["www.notion.so/product/ai"]);
-        assert_eq!(matcher.matching("CHATGPT.com/c/123").as_deref(), Some("chatgpt.com"));
+        assert_eq!(
+            matcher.hits(&["www.notion.so/product/ai".into()]),
+            ["www.notion.so/product/ai"]
+        );
+        assert_eq!(
+            matcher.matching("CHATGPT.com/c/123").as_deref(),
+            Some("chatgpt.com")
+        );
     }
 
     #[test]
     fn a_page_title_gives_the_site_away_before_the_address_is_known() {
         let matcher = Matcher::new(&defaults());
         let titles = |t: &[&str]| t.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
-        assert_eq!(matcher.hits_in_titles(&titles(&["ChatGPT"])), ["chatgpt.com"]);
-        assert_eq!(matcher.hits_in_titles(&titles(&["Giải bài tập - ChatGPT"])), ["chatgpt.com"]);
+        assert_eq!(
+            matcher.hits_in_titles(&titles(&["ChatGPT"])),
+            ["chatgpt.com"]
+        );
+        assert_eq!(
+            matcher.hits_in_titles(&titles(&["Giải bài tập - ChatGPT"])),
+            ["chatgpt.com"]
+        );
         assert_eq!(matcher.hits_in_titles(&titles(&["Claude"])), ["claude.ai"]);
-        assert_eq!(matcher.hits_in_titles(&titles(&["Claude - New chat"])), ["claude.ai"]);
-        assert_eq!(matcher.hits_in_titles(&titles(&["Google Gemini"])), ["gemini.google.com"]);
+        assert_eq!(
+            matcher.hits_in_titles(&titles(&["Claude - New chat"])),
+            ["claude.ai"]
+        );
+        assert_eq!(
+            matcher.hits_in_titles(&titles(&["Google Gemini"])),
+            ["gemini.google.com"]
+        );
         // Ordinary pages that merely contain a common word are left alone.
         for innocent in [
             "Claude Monet - Wikipedia",
@@ -491,12 +558,25 @@ mod tests {
     #[test]
     fn a_student_on_an_ai_site_is_noticed_even_in_a_background_tab() {
         let matcher = Matcher::new(&defaults());
-        let hits = matcher.hits(&["www.google.com".into(), "chatgpt.com".into(), "docs.rs".into()]);
+        let hits = matcher.hits(&[
+            "www.google.com".into(),
+            "chatgpt.com".into(),
+            "docs.rs".into(),
+        ]);
         assert_eq!(hits, ["chatgpt.com"]);
         // Sub-domains of a listed host count; unrelated look-alikes do not.
-        assert_eq!(matcher.hits(&["api.openai.com".into()]), Vec::<String>::new());
-        assert_eq!(matcher.hits(&["platform.openai.com".into()]), ["platform.openai.com"]);
-        assert_eq!(matcher.hits(&["notchatgpt.com".into()]), Vec::<String>::new());
+        assert_eq!(
+            matcher.hits(&["api.openai.com".into()]),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            matcher.hits(&["platform.openai.com".into()]),
+            ["platform.openai.com"]
+        );
+        assert_eq!(
+            matcher.hits(&["notchatgpt.com".into()]),
+            Vec::<String>::new()
+        );
         assert!(matcher.hits(&[]).is_empty());
     }
 }

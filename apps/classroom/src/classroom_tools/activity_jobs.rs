@@ -40,7 +40,10 @@ impl Hub {
             );
         }
         if !self.activity_monitoring() {
-            return Ok((None, cached.or(Some(json!({"supported":true,"monitoring_enabled":false})))));
+            return Ok((
+                None,
+                cached.or(Some(json!({"supported":true,"monitoring_enabled":false}))),
+            ));
         }
         let id = nonce()?;
         let token = nonce()?;

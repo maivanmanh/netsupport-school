@@ -31,13 +31,27 @@ pub mod state {
             .creation_flags(NO_WINDOW)
             .output()
             .context("Could not run reg.exe")?;
-        anyhow::ensure!(output.status.success(), "reg.exe failed: {}", String::from_utf8_lossy(&output.stderr).trim());
+        anyhow::ensure!(
+            output.status.success(),
+            "reg.exe failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
         Ok(())
     }
     pub fn mark_applied() -> Result<()> {
         let today = crate::local_day::today().to_string();
-        reg(&["add", &format!("HKCU\\{KEY}"), "/v", "Day", "/t", "REG_SZ", "/d", &today, "/f"])
-            .context("Could not record the clipboard block")
+        reg(&[
+            "add",
+            &format!("HKCU\\{KEY}"),
+            "/v",
+            "Day",
+            "/t",
+            "REG_SZ",
+            "/d",
+            &today,
+            "/f",
+        ])
+        .context("Could not record the clipboard block")
     }
     pub fn clear() {
         let _ = reg(&["delete", &format!("HKCU\\{KEY}"), "/f"]);
@@ -52,7 +66,11 @@ pub mod state {
         output.status.success().then(|| {
             String::from_utf8_lossy(&output.stdout)
                 .lines()
-                .find_map(|l| l.trim().rsplit_once(char::is_whitespace).and_then(|(_, v)| v.parse().ok()))
+                .find_map(|l| {
+                    l.trim()
+                        .rsplit_once(char::is_whitespace)
+                        .and_then(|(_, v)| v.parse().ok())
+                })
         })?
     }
     /// `true` if a block was recorded for today — the Student should hold
@@ -89,18 +107,25 @@ mod imp {
         Win32::{
             Foundation::{HWND, LPARAM, LRESULT, WPARAM},
             System::{
-                DataExchange::{AddClipboardFormatListener, CloseClipboard, EmptyClipboard, OpenClipboard},
+                DataExchange::{
+                    AddClipboardFormatListener, CloseClipboard, EmptyClipboard, OpenClipboard,
+                },
                 LibraryLoader::GetModuleHandleW,
             },
             UI::WindowsAndMessaging::{
                 CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, PostMessageW,
-                PostQuitMessage, RegisterClassW, TranslateMessage, CW_USEDEFAULT, HWND_MESSAGE, MSG, WM_CLIPBOARDUPDATE,
-                WM_CLOSE, WNDCLASSW, WS_OVERLAPPED,
+                PostQuitMessage, RegisterClassW, TranslateMessage, CW_USEDEFAULT, HWND_MESSAGE,
+                MSG, WM_CLIPBOARDUPDATE, WM_CLOSE, WNDCLASSW, WS_OVERLAPPED,
             },
         },
     };
 
-    unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    unsafe extern "system" fn wndproc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
         match msg {
             WM_CLIPBOARDUPDATE => {
                 // SAFETY: standard, self-contained clipboard sequence; a transient
@@ -163,7 +188,8 @@ mod imp {
                             Some(instance),
                             None,
                         )?;
-                        AddClipboardFormatListener(hwnd).context("AddClipboardFormatListener failed")?;
+                        AddClipboardFormatListener(hwnd)
+                            .context("AddClipboardFormatListener failed")?;
                         hwnd
                     };
                     Ok(hwnd.0 as isize)
@@ -194,7 +220,10 @@ mod imp {
                 .recv_timeout(Duration::from_secs(3))
                 .context("Clipboard guard did not start")?
                 .map_err(|error| anyhow::anyhow!(error))?;
-            Ok(Self { hwnd, worker: Some(worker) })
+            Ok(Self {
+                hwnd,
+                worker: Some(worker),
+            })
         }
     }
     impl Drop for ClipboardGuard {
@@ -202,7 +231,12 @@ mod imp {
             // SAFETY: `self.hwnd` is this guard's own message-only window;
             // WM_CLOSE there ends the loop above without touching the clipboard.
             unsafe {
-                let _ = PostMessageW(Some(HWND(self.hwnd as *mut core::ffi::c_void)), WM_CLOSE, WPARAM(0), LPARAM(0));
+                let _ = PostMessageW(
+                    Some(HWND(self.hwnd as *mut core::ffi::c_void)),
+                    WM_CLOSE,
+                    WPARAM(0),
+                    LPARAM(0),
+                );
             }
             if let Some(worker) = self.worker.take() {
                 let _ = worker.join();

@@ -185,7 +185,10 @@ pub fn load_last_good(profile: &Path) -> Option<(Ipv4Addr, bool)> {
         .read()
         .ok()??;
     let ip = value.get("ip")?.as_str()?.parse::<Ipv4Addr>().ok()?;
-    let at = value.get("at").and_then(serde_json::Value::as_u64).unwrap_or(0);
+    let at = value
+        .get("at")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
     Some((ip, unix_seconds().saturating_sub(at) < RECENT.as_secs()))
 }
 
@@ -311,21 +314,19 @@ impl Finder {
                 out.push(ip);
             }
         }
-        if self.last_check.is_some_and(|t| t.elapsed() < ALTERNATIVES_EVERY) {
+        if self
+            .last_check
+            .is_some_and(|t| t.elapsed() < ALTERNATIVES_EVERY)
+        {
             return out;
         }
         self.last_check = Some(Instant::now());
         // Whatever the profile remembers may have changed since the start.
-        let known: Vec<Ipv4Addr> = candidates(
-            self.local,
-            self.configured,
-            self.explicit,
-            true,
-            None,
-        )
-        .into_iter()
-        .filter(|ip| *ip != self.current)
-        .collect();
+        let known: Vec<Ipv4Addr> =
+            candidates(self.local, self.configured, self.explicit, true, None)
+                .into_iter()
+                .filter(|ip| *ip != self.current)
+                .collect();
         for ip in responders(&known, self.port, PROBE_TIMEOUT, 8).await {
             if !out.contains(&ip) {
                 out.push(ip);
@@ -515,7 +516,10 @@ pub fn spawn_knocker(
                     next_knock = Instant::now() + Duration::from_secs(wait);
                     let mut sent = 0;
                     for ip in seen.keys().filter(|ip| !online.contains(ip)) {
-                        if socket.send_to(&packet, SocketAddrV4::new(*ip, port)).is_ok() {
+                        if socket
+                            .send_to(&packet, SocketAddrV4::new(*ip, port))
+                            .is_ok()
+                        {
                             sent += 1;
                         }
                     }
@@ -526,7 +530,8 @@ pub fn spawn_knocker(
                 if dirty && last_saved.elapsed() >= Duration::from_secs(10) {
                     seen.retain(|_, at| now.saturating_sub(*at) < REMEMBER_DAYS * 86_400);
                     while seen.len() > MAX_REMEMBERED {
-                        let Some(oldest) = seen.iter().min_by_key(|(_, at)| **at).map(|(ip, _)| *ip)
+                        let Some(oldest) =
+                            seen.iter().min_by_key(|(_, at)| **at).map(|(ip, _)| *ip)
                         else {
                             break;
                         };
@@ -557,23 +562,56 @@ mod tests {
     #[test]
     fn manual_address_leads_then_last_good_then_the_room_convention() {
         let local = ip("10.0.51.111");
-        let list = candidates(local, ip("10.0.51.150"), true, true, Some((ip("10.0.51.77"), false)));
-        assert_eq!(list, [ip("10.0.51.150"), ip("10.0.51.77"), ip("10.0.51.200")]);
+        let list = candidates(
+            local,
+            ip("10.0.51.150"),
+            true,
+            true,
+            Some((ip("10.0.51.77"), false)),
+        );
+        assert_eq!(
+            list,
+            [ip("10.0.51.150"), ip("10.0.51.77"), ip("10.0.51.200")]
+        );
         // Not chosen by a person: what worked, the convention, then the default.
-        let auto = candidates(local, ip("10.0.0.5"), false, true, Some((ip("10.0.51.77"), false)));
+        let auto = candidates(
+            local,
+            ip("10.0.0.5"),
+            false,
+            true,
+            Some((ip("10.0.51.77"), false)),
+        );
         assert_eq!(auto, [ip("10.0.51.77"), ip("10.0.51.200"), ip("10.0.0.5")]);
         // Duplicates collapse.
-        let same = candidates(local, ip("10.0.51.200"), true, true, Some((ip("10.0.51.200"), false)));
+        let same = candidates(
+            local,
+            ip("10.0.51.200"),
+            true,
+            true,
+            Some((ip("10.0.51.200"), false)),
+        );
         assert_eq!(same, [ip("10.0.51.200")]);
     }
 
     #[test]
     fn a_freshly_verified_teacher_beats_a_manual_address_and_discovery_off_pins_it() {
         let local = ip("192.168.1.20");
-        let list = candidates(local, ip("192.168.1.5"), true, true, Some((ip("192.168.1.9"), true)));
+        let list = candidates(
+            local,
+            ip("192.168.1.5"),
+            true,
+            true,
+            Some((ip("192.168.1.9"), true)),
+        );
         assert_eq!(list[0], ip("192.168.1.9"));
         assert_eq!(
-            candidates(local, ip("192.168.1.5"), true, false, Some((ip("192.168.1.9"), true))),
+            candidates(
+                local,
+                ip("192.168.1.5"),
+                true,
+                false,
+                Some((ip("192.168.1.9"), true))
+            ),
             [ip("192.168.1.5")]
         );
     }

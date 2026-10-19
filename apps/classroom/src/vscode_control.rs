@@ -56,7 +56,11 @@ impl VsCodePolicy {
         if !self.enabled {
             return String::new();
         }
-        let mut ids: Vec<String> = self.allowed.iter().map(|id| id.to_ascii_lowercase()).collect();
+        let mut ids: Vec<String> = self
+            .allowed
+            .iter()
+            .map(|id| id.to_ascii_lowercase())
+            .collect();
         ids.sort();
         ids.dedup();
         let digest = Sha256::digest(ids.join(",").as_bytes());
@@ -358,9 +362,21 @@ mod windows_impl {
         Ok(())
     }
     fn write_rule_state(policy: &VsCodePolicy) -> Result<()> {
-        let state = serde_json::json!({"hash": policy.fingerprint(), "day": crate::local_day::today()}).to_string();
-        reg(&["add", &format!("HKLM\\{RULE_KEY}"), "/v", "State", "/t", "REG_SZ", "/d", &state, "/f"])
-            .context("Could not record the VS Code policy")
+        let state =
+            serde_json::json!({"hash": policy.fingerprint(), "day": crate::local_day::today()})
+                .to_string();
+        reg(&[
+            "add",
+            &format!("HKLM\\{RULE_KEY}"),
+            "/v",
+            "State",
+            "/t",
+            "REG_SZ",
+            "/d",
+            &state,
+            "/f",
+        ])
+        .context("Could not record the VS Code policy")
     }
     fn rule_state() -> Option<Value> {
         let output = Command::new("reg.exe")
@@ -378,7 +394,9 @@ mod windows_impl {
         if !is_applied() {
             return String::new();
         }
-        rule_state().and_then(|v| v["hash"].as_str().map(str::to_owned)).unwrap_or_default()
+        rule_state()
+            .and_then(|v| v["hash"].as_str().map(str::to_owned))
+            .unwrap_or_default()
     }
     /// A policy lasts until the Teacher changes it or the local day ends —
     /// not until the connection drops. Lifts one left over from an earlier
@@ -388,7 +406,9 @@ mod windows_impl {
             return Ok(());
         }
         match rule_state() {
-            Some(state) if state["day"].as_u64() == Some(u64::from(crate::local_day::today())) => Ok(()),
+            Some(state) if state["day"].as_u64() == Some(u64::from(crate::local_day::today())) => {
+                Ok(())
+            }
             Some(_) => {
                 tracing::info!("VS Code policy is from an earlier day; lifting it");
                 clear()
@@ -458,7 +478,9 @@ mod windows_impl {
 #[allow(dead_code, unused_imports)]
 pub use windows_impl::clear;
 #[cfg(windows)]
-pub use windows_impl::{applied_fingerprint, apply, expire_if_stale, is_applied, list_extensions, supported};
+pub use windows_impl::{
+    applied_fingerprint, apply, expire_if_stale, is_applied, list_extensions, supported,
+};
 
 #[cfg(not(windows))]
 pub fn apply(_policy: &VsCodePolicy) -> anyhow::Result<()> {
@@ -543,7 +565,11 @@ pub fn list_extensions() -> ExtensionReport {
 /// that localize their manifest otherwise show up as "%displayName%". Returns
 /// `None` when the field is absent or the placeholder cannot be resolved.
 #[must_use]
-pub fn manifest_text(manifest: &serde_json::Value, field: &str, folder: &std::path::Path) -> Option<String> {
+pub fn manifest_text(
+    manifest: &serde_json::Value,
+    field: &str,
+    folder: &std::path::Path,
+) -> Option<String> {
     let raw = manifest[field].as_str()?.trim();
     let Some(key) = raw.strip_prefix('%').and_then(|r| r.strip_suffix('%')) else {
         return (!raw.is_empty()).then(|| raw.to_owned());
@@ -568,8 +594,12 @@ const ICON_PIXELS_MAX: u64 = 4096 * 4096;
 /// to `package.json` (`"icon": "images/icon.png"`); a typical one is 128x128
 /// or larger, so anything above the raw limit is shrunk before it travels.
 pub fn attach_icons(report: &mut ExtensionReport, request: &ListRequest) {
-    let wanted: std::collections::HashSet<&str> =
-        request.icons_for.iter().map(String::as_str).take(200).collect();
+    let wanted: std::collections::HashSet<&str> = request
+        .icons_for
+        .iter()
+        .map(String::as_str)
+        .take(200)
+        .collect();
     for ext in &mut report.extensions {
         if wanted.contains(ext.id.as_str()) {
             ext.icon_png_base64 = extension_icon(&ext.folder);
@@ -613,7 +643,9 @@ fn extension_icon(folder: &std::path::Path) -> Option<String> {
 }
 
 fn png_edge(bytes: &[u8]) -> Option<u32> {
-    let reader = png::Decoder::new(std::io::Cursor::new(bytes)).read_info().ok()?;
+    let reader = png::Decoder::new(std::io::Cursor::new(bytes))
+        .read_info()
+        .ok()?;
     let info = reader.info();
     Some(info.width.max(info.height))
 }
@@ -727,7 +759,11 @@ mod tests {
         let mut pixels = Vec::new();
         for y in 0..height {
             for x in 0..width {
-                let v = if noisy { ((x * 7 + y * 13) % 251) as u8 } else { 200 };
+                let v = if noisy {
+                    ((x * 7 + y * 13) % 251) as u8
+                } else {
+                    200
+                };
                 pixels.extend_from_slice(&[v, 255 - v, v / 2, 255]);
             }
         }
@@ -735,11 +771,20 @@ mod tests {
         let mut encoder = png::Encoder::new(&mut out, width, height);
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
-        encoder.write_header().unwrap().write_image_data(&pixels).unwrap();
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&pixels)
+            .unwrap();
         out
     }
-    fn extension_folder(name: &str, icon: Option<&str>, files: &[(&str, Vec<u8>)]) -> std::path::PathBuf {
-        let folder = std::env::temp_dir().join(format!("classroom-ext-{name}-{}", std::process::id()));
+    fn extension_folder(
+        name: &str,
+        icon: Option<&str>,
+        files: &[(&str, Vec<u8>)],
+    ) -> std::path::PathBuf {
+        let folder =
+            std::env::temp_dir().join(format!("classroom-ext-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&folder);
         std::fs::create_dir_all(folder.join("images")).unwrap();
         let manifest = match icon {
@@ -754,19 +799,29 @@ mod tests {
     }
     fn decode(b64: &str) -> Vec<u8> {
         use base64::Engine;
-        base64::engine::general_purpose::STANDARD.decode(b64).unwrap()
+        base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .unwrap()
     }
     #[test]
     fn small_icon_is_forwarded_unchanged() {
         let icon = png_of(32, 32, false);
-        let folder = extension_folder("small", Some("images/icon.png"), &[("images/icon.png", icon.clone())]);
+        let folder = extension_folder(
+            "small",
+            Some("images/icon.png"),
+            &[("images/icon.png", icon.clone())],
+        );
         assert_eq!(decode(&extension_icon(&folder).unwrap()), icon);
     }
     #[test]
     fn large_icon_is_shrunk_to_a_few_kilobytes() {
         let big = png_of(512, 512, true);
         assert!(big.len() > ICON_RAW_MAX);
-        let folder = extension_folder("large", Some("images/icon.png"), &[("images/icon.png", big)]);
+        let folder = extension_folder(
+            "large",
+            Some("images/icon.png"),
+            &[("images/icon.png", big)],
+        );
         let sent = decode(&extension_icon(&folder).unwrap());
         assert!(sent.len() <= ICON_SEND_MAX);
         assert_eq!(png_edge(&sent), Some(ICON_EDGE));
@@ -777,20 +832,45 @@ mod tests {
         let folder = extension_folder("escape", Some("../secret.png"), &[]);
         std::fs::write(folder.parent().unwrap().join("secret.png"), &secret).unwrap();
         assert!(extension_icon(&folder).is_none());
-        let svg = extension_folder("svg", Some("images/icon.svg"), &[("images/icon.svg", b"<svg/>".to_vec())]);
+        let svg = extension_folder(
+            "svg",
+            Some("images/icon.svg"),
+            &[("images/icon.svg", b"<svg/>".to_vec())],
+        );
         assert!(extension_icon(&svg).is_none());
         let absolute = extension_folder("abs", Some("/etc/hosts.png"), &[]);
         assert!(extension_icon(&absolute).is_none());
         assert!(extension_icon(&extension_folder("none", None, &[])).is_none());
-        let garbage = extension_folder("garbage", Some("images/icon.png"), &[("images/icon.png", vec![1, 2, 3])]);
+        let garbage = extension_folder(
+            "garbage",
+            Some("images/icon.png"),
+            &[("images/icon.png", vec![1, 2, 3])],
+        );
         assert!(extension_icon(&garbage).is_none());
     }
     #[test]
     fn only_requested_ids_get_icons() {
-        let folder = extension_folder("only", Some("images/icon.png"), &[("images/icon.png", png_of(24, 24, false))]);
-        let ext = |id: &str| ExtensionInfo { id: id.into(), folder: folder.clone(), ..Default::default() };
-        let mut report = ExtensionReport { supported: true, extensions: vec![ext("p.a"), ext("p.b")], notes: vec![] };
-        attach_icons(&mut report, &ListRequest { icons_for: vec!["p.b".into()] });
+        let folder = extension_folder(
+            "only",
+            Some("images/icon.png"),
+            &[("images/icon.png", png_of(24, 24, false))],
+        );
+        let ext = |id: &str| ExtensionInfo {
+            id: id.into(),
+            folder: folder.clone(),
+            ..Default::default()
+        };
+        let mut report = ExtensionReport {
+            supported: true,
+            extensions: vec![ext("p.a"), ext("p.b")],
+            notes: vec![],
+        };
+        attach_icons(
+            &mut report,
+            &ListRequest {
+                icons_for: vec!["p.b".into()],
+            },
+        );
         assert!(report.extensions[0].icon_png_base64.is_none());
         assert!(report.extensions[1].icon_png_base64.is_some());
     }
@@ -812,14 +892,26 @@ mod tests {
             "empty": "%empty%",
             "plain": "  Python  ",
         });
-        assert_eq!(manifest_text(&manifest, "displayName", &folder).as_deref(), Some("Dev Containers"));
-        assert_eq!(manifest_text(&manifest, "description", &folder).as_deref(), Some("Official C# extension"));
-        assert_eq!(manifest_text(&manifest, "plain", &folder).as_deref(), Some("Python"));
+        assert_eq!(
+            manifest_text(&manifest, "displayName", &folder).as_deref(),
+            Some("Dev Containers")
+        );
+        assert_eq!(
+            manifest_text(&manifest, "description", &folder).as_deref(),
+            Some("Official C# extension")
+        );
+        assert_eq!(
+            manifest_text(&manifest, "plain", &folder).as_deref(),
+            Some("Python")
+        );
         // Unresolvable placeholders and absent fields are None, never "%x%".
         assert_eq!(manifest_text(&manifest, "missing", &folder), None);
         assert_eq!(manifest_text(&manifest, "empty", &folder), None);
         assert_eq!(manifest_text(&manifest, "absent", &folder), None);
         // No nls file at all.
-        assert_eq!(manifest_text(&manifest, "displayName", &folder.join("nope")), None);
+        assert_eq!(
+            manifest_text(&manifest, "displayName", &folder.join("nope")),
+            None
+        );
     }
 }

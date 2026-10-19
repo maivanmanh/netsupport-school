@@ -173,9 +173,10 @@ impl Canvas {
         let bg = self.pixels[index];
         let mut out = 0;
         for shift in [0, 8, 16] {
-            out |= ((((color >> shift) & 255) * alpha + ((bg >> shift) & 255) * (255 - alpha) + 127)
-                / 255)
-                << shift;
+            out |=
+                ((((color >> shift) & 255) * alpha + ((bg >> shift) & 255) * (255 - alpha) + 127)
+                    / 255)
+                    << shift;
         }
         self.pixels[index] = out;
     }
@@ -202,7 +203,10 @@ impl Canvas {
         }
         let r = (radius * d).min(w / 2).min(h / 2);
         let rf = r as f32;
-        let (right, bottom) = ((x + w).min(self.pixel_width()), (y + h).min(self.pixel_height()));
+        let (right, bottom) = (
+            (x + w).min(self.pixel_width()),
+            (y + h).min(self.pixel_height()),
+        );
         for py in y..bottom {
             let top_band = py < y + r;
             let bottom_band = py + r >= y + h;
@@ -211,7 +215,11 @@ impl Canvas {
                 self.pixels[py * stride + x..py * stride + right].fill(color & 0x00ff_ffff);
                 continue;
             }
-            let cy = if top_band { (y + r) as f32 } else { (y + h - r) as f32 };
+            let cy = if top_band {
+                (y + r) as f32
+            } else {
+                (y + h - r) as f32
+            };
             let fy = py as f32 + 0.5;
             for px in x..right {
                 let near_left = px < x + r;
@@ -220,7 +228,11 @@ impl Canvas {
                     self.blend_pixel(px, py, color, 255);
                     continue;
                 }
-                let cx = if near_left { (x + r) as f32 } else { (x + w - r) as f32 };
+                let cx = if near_left {
+                    (x + r) as f32
+                } else {
+                    (x + w - r) as f32
+                };
                 let fx = px as f32 + 0.5;
                 let dist = ((fx - cx).powi(2) + (fy - cy).powi(2)).sqrt();
                 let alpha = Self::coverage(dist, rf);
@@ -230,7 +242,13 @@ impl Canvas {
     }
 
     /// A rounded rectangle with a 1 px border inside `area`.
-    pub(crate) fn round_rect_border(&mut self, area: [usize; 4], radius: usize, border: u32, fill: u32) {
+    pub(crate) fn round_rect_border(
+        &mut self,
+        area: [usize; 4],
+        radius: usize,
+        border: u32,
+        fill: u32,
+    ) {
         self.round_rect(area, radius, border);
         let [x, y, w, h] = area;
         if w > 2 && h > 2 {
@@ -239,12 +257,22 @@ impl Canvas {
     }
 
     /// A filled anti-aliased disc (logical centre and radius).
-    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     pub(crate) fn disc(&mut self, cx: f32, cy: f32, radius: f32, color: u32) {
         let d = self.density as f32;
         let (cx, cy, r) = (cx * d, cy * d, radius * d);
-        let (x0, x1) = ((cx - r - 1.0).max(0.0) as usize, (cx + r + 1.0).max(0.0) as usize);
-        let (y0, y1) = ((cy - r - 1.0).max(0.0) as usize, (cy + r + 1.0).max(0.0) as usize);
+        let (x0, x1) = (
+            (cx - r - 1.0).max(0.0) as usize,
+            (cx + r + 1.0).max(0.0) as usize,
+        );
+        let (y0, y1) = (
+            (cy - r - 1.0).max(0.0) as usize,
+            (cy + r + 1.0).max(0.0) as usize,
+        );
         for py in y0..=y1 {
             for px in x0..=x1 {
                 let dist = ((px as f32 + 0.5 - cx).powi(2) + (py as f32 + 0.5 - cy).powi(2)).sqrt();
@@ -254,7 +282,11 @@ impl Canvas {
     }
 
     /// A line with round caps, `thickness` logical pixels wide.
-    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     pub(crate) fn line(&mut self, from: (f32, f32), to: (f32, f32), thickness: f32, color: u32) {
         let length = ((to.0 - from.0).powi(2) + (to.1 - from.1).powi(2)).sqrt();
         let steps = (length * self.density as f32 * 2.0).ceil().max(1.0) as usize;

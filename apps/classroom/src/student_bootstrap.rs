@@ -88,9 +88,10 @@ impl Share {
         // All interfaces, not just the one the share started on: if the Teacher moves
         // from the LAN cable to Wi-Fi the link keeps working, and each download
         // is built for the address the Student actually reached.
-        let listener = std::net::TcpListener::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)).context(
-            "Cannot open Student download port; choose a free port or allow it in the firewall",
-        )?;
+        let listener = std::net::TcpListener::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port))
+            .context(
+                "Cannot open Student download port; choose a free port or allow it in the firewall",
+            )?;
         listener.set_nonblocking(true)?;
         let listener = TcpListener::from_std(listener)?;
         let state = Arc::new(Mutex::new(
@@ -255,7 +256,10 @@ impl Refresher {
 
     /// The address worth rebuilding for, if `local` (where a Student connected)
     /// differs from the one `package` was built for.
-    fn address_to_rebuild_for(package: &Package, local: Option<std::net::IpAddr>) -> Option<Ipv4Addr> {
+    fn address_to_rebuild_for(
+        package: &Package,
+        local: Option<std::net::IpAddr>,
+    ) -> Option<Ipv4Addr> {
         match local {
             Some(std::net::IpAddr::V4(v4))
                 if !v4.is_loopback() && !v4.is_unspecified() && v4 != package.ip =>
@@ -300,7 +304,11 @@ pub const SCRIPT_NAME: &str = "Install-Classroom-Student.bat";
 /// ASCII only and CRLF, because cmd.exe reads it in the console code page.
 pub fn install_script(ip: Ipv4Addr, port: u16, control_port: u16, sha256: &str) -> String {
     // ":8080", or nothing for the default web port.
-    let suffix = if port == 80 { String::new() } else { format!(":{port}") };
+    let suffix = if port == 80 {
+        String::new()
+    } else {
+        format!(":{port}")
+    };
     let base = format!("http://{ip}{suffix}");
     let template = r#"@echo off
 setlocal EnableExtensions
@@ -525,7 +533,9 @@ fn prepare(
             Ok(mut guard_entry) => {
                 anyhow::ensure!(
                     guard_entry.size() <= super::dev_update::MAX_PACKAGE
-                        && guard_entry.unix_mode().is_none_or(|m| m & 0o170_000 != 0o120_000),
+                        && guard_entry
+                            .unix_mode()
+                            .is_none_or(|m| m & 0o170_000 != 0o120_000),
                     "Invalid Guard service executable"
                 );
                 output.start_file("ClassroomGuardService.exe", options)?;
@@ -797,39 +807,57 @@ mod tests {
     #[test]
     fn the_installer_script_is_self_contained_ascii_crlf_and_names_this_room() {
         let script = install_script(Ipv4Addr::new(10, 0, 55, 200), 8080, 47800, &"ab".repeat(32));
-        assert!(script.is_ascii(), "cmd.exe reads it in the console code page");
+        assert!(
+            script.is_ascii(),
+            "cmd.exe reads it in the console code page"
+        );
         assert!(script.starts_with("@echo off\r\n"));
-        assert!(!script.replace("\r\n", "").contains('\n'), "every line ends CRLF");
+        assert!(
+            !script.replace("\r\n", "").contains('\n'),
+            "every line ends CRLF"
+        );
         assert!(script.contains("set \"CLASSROOM_BASE=http://10.0.55.200:8080\""));
         assert!(script.contains("set \"CLASSROOM_TEACHER_IP=10.0.55.200\""));
         assert!(script.contains("set \"CLASSROOM_CONTROL_PORT=47800\""));
         assert!(script.contains(&"ab".repeat(32)));
         for step in [
-            "fltmc",                   // asks for administrator when it is not
+            "fltmc", // asks for administrator when it is not
             "Start-Process -FilePath '%SELF%' -Verb RunAs",
-            "/quiet",                  // no pause for remote execution
-            "Invoke-WebRequest",       // downloads the ZIP
-            "Get-FileHash",            // verifies it
-            "Expand-Archive",          // unpacks it
+            "/quiet",            // no pause for remote execution
+            "Invoke-WebRequest", // downloads the ZIP
+            "Get-FileHash",      // verifies it
+            "Expand-Archive",    // unpacks it
             "ClassroomGuardService.exe",
             "'--install', '--teacher-ip'",
             "exit /b %RESULT%",
         ] {
-            assert!(script.contains(step) || script.replace("\r\n", "\n").contains(step), "missing {step}");
+            assert!(
+                script.contains(step) || script.replace("\r\n", "\n").contains(step),
+                "missing {step}"
+            );
         }
         // The PowerShell part must start after the last `exit /b`, never be parsed by cmd.
         let marker = script.rfind("#PS-BEGIN").unwrap();
         assert!(script.rfind("exit /b %RESULT%").unwrap() < marker);
         // Port 80 needs no port in the URL.
-        assert!(install_script(Ipv4Addr::new(10, 0, 55, 200), 80, 47800, "x").contains("CLASSROOM_BASE=http://10.0.55.200\""));
+        assert!(
+            install_script(Ipv4Addr::new(10, 0, 55, 200), 80, 47800, "x")
+                .contains("CLASSROOM_BASE=http://10.0.55.200\"")
+        );
         // No placeholder is left unreplaced.
         for placeholder in ["@BASE@", "@SHA@", "@IP@", "@CONTROL@", "@PORTSUFFIX@"] {
-            assert!(!script.contains(placeholder), "{placeholder} left in the script");
+            assert!(
+                !script.contains(placeholder),
+                "{placeholder} left in the script"
+            );
         }
         // The address can be overridden on the command line without editing the file.
         assert!(script.contains("/teacher"));
         assert!(script.contains("set \"CLASSROOM_BASE=http://%~2:8080\""));
-        assert!(install_script(Ipv4Addr::new(10, 0, 55, 200), 80, 47800, "x").contains("CLASSROOM_BASE=http://%~2\""));
+        assert!(
+            install_script(Ipv4Addr::new(10, 0, 55, 200), 80, 47800, "x")
+                .contains("CLASSROOM_BASE=http://%~2\"")
+        );
     }
 
     #[tokio::test]
@@ -841,7 +869,14 @@ mod tests {
             control_port: 47800,
             connection_popup: false,
         };
-        let package = prepare(&source, &directory.join("out"), &settings, 8080, &AtomicBool::new(false)).unwrap();
+        let package = prepare(
+            &source,
+            &directory.join("out"),
+            &settings,
+            8080,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
         // The script names the checksum of the very ZIP it will fetch.
         let zip_hash = format!("{:x}", Sha256::digest(fs::read(&package.path).unwrap()));
         let text = package.script_for(None);
@@ -850,7 +885,10 @@ mod tests {
         assert_eq!(fs::read(&package.script_path).unwrap(), text.as_bytes());
         // It follows the address the Student used, not a fixed one.
         let other = package.script_for(Some(std::net::IpAddr::V4(Ipv4Addr::new(192, 168, 7, 9))));
-        assert!(other.contains("CLASSROOM_TEACHER_IP=192.168.7.9") && other.contains("http://192.168.7.9:8080"));
+        assert!(
+            other.contains("CLASSROOM_TEACHER_IP=192.168.7.9")
+                && other.contains("http://192.168.7.9:8080")
+        );
         assert!(!other.contains("127.0.0.1"));
         for (method, with_body) in [("GET", true), ("HEAD", false)] {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -874,8 +912,14 @@ mod tests {
             // Reached over loopback, so the script names the address the share was started on.
             let expected = package.script_for(None);
             assert!(headers.contains(&format!("Content-Length: {}", expected.len())));
-            assert_eq!(&result[split..], if with_body { expected.as_bytes() } else { &[] });
-            assert!(!worker.await.unwrap(), "a script fetch is not counted as a ZIP download");
+            assert_eq!(
+                &result[split..],
+                if with_body { expected.as_bytes() } else { &[] }
+            );
+            assert!(
+                !worker.await.unwrap(),
+                "a script fetch is not counted as a ZIP download"
+            );
         }
         let zip_path = package.path.clone();
         drop(package);
@@ -914,21 +958,39 @@ mod tests {
             .package_for(&current, Some(std::net::IpAddr::V4(wifi)), &status)
             .await;
         assert_eq!(moved.ip, wifi);
-        assert!(moved.script_for(None).contains("CLASSROOM_TEACHER_IP=192.168.1.77"));
+        assert!(moved
+            .script_for(None)
+            .contains("CLASSROOM_TEACHER_IP=192.168.1.77"));
         assert!(moved.script_for(None).contains("http://192.168.1.77:8080"));
         let mut zip = zip::ZipArchive::new(fs::File::open(&moved.path).unwrap()).unwrap();
         let mut toml = String::new();
-        zip.by_name("classroom-bootstrap.toml").unwrap().read_to_string(&mut toml).unwrap();
-        assert!(toml.contains("192.168.1.77"), "the ZIP names the new address too: {toml}");
+        zip.by_name("classroom-bootstrap.toml")
+            .unwrap()
+            .read_to_string(&mut toml)
+            .unwrap();
+        assert!(
+            toml.contains("192.168.1.77"),
+            "the ZIP names the new address too: {toml}"
+        );
         assert_eq!(status.lock().unwrap()["url"], "http://192.168.1.77:8080/");
-        assert_eq!(status.lock().unwrap()["script_url"], "http://192.168.1.77:8080/install.bat");
+        assert_eq!(
+            status.lock().unwrap()["script_url"],
+            "http://192.168.1.77:8080/install.bat"
+        );
         // The old package going away must not take the shared script copy with it.
         drop(first);
         assert!(moved.script_path.exists());
-        assert_eq!(fs::read(&moved.script_path).unwrap(), moved.script_for(None).as_bytes());
+        assert_eq!(
+            fs::read(&moved.script_path).unwrap(),
+            moved.script_for(None).as_bytes()
+        );
         // And back again.
         let back = refresher
-            .package_for(&current, Some(std::net::IpAddr::V4(Ipv4Addr::new(10, 0, 55, 200))), &status)
+            .package_for(
+                &current,
+                Some(std::net::IpAddr::V4(Ipv4Addr::new(10, 0, 55, 200))),
+                &status,
+            )
             .await;
         assert_eq!(back.ip, Ipv4Addr::new(10, 0, 55, 200));
         fs::remove_dir_all(directory).unwrap();

@@ -2,12 +2,12 @@
 #![allow(unsafe_code)] // Owned native UI handles; all calls stay on StudentDesktop UI thread.
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+#[cfg(windows)]
+use std::path::PathBuf;
 use std::{
     path::Path,
     time::{Duration, Instant},
 };
-#[cfg(windows)]
-use std::path::PathBuf;
 
 #[cfg(windows)]
 pub const TEXT: &str = "ĐANG GIÁM SÁT";
@@ -85,10 +85,9 @@ impl Badge {
             self.started = None;
             self.last_draw = None;
             self.observed = Some(true);
-            inbox.badge_broadcast_suppression_applied.store(
-                source_suppressed,
-                std::sync::atomic::Ordering::Release,
-            );
+            inbox
+                .badge_broadcast_suppression_applied
+                .store(source_suppressed, std::sync::atomic::Ordering::Release);
             if revision.is_some() {
                 self.finish(inbox, revision, true, Ok(()));
             }
@@ -114,10 +113,9 @@ impl Badge {
                 }
             }
         }
-        inbox.badge_broadcast_suppression_applied.store(
-            false,
-            std::sync::atomic::Ordering::Release,
-        );
+        inbox
+            .badge_broadcast_suppression_applied
+            .store(false, std::sync::atomic::Ordering::Release);
         if !changed
             && self
                 .last_draw

@@ -605,15 +605,15 @@ impl Popup {
                     BACKGROUND,
                 );
             } else {
-                c.round_rect_border([PAD, box_top, box_w, REPLY_BOX_H], 8, FIELD_BORDER, BACKGROUND);
+                c.round_rect_border(
+                    [PAD, box_top, box_w, REPLY_BOX_H],
+                    8,
+                    FIELD_BORDER,
+                    BACKGROUND,
+                );
             }
-            self.editor.draw(
-                c,
-                &self.reply,
-                self.layout.editor_rect(),
-                1,
-                input_focused,
-            );
+            self.editor
+                .draw(c, &self.reply, self.layout.editor_rect(), 1, input_focused);
         } else {
             let notice = if self
                 .copy_notice_until
@@ -645,7 +645,11 @@ impl Popup {
                     let fill = if hot { ACCENT_HOVER } else { ACCENT };
                     (fill, fill, 0x00ff_ffff)
                 }
-                (false, _) => (if hot { 0x00f1_f5f9 } else { BACKGROUND }, FIELD_BORDER, INK),
+                (false, _) => (
+                    if hot { 0x00f1_f5f9 } else { BACKGROUND },
+                    FIELD_BORDER,
+                    INK,
+                ),
             };
             c.round_rect_border(area, 8, border, fill);
             let label = match button {
@@ -656,7 +660,13 @@ impl Popup {
                 Button::Close => "",
             };
             let w = c.text_width_px(label, 14);
-            c.text_bold(area[0] + area[2].saturating_sub(w) / 2, area[1] + 9, label, color, 14);
+            c.text_bold(
+                area[0] + area[2].saturating_sub(w) / 2,
+                area[1] + 9,
+                label,
+                color,
+                14,
+            );
         }
         c.notification_border(width, height);
     }
@@ -709,7 +719,8 @@ fn wrap_px(canvas: &Canvas, text: &str, max_width: usize, px: u16) -> Vec<String
             }
             for c in word.chars() {
                 line.push(c);
-                if line.chars().count() > 1 && canvas.text_width_px(line.trim_end(), px) > max_width {
+                if line.chars().count() > 1 && canvas.text_width_px(line.trim_end(), px) > max_width
+                {
                     line.pop();
                     lines.push(std::mem::take(&mut line));
                     line.push(c);
@@ -739,7 +750,12 @@ mod tests {
         // The title bar (and its close button) is not copyable text.
         assert!(!copy_hit(&collapsed, false, 40.0, 20.0));
         let [cx, cy, ..] = collapsed.close_button();
-        assert!(!copy_hit(&collapsed, false, (cx + 4) as f32, (cy + 4) as f32));
+        assert!(!copy_hit(
+            &collapsed,
+            false,
+            (cx + 4) as f32,
+            (cy + 4) as f32
+        ));
         assert!(!copy_hit(&collapsed, false, -1.0, 40.0));
         for (_, [x, y, ..]) in collapsed.buttons(false, true) {
             assert!(!copy_hit(&collapsed, false, (x + 2) as f32, (y + 2) as f32));

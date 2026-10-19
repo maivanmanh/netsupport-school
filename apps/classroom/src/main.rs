@@ -34,8 +34,11 @@ use socket2::{Domain, Protocol, Socket, Type};
 use tracing::{info, warn};
 
 mod activity;
+mod ai_sites;
+mod app_control;
 mod benchmark;
 mod benchmark_report;
+mod class_rules;
 mod classroom_tools;
 mod clipboard_guard;
 mod compact_log;
@@ -51,10 +54,12 @@ mod guard_service;
 mod hardware_control;
 mod keyframe_gate;
 mod launcher;
+mod local_day;
 mod macos_permissions;
 mod media_activity;
 mod media_session;
 mod monitoring;
+mod monitoring_badge;
 mod observation;
 mod observe_coordinator;
 mod pointer_channel;
@@ -72,23 +77,18 @@ mod student_broadcast;
 mod student_connection_ui;
 mod student_file_ui;
 mod student_fps_badge;
-mod monitoring_badge;
 mod student_lock;
 mod student_presentation;
 mod student_settings;
 mod student_tools_ui;
 mod teacher_agent;
-mod teacher_discovery;
 mod teacher_dashboard;
-mod text_editor;
+mod teacher_discovery;
 mod teacher_repair;
+mod text_editor;
 mod udp_ingress;
 mod udp_sender;
 mod vscode_control;
-mod app_control;
-mod ai_sites;
-mod class_rules;
-mod local_day;
 use process_metrics::ProcessMetrics;
 use quality::{QualityController, ReceiverMediaReport};
 use student_presentation::StudentPresentation;
@@ -120,12 +120,12 @@ use renderer_windows::NativeRenderer as PlatformRenderer;
 
 #[cfg(not(any(windows, target_os = "macos")))]
 use capture_windows_dxgi::DxgiCapture as PlatformCapture;
-#[cfg(not(any(windows, target_os = "macos")))]
-use codec_windows_mf::{MediaFoundationRuntime, MfH264Encoder as PlatformH264Encoder};
 #[cfg(target_os = "linux")]
 use codec_linux::LinuxH264Decoder as PlatformH264Decoder;
 #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 use codec_windows_mf::MfH264Decoder as PlatformH264Decoder;
+#[cfg(not(any(windows, target_os = "macos")))]
+use codec_windows_mf::{MediaFoundationRuntime, MfH264Encoder as PlatformH264Encoder};
 #[cfg(target_os = "linux")]
 use renderer_linux::NativeRenderer as PlatformRenderer;
 #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
@@ -292,7 +292,10 @@ fn main() -> Result<()> {
     if let Some(result) = classroom_tools::screenshot::early_operation() {
         return result;
     }
-    if std::env::args_os().nth(1).is_some_and(|v| v == "--hardware-reset") {
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|v| v == "--hardware-reset")
+    {
         return hardware_control::emergency_reset();
     }
     // Started by Windows in place of a blocked program (see `app_control`).
@@ -337,8 +340,13 @@ async fn run(
     log_guard: &mut Option<compact_log::LogGuard>,
     restart_profile: &mut Option<RestartRequest>,
 ) -> Result<()> {
-    if std::env::args_os().nth(1).is_some_and(|v| v == "--terminal-worker") {
-        let path = std::env::args_os().nth(2).context("Terminal worker context missing")?;
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|v| v == "--terminal-worker")
+    {
+        let path = std::env::args_os()
+            .nth(2)
+            .context("Terminal worker context missing")?;
         return remote_terminal::worker::run(std::path::Path::new(&path)).await;
     }
     let mut cli = Cli::parse();
@@ -2157,16 +2165,17 @@ async fn run_student_media(
     );
     let mut restart_requested = false;
     // Linux is receive-only: do not register a capture/Observe endpoint.
-    let monitor = (cfg!(any(windows, target_os = "macos")) && config.monitoring.enabled).then(|| {
-        monitoring::student(
-            SocketAddrV4::new(teacher_ip, config.network.control_port + 1),
-            registration.instance_id.clone(),
-            std::sync::Arc::clone(&presenting),
-            std::sync::Arc::clone(&inbox.badge_broadcast_suppressed),
-            std::sync::Arc::clone(&inbox.badge_broadcast_suppression_applied),
-            config.clone(),
-        )
-    });
+    let monitor =
+        (cfg!(any(windows, target_os = "macos")) && config.monitoring.enabled).then(|| {
+            monitoring::student(
+                SocketAddrV4::new(teacher_ip, config.network.control_port + 1),
+                registration.instance_id.clone(),
+                std::sync::Arc::clone(&presenting),
+                std::sync::Arc::clone(&inbox.badge_broadcast_suppressed),
+                std::sync::Arc::clone(&inbox.badge_broadcast_suppression_applied),
+                config.clone(),
+            )
+        });
     info!("student background agent ready; waiting for Teacher presentation");
     // Finds the Teacher again if it moves or was not on when this started, and
     // hears it when it starts later. The Teacher address the subsystems above
@@ -3786,7 +3795,7 @@ mod tests {
                 control_rtt_samples: 0,
                 rendering_enabled: false,
                 render_latency_p95_us: 0,
-            ..Default::default()
+                ..Default::default()
             },
         };
         sender.send(report(0, 0)).unwrap();

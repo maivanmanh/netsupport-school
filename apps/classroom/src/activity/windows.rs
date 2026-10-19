@@ -2,7 +2,11 @@
 //! Automation for browser tab titles and the active tab's address, and the
 //! Chromium `History` database for recent downloads.
 #![allow(unsafe_code)]
-use super::{history::{History, Lookup}, BrowserWindow, DownloadEntry, Report, TabEntry, WindowEntry, MAX_DOWNLOADS, MAX_TABS, MAX_WINDOWS};
+use super::{
+    history::{History, Lookup},
+    BrowserWindow, DownloadEntry, Report, TabEntry, WindowEntry, MAX_DOWNLOADS, MAX_TABS,
+    MAX_WINDOWS,
+};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use std::{
     collections::HashMap,
@@ -16,26 +20,34 @@ use windows::{
     Win32::{
         Foundation::{CloseHandle, HWND, LPARAM, MAX_PATH},
         Graphics::Gdi::{
-            DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-            DIB_RGB_COLORS, HGDIOBJ,
+            DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, BITMAPINFO,
+            BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HGDIOBJ,
         },
         Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES,
         System::{
+            Com::{
+                CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
+                COINIT_APARTMENTTHREADED,
+            },
             SystemInformation::GetLocalTime,
-            Com::{CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED},
-            Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION},
+            Threading::{
+                OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+                PROCESS_QUERY_LIMITED_INFORMATION,
+            },
             Variant::{VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_BSTR, VT_I4},
         },
         UI::{
-            Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON},
             Accessibility::{
-                CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationSelectionItemPattern,
-                IUIAutomationValuePattern, TreeScope_Descendants, UIA_ClassNamePropertyId,
-                UIA_ControlTypePropertyId, UIA_SelectionItemPatternId, UIA_TabItemControlTypeId, UIA_ValuePatternId,
+                CUIAutomation, IUIAutomation, IUIAutomationElement,
+                IUIAutomationSelectionItemPattern, IUIAutomationValuePattern,
+                TreeScope_Descendants, UIA_ClassNamePropertyId, UIA_ControlTypePropertyId,
+                UIA_SelectionItemPatternId, UIA_TabItemControlTypeId, UIA_ValuePatternId,
             },
+            Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON},
             WindowsAndMessaging::{
-                DestroyIcon, EnumWindows, GetIconInfo, GetWindow, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW,
-                GetWindowThreadProcessId, IsWindowVisible, GWL_EXSTYLE, GW_OWNER, ICONINFO, WS_EX_TOOLWINDOW,
+                DestroyIcon, EnumWindows, GetIconInfo, GetWindow, GetWindowLongPtrW,
+                GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
+                GWL_EXSTYLE, GW_OWNER, ICONINFO, WS_EX_TOOLWINDOW,
             },
         },
     },
@@ -64,7 +76,10 @@ fn list_window_handles() -> Vec<HWND> {
     // SAFETY: `enum_proc` only ever reads `lparam` as the `Vec<HWND>` we pass
     // here, for the duration of this synchronous call.
     unsafe {
-        let _ = EnumWindows(Some(enum_proc), LPARAM(std::ptr::addr_of_mut!(handles) as isize));
+        let _ = EnumWindows(
+            Some(enum_proc),
+            LPARAM(std::ptr::addr_of_mut!(handles) as isize),
+        );
     }
     handles
 }
@@ -98,14 +113,22 @@ fn process_name(pid: u32, cache: &mut HashMap<u32, (String, String)>) -> (String
             .and_then(|handle| {
                 let mut buffer = vec![0u16; MAX_PATH as usize];
                 let mut len = u32::try_from(buffer.len()).unwrap_or(0);
-                let path = QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, windows::core::PWSTR(buffer.as_mut_ptr()), &mut len)
-                    .ok()
-                    .map(|()| String::from_utf16_lossy(&buffer[..usize::try_from(len).unwrap_or(0)]));
+                let path = QueryFullProcessImageNameW(
+                    handle,
+                    PROCESS_NAME_WIN32,
+                    windows::core::PWSTR(buffer.as_mut_ptr()),
+                    &mut len,
+                )
+                .ok()
+                .map(|()| String::from_utf16_lossy(&buffer[..usize::try_from(len).unwrap_or(0)]));
                 let _ = CloseHandle(handle);
                 path
             })
             .map(|path| {
-                let name = Path::new(&path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let name = Path::new(&path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
                 (name, path)
             })
             .unwrap_or_default()
@@ -128,7 +151,13 @@ const EXCLUDED: [&str; 6] = [
     "lockapp.exe",
 ];
 
-const BROWSERS: [&str; 5] = ["chrome.exe", "msedge.exe", "brave.exe", "firefox.exe", "opera.exe"];
+const BROWSERS: [&str; 5] = [
+    "chrome.exe",
+    "msedge.exe",
+    "brave.exe",
+    "firefox.exe",
+    "opera.exe",
+];
 /// Chromium-based browsers only: Firefox and others do not expose tabs the
 /// same way through accessibility.
 const CHROMIUM_BROWSERS: [&str; 3] = ["chrome.exe", "msedge.exe", "brave.exe"];
@@ -165,7 +194,12 @@ fn list_windows() -> (Vec<Window>, bool) {
         if app.is_empty() || EXCLUDED.contains(&app.to_ascii_lowercase().as_str()) {
             continue;
         }
-        windows.push(Window { app, path, title, pid });
+        windows.push(Window {
+            app,
+            path,
+            title,
+            pid,
+        });
     }
     let truncated = windows.len() > MAX_WINDOWS;
     windows.truncate(MAX_WINDOWS);
@@ -202,7 +236,9 @@ fn with_bstr_variant<R>(text: &str, with: impl FnOnce(&VARIANT) -> R) -> R {
                 wReserved2: 0,
                 wReserved3: 0,
                 // SAFETY: bitwise copy of `bstr`'s pointer; see the doc comment.
-                Anonymous: VARIANT_0_0_0 { bstrVal: ManuallyDrop::new(unsafe { std::mem::transmute_copy(&bstr) }) },
+                Anonymous: VARIANT_0_0_0 {
+                    bstrVal: ManuallyDrop::new(unsafe { std::mem::transmute_copy(&bstr) }),
+                },
             }),
         },
     };
@@ -227,13 +263,21 @@ fn expected_tab_count(title: &str) -> Option<usize> {
 /// Reads the tabs of one Chromium browser window. Runs entirely on a fresh,
 /// short-lived thread with its own COM apartment, bounded by `timeout`: a
 /// busy/unresponsive browser never blocks the rest of the report.
-fn browser_tabs(hwnd_value: isize, window_title: &str, timeout: Duration) -> Result<Vec<TabEntry>, String> {
+fn browser_tabs(
+    hwnd_value: isize,
+    window_title: &str,
+    timeout: Duration,
+) -> Result<Vec<TabEntry>, String> {
     let (tx, rx) = mpsc::channel();
     let title = window_title.to_owned();
     std::thread::spawn(move || {
-        let _ = tx.send(read_tabs(HWND(hwnd_value as *mut core::ffi::c_void), &title));
+        let _ = tx.send(read_tabs(
+            HWND(hwnd_value as *mut core::ffi::c_void),
+            &title,
+        ));
     });
-    rx.recv_timeout(timeout).map_err(|_| "timed out".to_owned())?
+    rx.recv_timeout(timeout)
+        .map_err(|_| "timed out".to_owned())?
 }
 /// Finds the actual tab strip first (a `Tab`-typed control) and only looks
 /// for `TabItem`s inside it — searching the whole window for `TabItem`
@@ -251,20 +295,26 @@ fn read_tabs(hwnd: HWND, window_title: &str) -> Result<Vec<TabEntry>, String> {
     let result = (|| -> Result<Vec<TabEntry>, String> {
         let com = |e: windows::core::Error| format!("UI Automation: {e}");
         // SAFETY: standard COM activation of the system UI Automation engine.
-        let automation: IUIAutomation = unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) }.map_err(com)?;
+        let automation: IUIAutomation =
+            unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) }.map_err(com)?;
         // SAFETY: `hwnd` names a currently-open top-level window.
-        let root: IUIAutomationElement = unsafe { automation.ElementFromHandle(hwnd) }.map_err(com)?;
+        let root: IUIAutomationElement =
+            unsafe { automation.ElementFromHandle(hwnd) }.map_err(com)?;
         let tab_condition = variant_i32(UIA_TabItemControlTypeId.0);
         // SAFETY: `automation`/`root` are live COM objects; `tab_condition` is
         // a valid property-condition value for the duration of this call.
         let found = unsafe {
-            let condition = automation.CreatePropertyCondition(UIA_ControlTypePropertyId, &tab_condition).map_err(com)?;
-            root.FindAll(TreeScope_Descendants, &condition).map_err(com)?
+            let condition = automation
+                .CreatePropertyCondition(UIA_ControlTypePropertyId, &tab_condition)
+                .map_err(com)?;
+            root.FindAll(TreeScope_Descendants, &condition)
+                .map_err(com)?
         };
         // SAFETY: `found` is the live array returned above.
         let count = unsafe { found.Length() }.unwrap_or(0).max(0);
         let mut tabs = Vec::new();
-        let mut classes: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+        let mut classes: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
         for i in 0..count.min(i32::try_from(MAX_TABS * 4).unwrap_or(i32::MAX)) {
             // SAFETY: `i` is within the array's reported length.
             let Ok(tab) = (unsafe { found.GetElement(i) }) else {
@@ -275,25 +325,46 @@ fn read_tabs(hwnd: HWND, window_title: &str) -> Result<Vec<TabEntry>, String> {
             // same control type but never this class, and was being reported
             // as dozens of identical "tabs".
             // SAFETY: reading current properties of a live element.
-            let class = unsafe { tab.CurrentClassName() }.map(|n| n.to_string()).unwrap_or_default();
+            let class = unsafe { tab.CurrentClassName() }
+                .map(|n| n.to_string())
+                .unwrap_or_default();
             *classes.entry(class.clone()).or_default() += 1;
             if !is_tab_strip_class(&class) {
                 continue;
             }
-            let name = unsafe { tab.CurrentName() }.map(|n| n.to_string()).unwrap_or_default();
+            let name = unsafe { tab.CurrentName() }
+                .map(|n| n.to_string())
+                .unwrap_or_default();
             let active = unsafe { selection_active(&tab) };
-            tabs.push(TabEntry { title: page_title_of(&name).to_owned(), active, ..Default::default() });
+            tabs.push(TabEntry {
+                title: page_title_of(&name).to_owned(),
+                active,
+                ..Default::default()
+            });
             if tabs.len() >= MAX_TABS {
                 break;
             }
         }
-        let seen = || classes.iter().map(|(c, n)| format!("'{c}'×{n}")).collect::<Vec<_>>().join(", ");
+        let seen = || {
+            classes
+                .iter()
+                .map(|(c, n)| format!("'{c}'×{n}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         if tabs.is_empty() {
-            return Err(format!("no tab-strip items among {count} TabItem elements (classes: {})", seen()));
+            return Err(format!(
+                "no tab-strip items among {count} TabItem elements (classes: {})",
+                seen()
+            ));
         }
         if let Some(expected) = expected_tab_count(window_title) {
             if tabs.len() != expected {
-                return Err(format!("found {} tabs, window title says {expected} (classes: {})", tabs.len(), seen()));
+                return Err(format!(
+                    "found {} tabs, window title says {expected} (classes: {})",
+                    tabs.len(),
+                    seen()
+                ));
             }
         }
         // The active tab's address, read from the omnibox (Chromium's stable
@@ -302,9 +373,12 @@ fn read_tabs(hwnd: HWND, window_title: &str) -> Result<Vec<TabEntry>, String> {
             active.url = with_bstr_variant("OmniboxViewViews", |value| {
                 // SAFETY: `root` is the same live element as above.
                 unsafe {
-                    let condition = automation.CreatePropertyCondition(UIA_ClassNamePropertyId, value).ok()?;
+                    let condition = automation
+                        .CreatePropertyCondition(UIA_ClassNamePropertyId, value)
+                        .ok()?;
                     let edit = root.FindFirst(TreeScope_Descendants, &condition).ok()?;
-                    let pattern: IUIAutomationValuePattern = edit.GetCurrentPatternAs(UIA_ValuePatternId).ok()?;
+                    let pattern: IUIAutomationValuePattern =
+                        edit.GetCurrentPatternAs(UIA_ValuePatternId).ok()?;
                     Some(pattern.CurrentValue().ok()?.to_string()).filter(|s| !s.is_empty())
                 }
             })
@@ -349,11 +423,17 @@ fn window_page_title(window_title: &str) -> String {
 /// site icon can be matched by origin. Internal schemes are left alone.
 fn normalize_address(value: &str) -> String {
     let value = value.trim();
-    let has_scheme = value.contains("://") || ["about:", "data:", "blob:", "javascript:", "view-source:"].iter().any(|p| value.starts_with(p));
+    let has_scheme = value.contains("://")
+        || ["about:", "data:", "blob:", "javascript:", "view-source:"]
+            .iter()
+            .any(|p| value.starts_with(p));
     if has_scheme || value.is_empty() {
         value.to_owned()
     } else if value.contains('.') || value.starts_with("localhost") {
-        let local = value.starts_with("localhost") || value.starts_with("127.") || value.starts_with("192.168.") || value.starts_with("10.");
+        let local = value.starts_with("localhost")
+            || value.starts_with("127.")
+            || value.starts_with("192.168.")
+            || value.starts_with("10.");
         format!("{}://{value}", if local { "http" } else { "https" })
     } else {
         value.to_owned()
@@ -384,7 +464,8 @@ fn local_midnight_ms() -> i64 {
     // SAFETY: plain query with no arguments.
     let now = unsafe { GetLocalTime() };
     let since_midnight_ms =
-        ((i64::from(now.wHour) * 60 + i64::from(now.wMinute)) * 60 + i64::from(now.wSecond)) * 1000 + i64::from(now.wMilliseconds);
+        ((i64::from(now.wHour) * 60 + i64::from(now.wMinute)) * 60 + i64::from(now.wSecond)) * 1000
+            + i64::from(now.wMilliseconds);
     super::now_ms() - since_midnight_ms
 }
 
@@ -394,8 +475,14 @@ fn profile_roots() -> Vec<(&'static str, PathBuf)> {
         return Vec::new();
     };
     [
-        ("Chrome", local.join("Google").join("Chrome").join("User Data")),
-        ("Edge", local.join("Microsoft").join("Edge").join("User Data")),
+        (
+            "Chrome",
+            local.join("Google").join("Chrome").join("User Data"),
+        ),
+        (
+            "Edge",
+            local.join("Microsoft").join("Edge").join("User Data"),
+        ),
     ]
     .into_iter()
     .filter(|(_, path)| path.is_dir())
@@ -414,7 +501,12 @@ fn profiles_in(root: &Path) -> Vec<PathBuf> {
     profiles.truncate(5);
     profiles
 }
-fn read_downloads(browser: &str, profile: &Path, since_unix_ms: i64, notes: &mut Vec<String>) -> Vec<DownloadEntry> {
+fn read_downloads(
+    browser: &str,
+    profile: &Path,
+    since_unix_ms: i64,
+    notes: &mut Vec<String>,
+) -> Vec<DownloadEntry> {
     let staged = match stage_history_copy(profile) {
         Ok(path) => path,
         Err(error) => {
@@ -423,7 +515,10 @@ fn read_downloads(browser: &str, profile: &Path, since_unix_ms: i64, notes: &mut
         }
     };
     let result = (|| -> rusqlite::Result<Vec<DownloadEntry>> {
-        let conn = rusqlite::Connection::open_with_flags(&staged.path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let conn = rusqlite::Connection::open_with_flags(
+            &staged.path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
         let mut statement = conn.prepare(
             "SELECT d.target_path, d.start_time, d.received_bytes, \
              (SELECT url FROM downloads_url_chains c WHERE c.id = d.id ORDER BY c.chain_index DESC LIMIT 1) \
@@ -481,9 +576,14 @@ fn stage_copy(profile: &Path, name: &str) -> anyhow::Result<Staged> {
     std::fs::create_dir_all(&folder)?;
     std::fs::copy(profile.join(name), folder.join(name))?;
     for suffix in ["-wal", "-journal"] {
-        let _ = std::fs::copy(profile.join(format!("{name}{suffix}")), folder.join(format!("{name}{suffix}")));
+        let _ = std::fs::copy(
+            profile.join(format!("{name}{suffix}")),
+            folder.join(format!("{name}{suffix}")),
+        );
     }
-    Ok(Staged { path: folder.join(name) })
+    Ok(Staged {
+        path: folder.join(name),
+    })
 }
 fn stage_history_copy(profile: &Path) -> anyhow::Result<Staged> {
     stage_copy(profile, "History")
@@ -508,7 +608,11 @@ fn browser_label(app: &str) -> &'static str {
 }
 /// Profile folders of `browser`, empty if its data is not readable.
 fn browser_profiles(browser: &str) -> Vec<PathBuf> {
-    profile_roots().into_iter().filter(|(name, _)| *name == browser).flat_map(|(_, root)| profiles_in(&root)).collect()
+    profile_roots()
+        .into_iter()
+        .filter(|(name, _)| *name == browser)
+        .flat_map(|(_, root)| profiles_in(&root))
+        .collect()
 }
 /// Site icons for `origins`, tried across every profile of `browser`. Each
 /// profile's `Favicons` database is copied once for the whole batch.
@@ -518,7 +622,10 @@ fn favicons_for(browser: &str, origins: &[String]) -> HashMap<String, String> {
         let Ok(staged) = stage_copy(&profile, "Favicons") else {
             continue;
         };
-        let Ok(conn) = rusqlite::Connection::open_with_flags(&staged.path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) else {
+        let Ok(conn) = rusqlite::Connection::open_with_flags(
+            &staged.path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ) else {
             continue;
         };
         for origin in origins {
@@ -545,7 +652,14 @@ fn favicons_for(browser: &str, origins: &[String]) -> HashMap<String, String> {
 /// 120 MB`, `Title - Audio playing`); the history database has only the page
 /// title.
 fn page_title_of(tab_name: &str) -> &str {
-    for marker in [" - Memory usage", " - Audio playing", " - Muted", " - Camera recording", " - Microphone recording", " - Sleeping"] {
+    for marker in [
+        " - Memory usage",
+        " - Audio playing",
+        " - Muted",
+        " - Camera recording",
+        " - Microphone recording",
+        " - Sleeping",
+    ] {
         if let Some((title, _)) = tab_name.split_once(marker) {
             return title;
         }
@@ -562,7 +676,10 @@ fn urls_by_title(browser: &str, titles: &[String]) -> HashMap<String, String> {
         let Ok(staged) = stage_history_copy(&profile) else {
             continue;
         };
-        let Ok(conn) = rusqlite::Connection::open_with_flags(&staged.path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) else {
+        let Ok(conn) = rusqlite::Connection::open_with_flags(
+            &staged.path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ) else {
             continue;
         };
         for tab_name in titles {
@@ -570,9 +687,11 @@ fn urls_by_title(browser: &str, titles: &[String]) -> HashMap<String, String> {
                 continue;
             }
             let url = conn
-                .query_row("SELECT url FROM urls WHERE title = ?1 ORDER BY last_visit_time DESC LIMIT 1", [page_title_of(tab_name)], |row| {
-                    row.get::<_, String>(0)
-                })
+                .query_row(
+                    "SELECT url FROM urls WHERE title = ?1 ORDER BY last_visit_time DESC LIMIT 1",
+                    [page_title_of(tab_name)],
+                    |row| row.get::<_, String>(0),
+                )
                 .ok()
                 .filter(|u| u.starts_with("http://") || u.starts_with("https://"));
             if let Some(url) = url {
@@ -589,8 +708,13 @@ fn enrich_tabs(history: &History, app: &str, tabs: &mut [TabEntry]) {
     let browser = browser_label(app);
     let key = |title: &str| format!("url:{browser}:{title}");
     let mut missing: Vec<String> = Vec::new();
-    for tab in tabs.iter().filter(|t| t.url.is_none() && !t.title.is_empty()) {
-        if matches!(history.lookup(&key(&tab.title)), Lookup::Needed) && !missing.contains(&tab.title) {
+    for tab in tabs
+        .iter()
+        .filter(|t| t.url.is_none() && !t.title.is_empty())
+    {
+        if matches!(history.lookup(&key(&tab.title)), Lookup::Needed)
+            && !missing.contains(&tab.title)
+        {
             missing.push(tab.title.clone());
         }
     }
@@ -607,8 +731,13 @@ fn enrich_tabs(history: &History, app: &str, tabs: &mut [TabEntry]) {
     }
     let icon_key = |origin: &str| format!("icon:{browser}:{origin}");
     let mut origins: Vec<String> = Vec::new();
-    for origin in tabs.iter().filter_map(|t| t.url.as_deref().and_then(origin_of)) {
-        if matches!(history.lookup(&icon_key(&origin)), Lookup::Needed) && !origins.contains(&origin) {
+    for origin in tabs
+        .iter()
+        .filter_map(|t| t.url.as_deref().and_then(origin_of))
+    {
+        if matches!(history.lookup(&icon_key(&origin)), Lookup::Needed)
+            && !origins.contains(&origin)
+        {
             origins.push(origin);
         }
     }
@@ -672,7 +801,11 @@ fn icon_png(info: &SHFILEINFOW) -> Option<Vec<u8>> {
             pixel.swap(0, 2); // BGRA -> RGBA
         }
         let mut out = Vec::new();
-        let mut encoder = png::Encoder::new(&mut out, u32::try_from(width).ok()?, u32::try_from(height).ok()?);
+        let mut encoder = png::Encoder::new(
+            &mut out,
+            u32::try_from(width).ok()?,
+            u32::try_from(height).ok()?,
+        );
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
         encoder.write_header().ok()?.write_image_data(&rgba).ok()?;
@@ -692,12 +825,21 @@ fn bitmap_size(bitmap: windows::Win32::Graphics::Gdi::HBITMAP) -> Option<(i32, i
     let mut bm = BITMAP::default();
     // SAFETY: `bm` is a valid out-buffer of the size passed.
     let copied = unsafe {
-        GetObjectW(HGDIOBJ(bitmap.0), i32::try_from(std::mem::size_of::<BITMAP>()).ok()?, Some(std::ptr::addr_of_mut!(bm).cast()))
+        GetObjectW(
+            HGDIOBJ(bitmap.0),
+            i32::try_from(std::mem::size_of::<BITMAP>()).ok()?,
+            Some(std::ptr::addr_of_mut!(bm).cast()),
+        )
     };
-    (copied != 0 && (1..=256).contains(&bm.bmWidth) && (1..=256).contains(&bm.bmHeight)).then_some((bm.bmWidth, bm.bmHeight))
+    (copied != 0 && (1..=256).contains(&bm.bmWidth) && (1..=256).contains(&bm.bmHeight))
+        .then_some((bm.bmWidth, bm.bmHeight))
 }
 /// Top-down 32-bit BGRA pixels of `bitmap`, scaled by GDI to `width`×`height`.
-fn bitmap_bgra(bitmap: windows::Win32::Graphics::Gdi::HBITMAP, width: i32, height: i32) -> Option<Vec<u8>> {
+fn bitmap_bgra(
+    bitmap: windows::Win32::Graphics::Gdi::HBITMAP,
+    width: i32,
+    height: i32,
+) -> Option<Vec<u8>> {
     let header = BITMAPINFOHEADER {
         biSize: u32::try_from(std::mem::size_of::<BITMAPINFOHEADER>()).ok()?,
         biWidth: width,
@@ -707,13 +849,24 @@ fn bitmap_bgra(bitmap: windows::Win32::Graphics::Gdi::HBITMAP, width: i32, heigh
         biCompression: BI_RGB.0,
         ..Default::default()
     };
-    let mut info = BITMAPINFO { bmiHeader: header, ..Default::default() };
+    let mut info = BITMAPINFO {
+        bmiHeader: header,
+        ..Default::default()
+    };
     let mut pixels = vec![0u8; usize::try_from(width).ok()? * usize::try_from(height).ok()? * 4];
     // SAFETY: `pixels` holds width*height*4 bytes, as requested from GDI; the
     // screen DC is released immediately afterwards.
     let lines = unsafe {
         let hdc = GetDC(None);
-        let lines = GetDIBits(hdc, bitmap, 0, u32::try_from(height).ok()?, Some(pixels.as_mut_ptr().cast()), &mut info, DIB_RGB_COLORS);
+        let lines = GetDIBits(
+            hdc,
+            bitmap,
+            0,
+            u32::try_from(height).ok()?,
+            Some(pixels.as_mut_ptr().cast()),
+            &mut info,
+            DIB_RGB_COLORS,
+        );
         ReleaseDC(None, hdc);
         lines
     };
@@ -758,7 +911,11 @@ pub fn build(history: &History, include_downloads: bool) -> Report {
         if !CHROMIUM_BROWSERS.contains(&key.as_str()) {
             browsers.push(BrowserWindow {
                 app: window.app.clone(),
-                tabs: vec![TabEntry { title: window.title.clone(), active: true, ..Default::default() }],
+                tabs: vec![TabEntry {
+                    title: window.title.clone(),
+                    active: true,
+                    ..Default::default()
+                }],
                 unavailable: false,
             });
             continue;
@@ -782,15 +939,27 @@ pub fn build(history: &History, include_downloads: bool) -> Report {
         match scan {
             Ok(mut tabs) => {
                 enrich_tabs(history, &window.app, &mut tabs);
-                browsers.push(BrowserWindow { app: window.app.clone(), tabs, unavailable: false });
+                browsers.push(BrowserWindow {
+                    app: window.app.clone(),
+                    tabs,
+                    unavailable: false,
+                });
             }
             Err(reason) => {
                 scan_notes.push(format!("{}: tab list unavailable ({reason})", window.app));
                 // Fall back to the foreground page named by the window title,
                 // still resolving its address and site icon from history.
-                let mut tabs = vec![TabEntry { title: window_page_title(&window.title), active: true, ..Default::default() }];
+                let mut tabs = vec![TabEntry {
+                    title: window_page_title(&window.title),
+                    active: true,
+                    ..Default::default()
+                }];
                 enrich_tabs(history, &window.app, &mut tabs);
-                browsers.push(BrowserWindow { app: window.app.clone(), tabs, unavailable: true });
+                browsers.push(BrowserWindow {
+                    app: window.app.clone(),
+                    tabs,
+                    unavailable: true,
+                });
             }
         }
     }
@@ -799,7 +968,9 @@ pub fn build(history: &History, include_downloads: bool) -> Report {
         let (fresh, truncated, download_notes) = downloads();
         notes.extend(download_notes);
         if truncated {
-            notes.push(format!("Only the {MAX_DOWNLOADS} most recent downloads today are shown"));
+            notes.push(format!(
+                "Only the {MAX_DOWNLOADS} most recent downloads today are shown"
+            ));
         }
         history.set_downloads(fresh);
     }
@@ -816,14 +987,27 @@ pub fn build(history: &History, include_downloads: bool) -> Report {
         .iter()
         .flat_map(|b| b.tabs.iter())
         .filter(|t| !t.title.is_empty())
-        .map(|t| (t.title.clone(), t.title.clone(), t.url.clone(), t.favicon_png_base64.clone()))
+        .map(|t| {
+            (
+                t.title.clone(),
+                t.title.clone(),
+                t.url.clone(),
+                t.favicon_png_base64.clone(),
+            )
+        })
         .collect();
     let (apps, tabs) = history.record(&apps_seen, &tabs_seen);
 
     Report {
         supported: true,
         monitoring_enabled: true,
-        windows: listed.into_iter().map(|w| WindowEntry { app: w.app, title: w.title }).collect(),
+        windows: listed
+            .into_iter()
+            .map(|w| WindowEntry {
+                app: w.app,
+                title: w.title,
+            })
+            .collect(),
         windows_truncated,
         browsers,
         downloads,
@@ -838,9 +1022,18 @@ mod tests {
     use super::*;
     #[test]
     fn tab_count_parses_from_the_window_title_chromium_actually_sends() {
-        assert_eq!(expected_tab_count("Wikipedia and 2 more pages - Profile 1 - Microsoft\u{200b} Edge"), Some(3));
-        assert_eq!(expected_tab_count("Example Domain - Profile 1 - Microsoft\u{200b} Edge"), None);
-        assert_eq!(expected_tab_count("GitHub - octocat/Hello-World - Google Chrome"), None);
+        assert_eq!(
+            expected_tab_count("Wikipedia and 2 more pages - Profile 1 - Microsoft\u{200b} Edge"),
+            Some(3)
+        );
+        assert_eq!(
+            expected_tab_count("Example Domain - Profile 1 - Microsoft\u{200b} Edge"),
+            None
+        );
+        assert_eq!(
+            expected_tab_count("GitHub - octocat/Hello-World - Google Chrome"),
+            None
+        );
     }
 
     #[test]
@@ -853,7 +1046,10 @@ mod tests {
 
     #[test]
     fn omnibox_text_becomes_a_complete_address() {
-        assert_eq!(normalize_address("vnexpress.net/tin"), "https://vnexpress.net/tin");
+        assert_eq!(
+            normalize_address("vnexpress.net/tin"),
+            "https://vnexpress.net/tin"
+        );
         assert_eq!(normalize_address("https://a.dev/x"), "https://a.dev/x");
         assert_eq!(normalize_address("edge://newtab"), "edge://newtab");
         assert_eq!(normalize_address("localhost:3000"), "http://localhost:3000");
@@ -862,9 +1058,18 @@ mod tests {
 
     #[test]
     fn page_title_is_extracted_from_the_window_title() {
-        assert_eq!(window_page_title("Facebook and 2 more pages - Profile 1 - Microsoft\u{200b} Edge"), "Facebook");
-        assert_eq!(window_page_title("Example Domain - Profile 1 - Microsoft\u{200b} Edge"), "Example Domain");
-        assert_eq!(window_page_title("GitHub - octocat/Hello-World - Google Chrome"), "GitHub - octocat/Hello-World");
+        assert_eq!(
+            window_page_title("Facebook and 2 more pages - Profile 1 - Microsoft\u{200b} Edge"),
+            "Facebook"
+        );
+        assert_eq!(
+            window_page_title("Example Domain - Profile 1 - Microsoft\u{200b} Edge"),
+            "Example Domain"
+        );
+        assert_eq!(
+            window_page_title("GitHub - octocat/Hello-World - Google Chrome"),
+            "GitHub - octocat/Hello-World"
+        );
     }
 
     #[test]
@@ -877,7 +1082,10 @@ mod tests {
     #[test]
     fn chrome_timestamps_convert_to_unix_milliseconds() {
         // 2024-01-01T00:00:00Z in Chrome's 1601-epoch microseconds.
-        assert_eq!(chrome_time_to_unix_ms(13_348_944_000_000_000), 1_704_067_200_000);
+        assert_eq!(
+            chrome_time_to_unix_ms(13_348_944_000_000_000),
+            1_704_067_200_000
+        );
         assert_eq!(chrome_time_to_unix_ms(CHROME_EPOCH_OFFSET_US), 0);
     }
 }

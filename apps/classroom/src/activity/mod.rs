@@ -197,13 +197,23 @@ pub fn address_of(url: &str) -> Option<String> {
     let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
     let rest = rest.split(['?', '#']).next().unwrap_or("");
     let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p));
-    let host = authority.rsplit('@').next().unwrap_or("").split(':').next().unwrap_or("");
+    let host = authority
+        .rsplit('@')
+        .next()
+        .unwrap_or("")
+        .split(':')
+        .next()
+        .unwrap_or("");
     let host = host.trim().to_ascii_lowercase();
     if host.is_empty() || host.len() > 120 {
         return None;
     }
     let path: String = path.trim_end_matches('/').chars().take(100).collect();
-    Some(if path.is_empty() { host } else { format!("{host}/{}", path.to_ascii_lowercase()) })
+    Some(if path.is_empty() {
+        host
+    } else {
+        format!("{host}/{}", path.to_ascii_lowercase())
+    })
 }
 
 fn clip(text: &str, max: usize) -> String {
@@ -226,11 +236,7 @@ pub fn live_summary(
     }
     let mut seen: Vec<&WindowEntry> = Vec::new();
     for window in &report.windows {
-        if !window.app.is_empty()
-            && !seen
-                .iter()
-                .any(|w| w.app.eq_ignore_ascii_case(&window.app))
-        {
+        if !window.app.is_empty() && !seen.iter().any(|w| w.app.eq_ignore_ascii_case(&window.app)) {
             seen.push(window);
         }
         if seen.len() == max_apps.clamp(1, LIVE_APPS) {
@@ -241,7 +247,8 @@ pub fn live_summary(
     let apps: Vec<_> = seen
         .iter()
         .map(|w| {
-            let mut entry = serde_json::json!({"app": clip(&w.app, 64), "title": clip(&w.title, 80)});
+            let mut entry =
+                serde_json::json!({"app": clip(&w.app, 64), "title": clip(&w.title, 80)});
             if let Some(icon) = report
                 .apps
                 .iter()
@@ -296,7 +303,9 @@ pub fn live_summary(
     // (AI sites) whether or not that browser is in front.
     let mut hosts: Vec<String> = Vec::new();
     for tab in report.browsers.iter().flat_map(|b| b.tabs.iter()) {
-        let Some(url) = tab.url.as_deref() else { continue };
+        let Some(url) = tab.url.as_deref() else {
+            continue;
+        };
         if let Some(address) = address_of(url) {
             if !hosts.contains(&address) && hosts.len() < MAX_HOSTS {
                 hosts.push(address);
@@ -338,7 +347,10 @@ mod live_tests {
     use std::collections::HashSet;
 
     fn window(app: &str, title: &str) -> WindowEntry {
-        WindowEntry { app: app.into(), title: title.into() }
+        WindowEntry {
+            app: app.into(),
+            title: title.into(),
+        }
     }
     fn sample() -> Report {
         Report {
@@ -354,7 +366,10 @@ mod live_tests {
             browsers: vec![BrowserWindow {
                 app: "chrome.exe".into(),
                 tabs: vec![
-                    TabEntry { title: "Background".into(), ..Default::default() },
+                    TabEntry {
+                        title: "Background".into(),
+                        ..Default::default()
+                    },
                     TabEntry {
                         title: "Docs".into(),
                         url: Some("https://docs.rs/x".into()),
@@ -406,8 +421,14 @@ mod live_tests {
 
     #[test]
     fn addresses_are_reduced_to_host_and_path() {
-        assert_eq!(address_of("https://Chatgpt.com/c/123?x=1#y").as_deref(), Some("chatgpt.com/c/123"));
-        assert_eq!(address_of("http://user@localhost:3000/").as_deref(), Some("localhost"));
+        assert_eq!(
+            address_of("https://Chatgpt.com/c/123?x=1#y").as_deref(),
+            Some("chatgpt.com/c/123")
+        );
+        assert_eq!(
+            address_of("http://user@localhost:3000/").as_deref(),
+            Some("localhost")
+        );
         assert_eq!(address_of("https://a.dev/x/").as_deref(), Some("a.dev/x"));
         assert_eq!(address_of("edge://newtab").as_deref(), Some("newtab"));
         assert_eq!(address_of("").as_deref(), None);
@@ -459,7 +480,11 @@ mod live_tests {
     #[test]
     fn the_largest_possible_summary_fits_what_the_teacher_accepts() {
         // (tab titles and hosts add to the icons: see the sizes below)
-        let mut report = Report { supported: true, monitoring_enabled: true, ..Default::default() };
+        let mut report = Report {
+            supported: true,
+            monitoring_enabled: true,
+            ..Default::default()
+        };
         for i in 0..LIVE_APPS {
             let name = format!("app{i}.exe");
             report.windows.push(window(&name, &"t".repeat(200)));
@@ -475,7 +500,11 @@ mod live_tests {
             tabs: (0..40)
                 .map(|i| TabEntry {
                     title: format!("{i}{}", "t".repeat(200)),
-                    url: Some(format!("https://site{i}{}.example/{}", "h".repeat(100), "p".repeat(400))),
+                    url: Some(format!(
+                        "https://site{i}{}.example/{}",
+                        "h".repeat(100),
+                        "p".repeat(400)
+                    )),
                     active: i == 0,
                     ..Default::default()
                 })
@@ -484,8 +513,15 @@ mod live_tests {
         });
         let mut sent = HashSet::new();
         let summary = live_summary(&report, &mut sent, LIVE_APPS).unwrap();
-        assert!(summary.to_string().len() < MAX_SUMMARY_BYTES, "{} bytes", summary.to_string().len());
-        assert!(MAX_SUMMARY_BYTES < 64 * 1024, "one tools packet is at most 64 KiB");
+        assert!(
+            summary.to_string().len() < MAX_SUMMARY_BYTES,
+            "{} bytes",
+            summary.to_string().len()
+        );
+        assert!(
+            MAX_SUMMARY_BYTES < 64 * 1024,
+            "one tools packet is at most 64 KiB"
+        );
         // An icon over the cap is dropped instead of sent.
         report.apps[0].icon_png_base64 = Some("A".repeat(MAX_ICON_BASE64 + 1));
         let mut fresh = HashSet::new();
@@ -499,10 +535,35 @@ mod live_tests {
         let one = live_summary(&sample(), &mut sent, 1).unwrap();
         assert_eq!(one["apps"].as_array().unwrap().len(), 1);
         let five = live_summary(&sample(), &mut sent, 5).unwrap();
-        assert_eq!(five["apps"].as_array().unwrap().len(), 4, "only 4 distinct apps are open");
-        assert_eq!(ActivityOptions { scan_seconds: 1, live_apps: 99, ..Default::default() }.sanitized().live_apps, 5);
-        assert_eq!(ActivityOptions { scan_seconds: 1, ..Default::default() }.sanitized().scan_seconds, 3);
-        assert_eq!(ActivityOptions::default().scan_seconds, 6, "today's behaviour is the default");
+        assert_eq!(
+            five["apps"].as_array().unwrap().len(),
+            4,
+            "only 4 distinct apps are open"
+        );
+        assert_eq!(
+            ActivityOptions {
+                scan_seconds: 1,
+                live_apps: 99,
+                ..Default::default()
+            }
+            .sanitized()
+            .live_apps,
+            5
+        );
+        assert_eq!(
+            ActivityOptions {
+                scan_seconds: 1,
+                ..Default::default()
+            }
+            .sanitized()
+            .scan_seconds,
+            3
+        );
+        assert_eq!(
+            ActivityOptions::default().scan_seconds,
+            6,
+            "today's behaviour is the default"
+        );
     }
 
     #[test]

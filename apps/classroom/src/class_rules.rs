@@ -26,7 +26,9 @@ impl<T> Scoped<T> {
         Self { value, scope }
     }
     pub fn covers(&self, student: &str) -> bool {
-        self.scope.as_ref().is_none_or(|ids| ids.iter().any(|id| id == student))
+        self.scope
+            .as_ref()
+            .is_none_or(|ids| ids.iter().any(|id| id == student))
     }
 }
 
@@ -56,7 +58,10 @@ impl ClassRules {
         let today = crate::local_day::today();
         match doc.read::<Self>().ok().flatten() {
             Some(rules) if rules.day == today => rules,
-            _ => Self { day: today, ..Self::default() },
+            _ => Self {
+                day: today,
+                ..Self::default()
+            },
         }
     }
     pub fn save(&self, doc: &classroom_store::Doc) -> anyhow::Result<()> {
@@ -69,7 +74,10 @@ impl ClassRules {
         if self.day == today {
             return false;
         }
-        *self = Self { day: today, ..Self::default() };
+        *self = Self {
+            day: today,
+            ..Self::default()
+        };
         true
     }
 
@@ -114,7 +122,9 @@ impl ClassRules {
             }
         }
         if let Some(rule) = self.vscode.as_ref().filter(|r| r.covers(student)) {
-            if caps["vscode"] == 1 && caps["vscode_fp"].as_str().unwrap_or("") != rule.value.fingerprint() {
+            if caps["vscode"] == 1
+                && caps["vscode_fp"].as_str().unwrap_or("") != rule.value.fingerprint()
+            {
                 fixes.push(("vscode_policy", json!({"policy": rule.value})));
             }
         }
@@ -130,7 +140,11 @@ impl ClassRules {
         }
         if let Some(rule) = self.clipboard.as_ref().filter(|r| r.covers(student)) {
             if caps["power"] == 1 && (caps["clipboard_blocked"] == 1) != rule.value {
-                let op = if rule.value { "clipboard_block" } else { "clipboard_allow" };
+                let op = if rule.value {
+                    "clipboard_block"
+                } else {
+                    "clipboard_allow"
+                };
                 fixes.push(("power", json!({"op": op, "message": ""})));
             }
         }
@@ -147,16 +161,27 @@ mod tests {
         ClassRules {
             day: crate::local_day::today(),
             internet: Some(Scoped::new(
-                InternetPolicy { mode: Mode::BlockAll, rules: vec![] },
+                InternetPolicy {
+                    mode: Mode::BlockAll,
+                    rules: vec![],
+                },
                 None,
             )),
             copilot: Some(Scoped::new(true, Some(vec!["a".into()]))),
             vscode: Some(Scoped::new(
-                VsCodePolicy { enabled: true, allowed: vec!["ms-python.python".into()] },
+                VsCodePolicy {
+                    enabled: true,
+                    allowed: vec!["ms-python.python".into()],
+                },
                 None,
             )),
             apps: Some(Scoped::new(
-                AppPolicy { enabled: true, mode: MODE_BLOCK.into(), ids: vec!["0123456789ab".into()], paths: vec![] },
+                AppPolicy {
+                    enabled: true,
+                    mode: MODE_BLOCK.into(),
+                    ids: vec!["0123456789ab".into()],
+                    paths: vec![],
+                },
                 None,
             )),
             clipboard: Some(Scoped::new(true, Some(vec!["a".into()]))),
@@ -169,7 +194,16 @@ mod tests {
     fn a_fresh_student_gets_every_rule_that_covers_it() {
         let caps = json!({"guard":1,"copilot_network":1,"vscode":1,"apps":1,"power":1});
         let names: Vec<&str> = rules().fixes_for("a", &caps).iter().map(|f| f.0).collect();
-        assert_eq!(names, ["policy", "copilot_policy", "vscode_policy", "app_policy", "power"]);
+        assert_eq!(
+            names,
+            [
+                "policy",
+                "copilot_policy",
+                "vscode_policy",
+                "app_policy",
+                "power"
+            ]
+        );
         // Scoped rules skip computers outside their group.
         let names: Vec<&str> = rules().fixes_for("b", &caps).iter().map(|f| f.0).collect();
         assert_eq!(names, ["policy", "vscode_policy", "app_policy"]);
@@ -178,7 +212,10 @@ mod tests {
     #[test]
     fn blocking_ai_sites_is_added_to_the_internet_rule_and_lifted_cleanly() {
         let caps = json!({"guard":1,"internet_fp":"","internet":"open"});
-        let mut rules = ClassRules { day: crate::local_day::today(), ..Default::default() };
+        let mut rules = ClassRules {
+            day: crate::local_day::today(),
+            ..Default::default()
+        };
         // Nothing asked: nothing to do.
         assert!(rules.fixes_for("a", &caps).is_empty());
         // Switch on: the Student is told to block the list.
@@ -194,18 +231,28 @@ mod tests {
         assert!(rules.fixes_for("a", &in_step).is_empty());
         // The Teacher's own rule for this Student combines with it.
         rules.internet = Some(Scoped::new(
-            InternetPolicy { mode: Mode::BlockOnly, rules: vec!["facebook.com".into()] },
+            InternetPolicy {
+                mode: Mode::BlockOnly,
+                rules: vec!["facebook.com".into()],
+            },
             Some(vec!["a".into()]),
         ));
         let a = rules.internet_for("a").unwrap();
         assert_eq!(a.rules, ["facebook.com", "chatgpt.com"]);
         let b = rules.internet_for("b").unwrap();
-        assert_eq!(b.rules, ["chatgpt.com"], "outside the group only the AI list applies");
+        assert_eq!(
+            b.rules,
+            ["chatgpt.com"],
+            "outside the group only the AI list applies"
+        );
         // Switch off with an explicit open rule remembered: the Student is released.
         rules.ai = None;
         rules.internet = Some(Scoped::new(InternetPolicy::default(), None));
         let blocking = json!({"guard":1,"internet_fp":"abc123","internet":"block_only"});
-        assert_eq!(rules.fixes_for("a", &blocking)[0].1["policy"]["internet"]["mode"], "open");
+        assert_eq!(
+            rules.fixes_for("a", &blocking)[0].1["policy"]["internet"]["mode"],
+            "open"
+        );
     }
 
     #[test]

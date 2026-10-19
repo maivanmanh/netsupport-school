@@ -61,7 +61,8 @@ pub(super) fn run(
     thread::spawn(move || {
         let _slot = slot;
         let outcome = (|| -> Result<()> {
-            let request: crate::app_control::ListRequest = serde_json::from_str(&p.text).unwrap_or_default();
+            let request: crate::app_control::ListRequest =
+                serde_json::from_str(&p.text).unwrap_or_default();
             let report = crate::app_control::list_apps(&request);
             let body = serde_json::to_string(&report)?;
             let mut s = TcpStream::connect_timeout(&address.into(), Duration::from_secs(2))?;
@@ -74,7 +75,10 @@ pub(super) fn run(
             send(&mut s, &hello)?;
             anyhow::ensure!(read(&mut s)?.action == "ready", "Application list rejected");
             s.write_all(body.as_bytes())?;
-            anyhow::ensure!(read(&mut s)?.action == "ok", "Application list not accepted");
+            anyhow::ensure!(
+                read(&mut s)?.action == "ok",
+                "Application list not accepted"
+            );
             Ok(())
         })();
         if let Err(error) = outcome {

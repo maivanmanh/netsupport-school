@@ -931,23 +931,22 @@ pub(super) fn run(
                         }
                     }
                     "ai_sites_set" | "ai_sites_reset" => {
-                        let wanted: Result<Vec<String>, String> = if command.action
-                            == "ai_sites_reset"
-                        {
-                            Ok(super::ai_sites::defaults())
-                        } else {
-                            command.input["sites"]
-                                .as_array()
-                                .ok_or_else(|| "Thiếu danh sách website".to_owned())
-                                .and_then(|list| {
-                                    let lines: Vec<String> = list
-                                        .iter()
-                                        .filter_map(|v| v.as_str().map(str::to_owned))
-                                        .collect();
-                                    super::ai_sites::normalize_list(&lines)
-                                        .map_err(|e| format!("{e:#}"))
-                                })
-                        };
+                        let wanted: Result<Vec<String>, String> =
+                            if command.action == "ai_sites_reset" {
+                                Ok(super::ai_sites::defaults())
+                            } else {
+                                command.input["sites"]
+                                    .as_array()
+                                    .ok_or_else(|| "Thiếu danh sách website".to_owned())
+                                    .and_then(|list| {
+                                        let lines: Vec<String> = list
+                                            .iter()
+                                            .filter_map(|v| v.as_str().map(str::to_owned))
+                                            .collect();
+                                        super::ai_sites::normalize_list(&lines)
+                                            .map_err(|e| format!("{e:#}"))
+                                    })
+                            };
                         match wanted {
                             Ok(list) => match ai_doc.write(&list) {
                                 Ok(()) => {
@@ -1019,7 +1018,11 @@ pub(super) fn run(
                             }
                             rule_attempts.clear();
                             rules_tick = Instant::now() - Duration::from_secs(2);
-                            info!(enabled = on, sites = ai_sites.len(), "AI website blocking changed");
+                            info!(
+                                enabled = on,
+                                sites = ai_sites.len(),
+                                "AI website blocking changed"
+                            );
                             publish_due = Instant::now();
                             Ok(())
                         }
@@ -1616,8 +1619,8 @@ pub(super) fn run(
                                 Ok(None)
                             }
                             "recording_delete" => {
-                                let removed =
-                                    tools_hub.recording_delete(input["id"].as_str().unwrap_or(""))?;
+                                let removed = tools_hub
+                                    .recording_delete(input["id"].as_str().unwrap_or(""))?;
                                 info!(files = removed, "recording deleted");
                                 Ok(Some(json!({"files_deleted": removed})))
                             }
@@ -2574,7 +2577,10 @@ mod tests {
         let next = tuned_config(&base, Some(&overlay)).unwrap();
         assert_eq!(next.recording.height, 480, "the new setting is used");
         assert_eq!(next.tools.recording_max_minutes, 20);
-        assert_eq!(next.recording.fps, 30, "a setting no longer stored is back to default");
+        assert_eq!(
+            next.recording.fps, 30,
+            "a setting no longer stored is back to default"
+        );
         assert_eq!(next.activity.live_apps, 3);
         assert_eq!(next.tools.max_file_mb, 300);
         // Empty or missing overlay: everything adjustable is default.

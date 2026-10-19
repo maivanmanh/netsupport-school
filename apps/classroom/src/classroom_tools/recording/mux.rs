@@ -171,7 +171,14 @@ mod tests {
             [0, 0, 0, 2, 0x65, 3, 0, 0, 0, 2, 0x41, 4]
         );
         assert!(avcc(&[1, 2, 3]).is_err());
-        assert!(Mux::start(Path::new("unused.mp4"), (1280, 720), &[0, 0, 1, 0x41, 3], 0, 18_100).is_err());
+        assert!(Mux::start(
+            Path::new("unused.mp4"),
+            (1280, 720),
+            &[0, 0, 1, 0x41, 3],
+            0,
+            18_100
+        )
+        .is_err());
     }
     #[test]
     fn real_h264_can_be_remuxed_without_encoding_or_audio() {

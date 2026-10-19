@@ -281,7 +281,11 @@ impl FileWindow {
             c.round_rect(collapse, 6, 0x00ee_f2f6);
         }
         let (cx, cy) = (collapse[0] as f32 + 14.0, collapse[1] as f32 + 14.0);
-        let ink = if hover == Some(Hit::Collapse) { INK } else { MUTED };
+        let ink = if hover == Some(Hit::Collapse) {
+            INK
+        } else {
+            MUTED
+        };
         c.line((cx - 5.0, cy), (cx + 5.0, cy), 1.6, ink);
         if layout.collapsed {
             c.line((cx, cy - 5.0), (cx, cy + 5.0), 1.6, ink);
@@ -320,7 +324,9 @@ impl FileWindow {
             c.text_px(TEXT_X, y + 11, &name, INK, 15);
             let (status, color) = match &t.state {
                 TransferState::Waiting => ("Waiting…".to_owned(), MUTED),
-                TransferState::Receiving => (format!("{} of {}", size(t.done), size(t.size)), MUTED),
+                TransferState::Receiving => {
+                    (format!("{} of {}", size(t.done), size(t.size)), MUTED)
+                }
                 TransferState::Saved(_) | TransferState::AlreadyPresent(_)
                     if hover == Some(Hit::Row(i)) =>
                 {
@@ -420,7 +426,9 @@ impl FileProgress {
         let transfers = inbox.transfers();
         if self.window.is_none() {
             // Reopen only for a new offer, not for leftovers already closed.
-            let fresh = transfers.iter().any(|t| !self.seen.contains(&t.id) || t.state.active());
+            let fresh = transfers
+                .iter()
+                .any(|t| !self.seen.contains(&t.id) || t.state.active());
             if !transfers.is_empty() && fresh {
                 match FileWindow::new(transfers.len()) {
                     Ok(window) => self.window = Some(window),

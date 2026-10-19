@@ -21,26 +21,24 @@ pub const MAX_ENTRIES: usize = 500;
 mod imp {
     use super::{ClipboardEntry, MAX_CHARS};
     use anyhow::{Context, Result};
-    use std::{
-        mem::ManuallyDrop,
-        sync::mpsc,
-        thread,
-        time::Duration,
-    };
+    use std::{mem::ManuallyDrop, sync::mpsc, thread, time::Duration};
+    use windows::core::PCWSTR;
     use windows::Win32::{
         Foundation::{HGLOBAL, HWND, LPARAM, LRESULT, WPARAM},
         System::{
-            DataExchange::{AddClipboardFormatListener, CloseClipboard, GetClipboardData, OpenClipboard},
+            DataExchange::{
+                AddClipboardFormatListener, CloseClipboard, GetClipboardData, OpenClipboard,
+            },
             LibraryLoader::GetModuleHandleW,
             Memory::{GlobalLock, GlobalSize, GlobalUnlock},
         },
         UI::WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow, GetMessageW,
-            GetWindowThreadProcessId, PostMessageW, PostQuitMessage, RegisterClassW, TranslateMessage,
-            CW_USEDEFAULT, HWND_MESSAGE, MSG, WM_CLIPBOARDUPDATE, WM_CLOSE, WNDCLASSW, WS_OVERLAPPED,
+            GetWindowThreadProcessId, PostMessageW, PostQuitMessage, RegisterClassW,
+            TranslateMessage, CW_USEDEFAULT, HWND_MESSAGE, MSG, WM_CLIPBOARDUPDATE, WM_CLOSE,
+            WNDCLASSW, WS_OVERLAPPED,
         },
     };
-    use windows::core::PCWSTR;
 
     const CF_UNICODETEXT: u32 = 13;
 
@@ -104,7 +102,8 @@ mod imp {
             let (ready, started) = mpsc::channel::<Result<isize, String>>();
             let worker = thread::spawn(move || {
                 let outcome = (|| -> Result<isize> {
-                    let class_name: Vec<u16> = "ClassroomClipboardMonitor\0".encode_utf16().collect();
+                    let class_name: Vec<u16> =
+                        "ClassroomClipboardMonitor\0".encode_utf16().collect();
                     // SAFETY: `class_name` outlives the registration/creation calls.
                     let hwnd = unsafe {
                         let module = GetModuleHandleW(None).context("GetModuleHandleW failed")?;
@@ -130,7 +129,8 @@ mod imp {
                             Some(instance),
                             None,
                         )?;
-                        AddClipboardFormatListener(hwnd).context("AddClipboardFormatListener failed")?;
+                        AddClipboardFormatListener(hwnd)
+                            .context("AddClipboardFormatListener failed")?;
                         hwnd
                     };
                     Ok(hwnd.0 as isize)
@@ -151,7 +151,9 @@ mod imp {
                 unsafe {
                     while GetMessageW(&mut message, None, 0, 0).as_bool() {
                         if message.message == WM_CLIPBOARDUPDATE {
-                            if let Some(text) = read_clipboard_text(HWND(hwnd as *mut core::ffi::c_void)) {
+                            if let Some(text) =
+                                read_clipboard_text(HWND(hwnd as *mut core::ffi::c_void))
+                            {
                                 let text = text.trim();
                                 if !text.is_empty() {
                                     let truncated = text.chars().count() > MAX_CHARS;
@@ -175,7 +177,10 @@ mod imp {
                 .recv_timeout(Duration::from_secs(3))
                 .context("Clipboard monitor did not start")?
                 .map_err(|error| anyhow::anyhow!(error))?;
-            Ok(Self { hwnd, worker: Some(worker) })
+            Ok(Self {
+                hwnd,
+                worker: Some(worker),
+            })
         }
     }
     impl Drop for Watcher {
@@ -183,14 +188,24 @@ mod imp {
             // SAFETY: `self.hwnd` is this watcher's own message-only window;
             // WM_CLOSE there ends the loop above.
             unsafe {
-                let _ = PostMessageW(Some(HWND(self.hwnd as *mut core::ffi::c_void)), WM_CLOSE, WPARAM(0), LPARAM(0));
+                let _ = PostMessageW(
+                    Some(HWND(self.hwnd as *mut core::ffi::c_void)),
+                    WM_CLOSE,
+                    WPARAM(0),
+                    LPARAM(0),
+                );
             }
             if let Some(worker) = self.worker.take() {
                 let _ = worker.join();
             }
         }
     }
-    unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    unsafe extern "system" fn wndproc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
         if msg == WM_CLOSE {
             // SAFETY: ends this thread's message loop cleanly; `hwnd` is this window.
             unsafe {

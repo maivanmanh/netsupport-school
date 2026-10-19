@@ -62,7 +62,8 @@ pub mod ns {
     pub const PROFILE: &str = "profile";
     pub(crate) const META: &str = "meta";
     pub const ALL: &[&str] = &[
-        PREFS, CONFIG, ROSTER, INVENTORY, RULES, BADGES, RECORDINGS, HARDWARE, UI, ACTIVITY, PROFILE,
+        PREFS, CONFIG, ROSTER, INVENTORY, RULES, BADGES, RECORDINGS, HARDWARE, UI, ACTIVITY,
+        PROFILE,
     ];
 }
 
@@ -151,16 +152,24 @@ impl Store {
         Self::prepare(&conn, true)?;
         let check: String = conn.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
         if check != "ok" {
-            return Err(StoreError::Invalid(format!("integrity check failed: {check}")));
+            return Err(StoreError::Invalid(format!(
+                "integrity check failed: {check}"
+            )));
         }
-        Ok(Self { conn: Mutex::new(conn), path: Some(path.to_path_buf()) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+            path: Some(path.to_path_buf()),
+        })
     }
 
     /// A private in-memory database (tests, tools).
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         Self::prepare(&conn, false)?;
-        Ok(Self { conn: Mutex::new(conn), path: None })
+        Ok(Self {
+            conn: Mutex::new(conn),
+            path: None,
+        })
     }
 
     fn prepare(conn: &Connection, wal: bool) -> Result<()> {
@@ -170,15 +179,23 @@ impl Store {
         }
         // Settings are written rarely; prefer durability over speed.
         conn.pragma_update(None, "synchronous", "FULL")?;
-        let version = usize::try_from(conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))?)
-            .unwrap_or(usize::MAX);
+        let version =
+            usize::try_from(conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))?)
+                .unwrap_or(usize::MAX);
         if version > MIGRATIONS.len() {
-            return Err(StoreError::TooNew { found: version, supported: MIGRATIONS.len() });
+            return Err(StoreError::TooNew {
+                found: version,
+                supported: MIGRATIONS.len(),
+            });
         }
         for (index, step) in MIGRATIONS.iter().enumerate().skip(version) {
             let tx = conn.unchecked_transaction()?;
             tx.execute_batch(step)?;
-            tx.pragma_update(None, "user_version", i64::try_from(index + 1).unwrap_or(i64::MAX))?;
+            tx.pragma_update(
+                None,
+                "user_version",
+                i64::try_from(index + 1).unwrap_or(i64::MAX),
+            )?;
             tx.commit()?;
         }
         Ok(())
@@ -190,7 +207,9 @@ impl Store {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.conn.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub fn get(&self, namespace: &str, key: &str) -> Result<Option<Value>> {
@@ -207,7 +226,10 @@ impl Store {
     }
 
     pub fn get_as<T: DeserializeOwned>(&self, namespace: &str, key: &str) -> Result<Option<T>> {
-        Ok(self.get(namespace, key)?.map(serde_json::from_value).transpose()?)
+        Ok(self
+            .get(namespace, key)?
+            .map(serde_json::from_value)
+            .transpose()?)
     }
 
     pub fn put(&self, namespace: &str, key: &str, value: &Value) -> Result<()> {
@@ -255,7 +277,9 @@ impl Store {
             check_name(namespace, key)?;
             if let Some(value) = value {
                 if serde_json::to_vec(value)?.len() > MAX_DOCUMENT_BYTES {
-                    return Err(StoreError::Invalid(format!("document '{key}' is too large")));
+                    return Err(StoreError::Invalid(format!(
+                        "document '{key}' is too large"
+                    )));
                 }
             }
         }
@@ -296,11 +320,18 @@ impl Store {
     }
 
     /// Replaces a whole namespace atomically.
-    pub fn replace_namespace(&self, namespace: &str, entries: &BTreeMap<String, Value>) -> Result<()> {
+    pub fn replace_namespace(
+        &self,
+        namespace: &str,
+        entries: &BTreeMap<String, Value>,
+    ) -> Result<()> {
         check_name(namespace, "-")?;
         let mut conn = self.lock();
         let tx = conn.transaction()?;
-        tx.execute("DELETE FROM documents WHERE namespace = ?1", params![namespace])?;
+        tx.execute(
+            "DELETE FROM documents WHERE namespace = ?1",
+            params![namespace],
+        )?;
         for (key, value) in entries {
             check_name(namespace, key)?;
             tx.execute(
@@ -315,7 +346,11 @@ impl Store {
     /// A handle to one document, for components that persist a single value.
     #[must_use]
     pub fn doc(self: &Arc<Self>, namespace: &str, key: &str) -> Doc {
-        Doc { store: Arc::clone(self), namespace: namespace.to_owned(), key: key.to_owned() }
+        Doc {
+            store: Arc::clone(self),
+            namespace: namespace.to_owned(),
+            key: key.to_owned(),
+        }
     }
 
     /// Imports the pre-database files found in `dir` once; see [`legacy`].
@@ -334,7 +369,11 @@ impl Store {
 pub fn open_shared(directory: &Path) -> Result<Shared> {
     static REGISTRY: std::sync::OnceLock<Mutex<std::collections::HashMap<PathBuf, Shared>>> =
         std::sync::OnceLock::new();
-    let directory = if directory.as_os_str().is_empty() { Path::new(".") } else { directory };
+    let directory = if directory.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        directory
+    };
     let mut registry = REGISTRY
         .get_or_init(Default::default)
         .lock()
@@ -394,12 +433,18 @@ mod tests {
                 &[("b".into(), Some(json!(2))), ("a".into(), None)],
             )
             .unwrap();
-        assert_eq!(store.list(ns::PREFS).unwrap().keys().collect::<Vec<_>>(), ["b"]);
+        assert_eq!(
+            store.list(ns::PREFS).unwrap().keys().collect::<Vec<_>>(),
+            ["b"]
+        );
         assert!(store.list(ns::RULES).unwrap().is_empty());
         // An invalid key rejects the whole batch.
         let bad = store.apply(
             ns::PREFS,
-            &[("c".into(), Some(json!(3))), (String::new(), Some(json!(4)))],
+            &[
+                ("c".into(), Some(json!(3))),
+                (String::new(), Some(json!(4))),
+            ],
         );
         assert!(bad.is_err());
         assert!(store.get(ns::PREFS, "c").unwrap().is_none());
@@ -412,7 +457,10 @@ mod tests {
         let mut next = BTreeMap::new();
         next.insert("new".to_owned(), json!({"name": "PC"}));
         store.replace_namespace(ns::ROSTER, &next).unwrap();
-        assert_eq!(store.list(ns::ROSTER).unwrap().keys().collect::<Vec<_>>(), ["new"]);
+        assert_eq!(
+            store.list(ns::ROSTER).unwrap().keys().collect::<Vec<_>>(),
+            ["new"]
+        );
     }
 
     #[test]
@@ -423,7 +471,10 @@ mod tests {
             let store = Store::open(&path).unwrap();
             store.put(ns::PREFS, "x", &json!(7)).unwrap();
         }
-        assert_eq!(Store::open(&path).unwrap().get(ns::PREFS, "x").unwrap(), Some(json!(7)));
+        assert_eq!(
+            Store::open(&path).unwrap().get(ns::PREFS, "x").unwrap(),
+            Some(json!(7))
+        );
         std::fs::write(&path, b"this is not a database, just some bytes of text").unwrap();
         let fresh = Store::open(&path).unwrap();
         assert!(fresh.get(ns::PREFS, "x").unwrap().is_none());
@@ -453,9 +504,16 @@ mod tests {
     #[test]
     fn insert_if_absent_keeps_the_first_value() {
         let store = Store::open_in_memory().unwrap();
-        assert!(store.insert_if_absent(ns::PROFILE, "device_id", &json!("a")).unwrap());
-        assert!(!store.insert_if_absent(ns::PROFILE, "device_id", &json!("b")).unwrap());
-        assert_eq!(store.get(ns::PROFILE, "device_id").unwrap(), Some(json!("a")));
+        assert!(store
+            .insert_if_absent(ns::PROFILE, "device_id", &json!("a"))
+            .unwrap());
+        assert!(!store
+            .insert_if_absent(ns::PROFILE, "device_id", &json!("b"))
+            .unwrap());
+        assert_eq!(
+            store.get(ns::PROFILE, "device_id").unwrap(),
+            Some(json!("a"))
+        );
     }
 
     #[test]
