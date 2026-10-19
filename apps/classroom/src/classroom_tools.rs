@@ -2121,7 +2121,7 @@ pub fn student(
                     capabilities["activity"] = json!(u8::from(cfg!(windows)));
                     capabilities["vscode"] = json!(u8::from(super::vscode_control::supported()));
                     capabilities["vscode_list"] =
-                        json!(u8::from(cfg!(any(windows, target_os = "macos"))));
+                        json!(u8::from(cfg!(any(windows, target_os = "macos", target_os = "linux"))));
                     capabilities["vscode_blocked"] =
                         json!(u8::from(super::vscode_control::is_applied()));
                     capabilities["apps"] = json!(u8::from(super::app_control::supported()));

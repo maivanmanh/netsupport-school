@@ -477,12 +477,18 @@ mod windows_impl {
 #[cfg(windows)]
 #[allow(dead_code, unused_imports)]
 pub use windows_impl::clear;
+#[cfg(target_os = "linux")]
+#[path = "vscode_control_linux.rs"]
+mod linux_impl;
+#[cfg(target_os = "linux")]
+pub use linux_impl::{applied_fingerprint, apply, expire_if_stale, is_applied, supported};
+
 #[cfg(windows)]
 pub use windows_impl::{
     applied_fingerprint, apply, expire_if_stale, is_applied, list_extensions, supported,
 };
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn apply(_policy: &VsCodePolicy) -> anyhow::Result<()> {
     anyhow::bail!("VS Code policy control is only available on Windows")
 }
@@ -491,26 +497,26 @@ pub fn apply(_policy: &VsCodePolicy) -> anyhow::Result<()> {
 pub fn clear() -> anyhow::Result<()> {
     Ok(())
 }
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn supported() -> bool {
     false
 }
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn applied_fingerprint() -> String {
     String::new()
 }
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn expire_if_stale() -> anyhow::Result<()> {
     Ok(())
 }
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn is_applied() -> bool {
     false
 }
 #[cfg(not(windows))]
 pub fn list_extensions() -> ExtensionReport {
     let mut report = ExtensionReport {
-        supported: cfg!(target_os = "macos"),
+        supported: cfg!(any(target_os = "macos", target_os = "linux")),
         ..Default::default()
     };
     let Some(home) = std::env::var_os("HOME") else {
