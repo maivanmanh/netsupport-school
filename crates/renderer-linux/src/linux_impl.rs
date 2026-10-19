@@ -194,6 +194,38 @@ impl Drop for NativeRenderer {
     }
 }
 
+/// Keeps one X11 window covering the screen above other windows (EWMH fullscreen
+/// + above). Used by the Student lock overlay; `request` is cheap to repeat.
+#[derive(Debug)]
+pub struct FullscreenRaiser {
+    presentation: Presentation,
+}
+
+impl FullscreenRaiser {
+    /// `handle` is the minifb window handle (an X11 window ID).
+    /// # Errors
+    /// Returns an error when X11/XWayland is unavailable.
+    pub fn new(handle: *mut std::os::raw::c_void) -> Result<Self, MediaError> {
+        let presentation = Presentation {
+            connection: Connection::open()?,
+            window: handle as xlib::Window,
+            last_request: Instant::now(),
+        };
+        presentation.request();
+        Ok(Self { presentation })
+    }
+
+    pub fn request(&self) {
+        self.presentation.request();
+    }
+}
+
+/// Size of the default X11/XWayland screen, or `None` without a display.
+#[must_use]
+pub fn screen_size() -> Option<(usize, usize)> {
+    Connection::open().ok().map(|connection| connection.screen_size())
+}
+
 struct Connection {
     api: xlib::Xlib,
     display: *mut xlib::Display,

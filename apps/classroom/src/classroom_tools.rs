@@ -2135,7 +2135,7 @@ pub fn student(
                         json!(u8::from(cfg!(any(windows, target_os = "macos"))));
                     capabilities["recording"] = json!(u8::from(cfg!(windows)));
                     capabilities["website"] =
-                        json!(u8::from(cfg!(any(windows, target_os = "macos"))));
+                        json!(u8::from(cfg!(any(windows, target_os = "macos", target_os = "linux"))));
                     capabilities["terminal"] = json!(u8::from(crate::remote_terminal::available()));
                     hello.text = capabilities.to_string();
                     send(&mut s, &hello)?;
@@ -2369,7 +2369,7 @@ pub fn student(
                             // Capabilities advertise these as unavailable off Windows/macOS
                             // (e.g. Ubuntu): enforce that here, not only in the Teacher UI.
                             "launch" | "website" | "power"
-                                if !cfg!(any(windows, target_os = "macos")) =>
+                                if !cfg!(any(windows, target_os = "macos", target_os = "linux")) =>
                             {
                                 inbox.event(
                                     &p.id,

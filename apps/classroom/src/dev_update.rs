@@ -138,7 +138,7 @@ pub fn capabilities() -> serde_json::Value {
                     .is_some_and(|h| r["sha256"] == h)
         });
     let desktop_supported = u8::from(cfg!(any(windows, target_os = "macos")));
-    serde_json::json!({"dev_update":desktop_supported,"connection_popup":desktop_supported,"fs":1,"launch":desktop_supported,"power":desktop_supported,"os":std::env::consts::OS,"arch":std::env::consts::ARCH,
+    serde_json::json!({"dev_update":desktop_supported,"connection_popup":desktop_supported,"fs":1,"launch":u8::from(cfg!(any(windows, target_os = "macos", target_os = "linux"))),"power":u8::from(cfg!(any(windows, target_os = "macos", target_os = "linux"))),"os":std::env::consts::OS,"arch":std::env::consts::ARCH,
         "build":env!("CLASSROOM_BUILD_ID"),"pid":std::process::id(),"last_update":receipt})
 }
 pub fn connected() {

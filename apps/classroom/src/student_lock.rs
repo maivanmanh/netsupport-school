@@ -45,7 +45,12 @@ fn screen_rect() -> Option<(isize, isize, usize, usize)> {
     let size = core_graphics::display::CGDisplay::main().bounds().size;
     Some((0, 0, size.width as usize, size.height as usize))
 }
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(target_os = "linux")]
+fn screen_rect() -> Option<(isize, isize, usize, usize)> {
+    let (width, height) = renderer_linux::screen_size()?;
+    Some((0, 0, width, height))
+}
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 fn screen_rect() -> Option<(isize, isize, usize, usize)> {
     None
 }
@@ -170,13 +175,20 @@ pub struct LockScreen {
     last_draw: Instant,
     #[cfg(windows)]
     _input: input::Guard,
+    #[cfg(target_os = "linux")]
+    raiser: Option<renderer_linux::FullscreenRaiser>,
 }
 impl LockScreen {
     pub fn new(epoch: u64, message: &str) -> Result<Self> {
+        // Linux has no notification-resize API: create the window at screen size.
+        #[cfg(target_os = "linux")]
+        let (initial_w, initial_h) = screen_rect().map_or((320, 200), |(_, _, w, h)| (w, h));
+        #[cfg(not(target_os = "linux"))]
+        let (initial_w, initial_h) = (320, 200);
         let mut window = Window::new(
             TITLE,
-            320,
-            200,
+            initial_w,
+            initial_h,
             WindowOptions {
                 visible: false,
                 topmost: true,
@@ -196,6 +208,7 @@ impl LockScreen {
                 usize::try_from(area[3]).unwrap_or(720),
             )
         });
+        #[cfg(not(target_os = "linux"))]
         window.resize_notification(w, h)?;
         window.set_outer_origin(x, y);
         window.set_cursor_visibility(false);
@@ -207,10 +220,16 @@ impl LockScreen {
             last_draw: Instant::now() - REDRAW,
             #[cfg(windows)]
             _input: input::Guard::install(),
+            #[cfg(target_os = "linux")]
+            raiser: None,
         };
         lock.present()?;
         lock.window.set_visible(true);
         raise(&lock.window);
+        #[cfg(target_os = "linux")]
+        {
+            lock.raiser = renderer_linux::FullscreenRaiser::new(lock.window.get_window_handle()).ok();
+        }
         Ok(lock)
     }
     pub fn set_message(&mut self, epoch: u64, message: &str) {
@@ -224,6 +243,10 @@ impl LockScreen {
         anyhow::ensure!(self.window.is_open(), "Lock window was closed");
         if self.last_draw.elapsed() >= REDRAW {
             raise(&self.window);
+            #[cfg(target_os = "linux")]
+            if let Some(raiser) = &self.raiser {
+                raiser.request();
+            }
             self.present()?;
         }
         Ok(())

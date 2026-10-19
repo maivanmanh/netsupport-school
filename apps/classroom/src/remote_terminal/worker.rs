@@ -137,6 +137,12 @@ pub async fn run(path: &Path) -> Result<()> {
                 .join("cmd.exe")
                 .to_string_lossy()
                 .into_owned()
+        } else if cfg!(target_os = "linux") {
+            // The user's login shell, falling back to bash (always present on Ubuntu).
+            std::env::var("SHELL")
+                .ok()
+                .filter(|shell| std::path::Path::new(shell).is_file())
+                .unwrap_or_else(|| "/bin/bash".into())
         } else {
             "/bin/zsh".into()
         };
@@ -203,7 +209,7 @@ pub async fn run(path: &Path) -> Result<()> {
         drop(pair.slave);
         let mut reader = pair.master.try_clone_reader()?;
         let mut writer = pair.master.take_writer()?;
-        if ready_tx.send((json!({"state":"ready","os":if cfg!(windows){"windows"}else{"macos"},"shell":shell,"cwd":cwd,"elevated":false}),kill)).is_err(){let _=child.kill();let _=child.wait();return Ok(());}
+        if ready_tx.send((json!({"state":"ready","os":if cfg!(windows){"windows"}else if cfg!(target_os = "linux"){"linux"}else{"macos"},"shell":shell,"cwd":cwd,"elevated":false}),kill)).is_err(){let _=child.kill();let _=child.wait();return Ok(());}
         let reader_tx = tx.clone();
         let reader_task = std::thread::spawn(move || {
             let mut seq = 0;

@@ -199,8 +199,11 @@ fn spawn(path: &str, args: &str) -> Result<()> {
     let target = Path::new(&expanded);
     let mut command;
     if is_url(&expanded) {
-        command = Command::new("open");
+        command = Command::new(if cfg!(target_os = "linux") { "xdg-open" } else { "open" });
         command.arg(&expanded);
+    } else if target.is_dir() && cfg!(target_os = "linux") {
+        command = Command::new("xdg-open");
+        command.arg(target);
     } else if target.is_dir() && cfg!(target_os = "macos") {
         command = Command::new("open");
         command.arg("-a").arg(target);

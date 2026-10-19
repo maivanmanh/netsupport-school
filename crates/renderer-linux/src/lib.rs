@@ -13,7 +13,7 @@ mod inhibit;
 mod linux_impl;
 
 #[cfg(target_os = "linux")]
-pub use linux_impl::NativeRenderer;
+pub use linux_impl::{screen_size, FullscreenRaiser, NativeRenderer};
 
 #[cfg(not(target_os = "linux"))]
 mod unsupported {

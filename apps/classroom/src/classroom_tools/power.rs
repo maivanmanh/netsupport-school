@@ -62,7 +62,35 @@ fn system(op: Op, grace_seconds: u32) -> Result<()> {
     anyhow::ensure!(status.success(), "shutdown.exe failed ({status})");
     Ok(())
 }
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+fn system(op: Op, grace_seconds: u32) -> Result<()> {
+    // Local active-session users may reboot/power off through logind without root.
+    if matches!(op, Op::Reboot | Op::Shutdown) {
+        thread::sleep(Duration::from_secs(u64::from(grace_seconds)));
+    }
+    let mut command = match op {
+        Op::Reboot => {
+            let mut c = Command::new("systemctl");
+            c.arg("reboot");
+            c
+        }
+        Op::Shutdown => {
+            let mut c = Command::new("systemctl");
+            c.arg("poweroff");
+            c
+        }
+        _ => {
+            let mut c = Command::new("loginctl");
+            c.arg("terminate-session")
+                .arg(std::env::var("XDG_SESSION_ID").unwrap_or_default());
+            c
+        }
+    };
+    let status = command.status().context("Could not run systemctl/loginctl")?;
+    anyhow::ensure!(status.success(), "The system refused the request ({status})");
+    Ok(())
+}
+#[cfg(not(any(windows, target_os = "linux")))]
 fn system(op: Op, grace_seconds: u32) -> Result<()> {
     // loginwindow handles these events without a confirmation sheet.
     let event = match op {
