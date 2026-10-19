@@ -47,7 +47,8 @@ RestartSec=2
 WantedBy=multi-user.target
 UNITFILE
 systemctl daemon-reload
-systemctl enable --now classroom-guard.service
+systemctl enable classroom-guard.service
+systemctl restart classroom-guard.service
 sleep 1
 systemctl is-active classroom-guard.service
 echo "Guard helper installed for uid $UID_ALLOWED. Restart the Student to use it."

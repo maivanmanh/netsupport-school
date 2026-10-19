@@ -85,7 +85,8 @@ pub fn filter_ruleset(plan: &Plan, learned: &[Ipv4Addr]) -> String {
     let set = |name: &str, kind: &str, interval: bool, items: &str| {
         let mut text = format!("  set {name} {{\n    type {kind}\n");
         if interval {
-            text.push_str("    flags interval\n");
+            // auto-merge: permits overlap (a /32 inside a /16 is normal here).
+            text.push_str("    flags interval\n    auto-merge\n");
         }
         if !items.is_empty() {
             text.push_str(&format!("    elements = {{ {items} }}\n"));
