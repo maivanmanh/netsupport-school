@@ -59,7 +59,7 @@ try {
         $stream = New-Object IO.FileStream($temp,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
         try { $stream.Write($bytes,0,$bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
         Set-Acl -LiteralPath $temp -AclObject $fileAcl
-        if (Test-Path -LiteralPath $file) { [IO.File]::Replace($temp,$file,$null) } else { [IO.File]::Move($temp,$file) }
+        if (Test-Path -LiteralPath $file) { [IO.File]::Replace($temp,$file,[NullString]::Value) } else { [IO.File]::Move($temp,$file) }
     }
     function Require-Service($now) {
         if ((Get-Service -Name ClassroomGuardService).Status -ne 'Running' -or $now-[long]$state.service_seen -gt 70 -or [long]$state.service_seen -gt $now+5) { throw 'Updated Classroom Guard service must be running with a fresh hardware heartbeat; update/restart service and retry' }
