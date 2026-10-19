@@ -124,6 +124,15 @@ try:
     procs = guest('ps -eo pid,ppid,tty,cmd | grep -E "terminal-worker|pts" | grep -v grep ; true')
     check('terminal_worker_and_pty_shell', a.get('ok') and 'terminal-worker' in procs and 'pts' in procs, procs.strip()[:300])
     if a.get('ok'): cmd('terminal_close', {'session': a['result']['session']})
+    shot = work / 'student.png'
+    a = cmd('student_screenshot', {'dest': str(shot)}, selected=[sid])
+    if a.get('ok'):
+        j = job(a['job_id'], timeout=60)
+    pngs = sorted(shot.rglob('*.png')) if shot.is_dir() else ([shot] if shot.exists() else [])
+    shot = pngs[0] if pngs else shot
+    ok = a.get('ok') and shot.is_file() and shot.read_bytes()[:8] == b'\x89PNG\r\n\x1a\n'
+    check('screenshot_png_received', ok, a.get('error') or (f'{shot.stat().st_size} bytes' if shot.is_file() else 'missing'))
+    if ok: (run / 'student.png').write_bytes(shot.read_bytes())
     check('student_alive_after_tools', remote('status')['alive'])
 finally:
     (run / 'results.json').write_text(json.dumps(results, indent=2))

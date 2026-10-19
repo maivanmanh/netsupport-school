@@ -2132,7 +2132,7 @@ pub fn student(
                         json!(u8::from(crate::monitoring_badge::supported()));
                     capabilities["badge_enabled"] = json!(inbox.badge.lock().unwrap().enabled);
                     capabilities["screenshot"] =
-                        json!(u8::from(cfg!(any(windows, target_os = "macos"))));
+                        json!(u8::from(cfg!(any(windows, target_os = "macos", target_os = "linux"))));
                     capabilities["recording"] = json!(u8::from(cfg!(windows)));
                     capabilities["website"] =
                         json!(u8::from(cfg!(any(windows, target_os = "macos", target_os = "linux"))));
