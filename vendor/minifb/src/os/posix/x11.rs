@@ -529,6 +529,33 @@ impl Window {
         self.visible
     }
 
+    /// Resizes a fixed-size notification window in place (size hints, window and
+    /// framebuffer), keeping its native handle.
+    pub fn resize_notification(&mut self, width: usize, height: usize) -> Result<()> {
+        // SAFETY: display/XID are owned by this window; the hints struct is
+        // zero-initialised and fully set before use.
+        unsafe {
+            let mut hints: xlib::XSizeHints = std::mem::zeroed();
+            hints.flags = xlib::PMinSize | xlib::PMaxSize;
+            hints.min_width = width as i32;
+            hints.max_width = width as i32;
+            hints.min_height = height as i32;
+            hints.max_height = height as i32;
+            (self.d.lib.XSetWMNormalHints)(self.d.display, self.handle, &mut hints);
+            (self.d.lib.XResizeWindow)(self.d.display, self.handle, width as u32, height as u32);
+            (self.d.lib.XFlush)(self.d.display);
+        }
+        self.width = width as u32;
+        self.height = height as u32;
+        // SAFETY: the old image is released before allocating its replacement.
+        unsafe {
+            self.free_image();
+            self.ximage = Self::alloc_image(&self.d, width, height, &mut self.draw_buffer)
+                .ok_or_else(|| Error::UpdateFailed("Notification resize failed".into()))?;
+        }
+        Ok(())
+    }
+
     /// Size of the default screen in pixels.
     pub fn screen_size(&self) -> (usize, usize) {
         (self.d.screen_width, self.d.screen_height)

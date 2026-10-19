@@ -559,7 +559,9 @@ impl Window {
         }
         #[cfg(any(windows, target_os = "macos"))]
         { self.0.resize_notification(width, height) }
-        #[cfg(not(any(windows, target_os = "macos")))]
+        #[cfg(target_os = "linux")]
+        { self.0.resize_notification(width, height) }
+        #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
         { Err(Error::UpdateFailed("Notification resize unsupported".into())) }
     }
     /// Copy plain Unicode text through the OS clipboard, without a shell process.
@@ -599,8 +601,12 @@ impl Window {
     pub fn show_inactive_topmost(&mut self) {
         #[cfg(target_os = "linux")]
         {
+            // The window manager picks a position when it maps a window; repeat
+            // the position requested before showing so notifications keep their corner.
+            let (x, y) = self.0.get_position();
             self.0.set_visible(true);
             self.0.request_above();
+            self.0.set_position(x, y);
         }
         #[cfg(windows)]
         self.0.show_inactive_topmost();

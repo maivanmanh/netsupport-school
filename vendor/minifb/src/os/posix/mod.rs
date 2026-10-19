@@ -59,6 +59,15 @@ impl Window {
         }
     }
 
+    pub fn resize_notification(&mut self, width: usize, height: usize) -> crate::Result<()> {
+        match self {
+            #[cfg(feature = "x11")]
+            Window::X11(w) => w.resize_notification(width, height),
+            #[cfg(feature = "wayland")]
+            Window::Wayland(_) => Err(crate::Error::UpdateFailed("Notification resize unsupported".into())),
+        }
+    }
+
     pub fn request_above(&mut self) {
         match self {
             #[cfg(feature = "x11")]
