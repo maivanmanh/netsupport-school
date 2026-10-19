@@ -201,6 +201,29 @@ Scripts: `scripts/test-ubuntu-files.py`, `scripts/test-ubuntu-unsupported.py`,
 `scripts/ubuntu-feature-probe.py`. Note: the harness runs the extracted package directory, so
 re-extract the tar.gz after each build or it tests a stale binary.
 
+## Feature status (2026-10-19, Ubuntu 26.04 ARM64 / GNOME Wayland, real macOS Teacher)
+
+| Feature | Status | Evidence / limit |
+| --- | --- | --- |
+| Receive Teacher screen share | Done | LAN harness, 30 FPS, display-mode changes |
+| Thumbnail monitoring (grid/list) | Done | `capture-linux` (Mutter ScreenCast + PipeWire, no prompt); 860x540 JPEG every 2 s; `test-ubuntu-monitor.py` |
+| Screenshot | Done | 1 MB PNG; `test-ubuntu-tools.py` |
+| Observe (Teacher watches Ubuntu) | Student side done | Software OpenH264 encoder (`LinuxH264Encoder`, IDR+SPS/PPS, bounded); publisher streams ~20 FPS. The Teacher viewer window is the Flutter console, not exercised headlessly |
+| Control (mouse/keyboard) | Done | Mutter RemoteDesktop: pointer, click, scroll, keys, Vietnamese via Ctrl+Shift+U (GTK/IBus apps only); `test-ubuntu-control.py`. Exclusive input lock: not possible on Wayland |
+| Ubuntu shares to the class / Student-as-source | Publisher shared with Observe; not run end to end | `share_student`/`switch_source` need the Teacher Flutter console |
+| Receive another Student's share | Same receive path; not run | needs a second Student source |
+| Terminal | Worker spawns and connects | PTY shell attach not exercised (needs a terminal client) |
+| Launch / Website | Done | `xdg-open`; default browser on the test VM is not configured |
+| Power: lock / unlock | Done | fullscreen overlay (EWMH); input is NOT blocked (Wayland); notifications still appear on top |
+| Power: reboot / shutdown / logout | Implemented, not run | `systemctl`/`loginctl`; would end the test session |
+| Update (dev-update) | Done | `test-ubuntu-update.py`: swap, new PID, reconnect, identity kept. Requires a Teacher build that accepts `os: linux` packages |
+| Applications | Done (user level) | `.desktop` inventory + process termination within ~1 s; cannot prevent start; `test-ubuntu-apps.py` |
+| Guard (Internet), Hardware, VS Code policy, Recording, Activity | Not implemented | Windows-only today; Internet/hardware need a root helper/installer decision |
+
+Notes: GNOME shows a screen-recording indicator while thumbnails/Observe capture. Only the
+primary display is captured. HiDPI scale > 1 pointer mapping is unverified. The Linux
+package now needs `libpipewire-0.3-0` at runtime (present on Ubuntu Desktop).
+
 Next gate: desktop launcher/per-user installation and graphical-session autostart,
 then Ubuntu bootstrap/updater integration. Visual cursor/text/aspect QA and display
 mode changes remain pending. Linux x86_64 runtime,

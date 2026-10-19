@@ -5472,3 +5472,15 @@ terminal/launch/website/power. Build-verified on Linux only (the Mac target dir 
 rustc-version mismatch, so the macOS/Windows Student/Teacher were not rebuilt; changes are
 cfg-gated and do not alter those paths). Not done: launcher/autostart, updater, heavy-motion
 1080p, observe/monitoring/capture backends.
+
+## Ubuntu Student parity work (2026-10-19)
+
+Added: `capture-linux` (Mutter ScreenCast/RemoteDesktop), software H.264 encoder, thumbnails,
+screenshot, Observe publisher, remote control, terminal/launch/website/power/lock overlay,
+dev-update for linux packages, user-level application control, idle inhibitor. All verified on
+the Ubuntu 26.04 VM with the real macOS Teacher (scripts/test-ubuntu-*.py). A Teacher built
+from this tree is required for Linux dev updates and Ubuntu app policies (old Teacher rejects
+`os: linux` packages and gates app policy on `guard`). Teacher/Student paired release builds
+were NOT produced (Mac target dir has a rustc mismatch; tests used a separate target dir).
+Not done: Guard/Hardware/VS Code/Recording/Activity, Flutter-console Observe/class-share E2E,
+installer/autostart, reboot/shutdown/logout runtime test.
