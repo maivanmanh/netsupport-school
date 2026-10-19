@@ -85,6 +85,63 @@ class _HardwareControlWindowState extends State<HardwareControlWindow> {
     }
   }
 
+  static const _statusText = {
+    'applied': 'Đã áp dụng',
+    'failed': 'Lỗi',
+    'pending': 'Đang chờ',
+    'unsupported': 'Không hỗ trợ',
+  };
+  static const _statusColor = {
+    'applied': Color(0xff1f7a4d),
+    'failed': Color(0xffb83b40),
+    'pending': Color(0xffc77d12),
+    'unsupported': Color(0xff64748b),
+  };
+  static const _blockedColor = Color(0xffb83b40);
+
+  Widget _section(String title) => Padding(
+    padding: const EdgeInsets.fromLTRB(4, 6, 0, 10),
+    child: Text(
+      title.toUpperCase(),
+      style: const TextStyle(
+        fontSize: 11.5,
+        fontWeight: FontWeight.w700,
+        letterSpacing: 0.8,
+        color: AppDialog.muted,
+      ),
+    ),
+  );
+
+  Widget _stat(String value, String label, Color color) => Expanded(
+    child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppDialog.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 24,
+              fontWeight: FontWeight.w700,
+              color: color,
+              height: 1.1,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            label,
+            style: const TextStyle(fontSize: 12.5, color: AppDialog.muted),
+          ),
+        ],
+      ),
+    ),
+  );
+
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
     animation: widget.agent,
@@ -101,22 +158,34 @@ class _HardwareControlWindowState extends State<HardwareControlWindow> {
         ...(hardware['reports'] as Map? ?? const {}).keys.cast<String>(),
       }.toList()..sort();
       final enabled = agent.connected && !busy;
-      const statusText = {
-        'applied': 'Đã áp dụng',
-        'failed': 'Lỗi',
-        'pending': 'Đang chờ',
-        'unsupported': 'Không hỗ trợ',
-      };
-      const statusColor = {
-        'applied': Color(0xff1f7a4d),
-        'failed': Color(0xffb83b40),
-        'pending': Color(0xffc77d12),
-        'unsupported': Color(0xff64748b),
-      };
+      Map resultOf(String id, String group) => hardwareResult(
+        hardware,
+        caps,
+        id,
+        group,
+        rows[id]?['online'] == true,
+      );
+      final blockedCount = hardwareGroups.keys
+          .where((g) => policy[g] == true)
+          .length;
+      final failedCount = {
+        for (final g in hardwareGroups.keys)
+          for (final id in ids)
+            if (policy[g] == true && resultOf(id, g)['status'] == 'failed')
+              '$g|$id',
+      }.length;
       return WindowShell(
         icon: Icons.usb_outlined,
         title: 'Hardware Control',
         subtitle: 'Toàn bộ phòng máy • ${ids.length} máy',
+        actions: [
+          StatusChip(
+            blockedCount == 0
+                ? 'Không chặn gì'
+                : '$blockedCount nhóm đang chặn',
+            blockedCount == 0 ? AppDialog.muted : _blockedColor,
+          ),
+        ],
         notice: !agent.connected
             ? const InlineNotice(
                 'Mất kết nối coordinator; chưa thể thay đổi chính sách.',
@@ -129,204 +198,53 @@ class _HardwareControlWindowState extends State<HardwareControlWindow> {
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 900),
             child: ListView(
-              padding: const EdgeInsets.all(24),
+              padding: const EdgeInsets.fromLTRB(24, 20, 24, 28),
               children: [
+                Row(
+                  children: [
+                    _stat('${ids.length}', 'Máy được quản lý', AppDialog.ink),
+                    const SizedBox(width: 12),
+                    _stat(
+                      '$blockedCount/${hardwareGroups.length}',
+                      'Nhóm đang chặn',
+                      blockedCount == 0 ? AppDialog.ink : _blockedColor,
+                    ),
+                    const SizedBox(width: 12),
+                    _stat(
+                      '$failedCount',
+                      'Máy gặp lỗi',
+                      failedCount == 0
+                          ? const Color(0xff1f7a4d)
+                          : _blockedColor,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
                 const InlineNotice(
                   'Mỗi thay đổi áp dụng cho tất cả máy đang quản lý và máy tham gia sau. Chính sách được giữ qua mất kết nối, Teacher thoát, Student restart và Windows restart. Chỉ bỏ chặn hoặc kết thúc phiên phần cứng rõ ràng mới khôi phục.',
                   tone: AppTone.info,
                 ),
-                const SizedBox(height: 10),
-                const Text(
-                  'Windows 10/11 • Student cần Administrator và Classroom Guard service. Thiết bị mới được rà soát định kỳ; có khoảng trễ khi hot-plug. “Đã áp dụng” là kết quả kiểm tra cấu hình hệ điều hành, không phải chứng nhận đã thử phần cứng thực tế.',
-                  style: TextStyle(
-                    fontSize: 12.5,
-                    height: 1.45,
-                    color: AppDialog.muted,
-                  ),
-                ),
-                const SizedBox(height: 18),
                 if (hardware['policy'] == null) ...[
+                  const SizedBox(height: 10),
                   const InlineNotice(
                     'Teacher chưa lưu chính sách. Trạng thái từng máy có thể là chính sách cũ còn giữ. Lần áp dụng đầu sẽ gửi cả 5 công tắc bên dưới (mặc định cho phép) tới toàn bộ phòng máy.',
                     tone: AppTone.warning,
                   ),
-                  const SizedBox(height: 14),
                 ],
-                for (final entry in hardwareGroups.entries) ...[
-                  Card(
-                    elevation: 0,
-                    color: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      side: const BorderSide(color: AppDialog.border),
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.all(18),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Container(
-                                width: 44,
-                                height: 44,
-                                decoration: BoxDecoration(
-                                  color: const Color(
-                                    0xff156b79,
-                                  ).withValues(alpha: 0.1),
-                                  borderRadius: BorderRadius.circular(10),
-                                ),
-                                child: TIcon(
-                                  entry.value.$3,
-                                  color: const Color(0xff156b79),
-                                  size: 24,
-                                ),
-                              ),
-                              const SizedBox(width: 14),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      entry.value.$1,
-                                      style: const TextStyle(
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.w700,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 2),
-                                    Text(
-                                      entry.value.$2,
-                                      style: const TextStyle(
-                                        fontSize: 12.5,
-                                        height: 1.4,
-                                        color: AppDialog.muted,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              Text(
-                                policy[entry.key] == true ? 'Chặn' : 'Cho phép',
-                                style: TextStyle(
-                                  fontWeight: FontWeight.w600,
-                                  color: policy[entry.key] == true
-                                      ? const Color(0xffb83b40)
-                                      : AppDialog.muted,
-                                ),
-                              ),
-                              Switch(
-                                value: policy[entry.key] == true,
-                                onChanged: enabled
-                                    ? (v) => apply(entry.key, v)
-                                    : null,
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 6,
-                            children: [
-                              for (final status in statusText.keys)
-                                StatusChip(
-                                  '${statusText[status]}: ${ids.where((id) => hardwareResult(hardware, caps, id, entry.key, rows[id]?['online'] == true)['status'] == status).length}',
-                                  statusColor[status]!,
-                                ),
-                            ],
-                          ),
-                          if (ids.isNotEmpty)
-                            ExpansionTile(
-                              tilePadding: EdgeInsets.zero,
-                              title: const Text(
-                                'Trạng thái từng máy',
-                                style: TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                              children: [
-                                for (final id in ids)
-                                  Builder(
-                                    builder: (_) {
-                                      final r = hardwareResult(
-                                        hardware,
-                                        caps,
-                                        id,
-                                        entry.key,
-                                        rows[id]?['online'] == true,
-                                      );
-                                      final status = '${r['status']}';
-                                      return ListTile(
-                                        dense: true,
-                                        contentPadding: EdgeInsets.zero,
-                                        leading: TIcon(
-                                          status == 'applied'
-                                              ? Icons.check_circle_outline
-                                              : status == 'failed'
-                                              ? Icons.error_outline
-                                              : Icons.info_outline,
-                                          color:
-                                              statusColor[status] ??
-                                              AppDialog.muted,
-                                        ),
-                                        title: Text(
-                                          '${rows[id]?['name'] ?? id} • ${statusText[status] ?? status}${r['blocked'] is bool ? ' • ${r['blocked'] == true ? 'Chặn' : 'Cho phép'}' : ''}',
-                                        ),
-                                        subtitle: r['error'] == ''
-                                            ? null
-                                            : SelectableText(
-                                                '${r['error'] ?? ''}',
-                                              ),
-                                      );
-                                    },
-                                  ),
-                              ],
-                            ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                ],
-                Card(
-                  elevation: 0,
-                  color: Colors.white,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    side: const BorderSide(color: AppDialog.border),
-                  ),
-                  child: Column(
-                    children: [
-                      SwitchListTile(
-                        title: const Text(
-                          'Khôi phục khi kết thúc phiên phần cứng',
-                        ),
-                        subtitle: const Text(
-                          'Chỉ nút “Kết thúc phiên” dưới đây kích hoạt. Mất kết nối, dừng chiếu, đóng cửa sổ và Teacher thoát không bỏ chặn. Máy offline nhận lệnh khôi phục khi kết nối lại.',
-                        ),
-                        value: policy['restore_on_session_end'] == true,
-                        onChanged: enabled
-                            ? (v) => apply('restore_on_session_end', v)
-                            : null,
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                        child: Align(
-                          alignment: Alignment.centerRight,
-                          child: AppDialog.secondary(
-                            onPressed:
-                                enabled &&
-                                    policy['restore_on_session_end'] == true
-                                ? () => apply('', false, end: true)
-                                : null,
-                            icon: Icons.settings_backup_restore,
-                            label: 'Kết thúc phiên • khôi phục tất cả',
-                          ),
-                        ),
-                      ),
-                    ],
+                const SizedBox(height: 18),
+                _section('Chính sách thiết bị'),
+                for (final entry in hardwareGroups.entries)
+                  _groupCard(entry, policy, ids, rows, resultOf, enabled),
+                const SizedBox(height: 6),
+                _section('Phiên làm việc'),
+                _sessionCard(policy, enabled),
+                const SizedBox(height: 16),
+                const Text(
+                  'Windows 10/11 • Student cần Administrator và Classroom Guard service. Thiết bị mới được rà soát định kỳ; có khoảng trễ khi hot-plug. “Đã áp dụng” là kết quả kiểm tra cấu hình hệ điều hành, không phải chứng nhận đã thử phần cứng thực tế.',
+                  style: TextStyle(
+                    fontSize: 12,
+                    height: 1.45,
+                    color: AppDialog.muted,
                   ),
                 ),
               ],
@@ -335,5 +253,282 @@ class _HardwareControlWindowState extends State<HardwareControlWindow> {
         ),
       );
     },
+  );
+
+  Widget _groupCard(
+    MapEntry<String, (String, String, IconData)> entry,
+    Map policy,
+    List<String> ids,
+    Map<String, dynamic> rows,
+    Map Function(String, String) resultOf,
+    bool enabled,
+  ) {
+    final blocked = policy[entry.key] == true;
+    final accent = blocked ? _blockedColor : const Color(0xff156b79);
+    final counts = {
+      for (final status in _statusText.keys)
+        status: ids
+            .where((id) => resultOf(id, entry.key)['status'] == status)
+            .length,
+    };
+    return Card(
+      elevation: 0,
+      margin: const EdgeInsets.only(bottom: 12),
+      color: Colors.white,
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(
+          color: blocked
+              ? _blockedColor.withValues(alpha: 0.35)
+              : AppDialog.border,
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(18, 16, 14, 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: accent.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: TIcon(entry.value.$3, color: accent, size: 24),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        entry.value.$1,
+                        style: const TextStyle(
+                          fontSize: 15.5,
+                          fontWeight: FontWeight.w700,
+                          color: AppDialog.ink,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        entry.value.$2,
+                        style: const TextStyle(
+                          fontSize: 12.5,
+                          height: 1.4,
+                          color: AppDialog.muted,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                StatusChip(blocked ? 'Đang chặn' : 'Cho phép', accent),
+                const SizedBox(width: 6),
+                Switch(
+                  value: blocked,
+                  activeThumbColor: Colors.white,
+                  activeTrackColor: _blockedColor,
+                  onChanged: enabled ? (v) => apply(entry.key, v) : null,
+                ),
+              ],
+            ),
+            const Divider(height: 18, color: AppDialog.border),
+            if (ids.isEmpty)
+              const Padding(
+                padding: EdgeInsets.only(bottom: 10, left: 2),
+                child: Text(
+                  'Chưa có máy nào',
+                  style: TextStyle(fontSize: 12.5, color: AppDialog.muted),
+                ),
+              )
+            else
+              Theme(
+                data: Theme.of(
+                  context,
+                ).copyWith(dividerColor: Colors.transparent),
+                child: ExpansionTile(
+                  tilePadding: EdgeInsets.zero,
+                  childrenPadding: const EdgeInsets.only(bottom: 8),
+                  dense: true,
+                  title: Wrap(
+                    spacing: 8,
+                    runSpacing: 6,
+                    children: [
+                      for (final status in _statusText.keys)
+                        if (counts[status]! > 0)
+                          StatusChip(
+                            '${_statusText[status]}: ${counts[status]}',
+                            _statusColor[status]!,
+                          ),
+                    ],
+                  ),
+                  subtitle: const Text(
+                    'Chi tiết từng máy',
+                    style: TextStyle(fontSize: 12, color: AppDialog.muted),
+                  ),
+                  children: [
+                    for (final id in ids)
+                      _deviceRow(id, entry.key, rows, resultOf),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _deviceRow(
+    String id,
+    String group,
+    Map<String, dynamic> rows,
+    Map Function(String, String) resultOf,
+  ) {
+    final r = resultOf(id, group);
+    final status = '${r['status']}';
+    final color = _statusColor[status] ?? AppDialog.muted;
+    final detail = '${r['error'] ?? ''}';
+    return Container(
+      margin: const EdgeInsets.only(top: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppDialog.footerFill,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 1),
+            child: TIcon(
+              status == 'applied'
+                  ? Icons.check_circle_outline
+                  : status == 'failed'
+                  ? Icons.error_outline
+                  : Icons.info_outline,
+              color: color,
+              size: 18,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${rows[id]?['name'] ?? id}',
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: AppDialog.ink,
+                  ),
+                ),
+                if (detail.isNotEmpty)
+                  SelectableText(
+                    detail,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      height: 1.4,
+                      color: AppDialog.muted,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+          if (r['blocked'] is bool)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: Text(
+                r['blocked'] == true ? 'Chặn' : 'Cho phép',
+                style: const TextStyle(fontSize: 12, color: AppDialog.muted),
+              ),
+            ),
+          StatusChip(_statusText[status] ?? status, color),
+        ],
+      ),
+    );
+  }
+
+  Widget _sessionCard(Map policy, bool enabled) => Card(
+    elevation: 0,
+    margin: EdgeInsets.zero,
+    color: Colors.white,
+    shape: RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(12),
+      side: const BorderSide(color: AppDialog.border),
+    ),
+    child: Padding(
+      padding: const EdgeInsets.fromLTRB(18, 14, 14, 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: const Color(0xff156b79).withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const TIcon(
+                  Icons.settings_backup_restore,
+                  color: Color(0xff156b79),
+                  size: 24,
+                ),
+              ),
+              const SizedBox(width: 14),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Khôi phục khi kết thúc phiên phần cứng',
+                      style: TextStyle(
+                        fontSize: 15.5,
+                        fontWeight: FontWeight.w700,
+                        color: AppDialog.ink,
+                      ),
+                    ),
+                    SizedBox(height: 2),
+                    Text(
+                      'Chỉ nút “Kết thúc phiên” dưới đây kích hoạt. Mất kết nối, dừng chiếu, đóng cửa sổ và Teacher thoát không bỏ chặn. Máy offline nhận lệnh khôi phục khi kết nối lại.',
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        height: 1.4,
+                        color: AppDialog.muted,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              Switch(
+                value: policy['restore_on_session_end'] == true,
+                onChanged: enabled
+                    ? (v) => apply('restore_on_session_end', v)
+                    : null,
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Align(
+            alignment: Alignment.centerRight,
+            child: AppDialog.secondary(
+              onPressed: enabled && policy['restore_on_session_end'] == true
+                  ? () => apply('', false, end: true)
+                  : null,
+              icon: Icons.settings_backup_restore,
+              label: 'Kết thúc phiên • khôi phục tất cả',
+            ),
+          ),
+        ],
+      ),
+    ),
   );
 }
