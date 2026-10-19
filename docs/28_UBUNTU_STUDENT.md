@@ -179,8 +179,12 @@ run showed render p95 40–100 ms with 10 % replaced frames; not reproduced, cau
 isolated — treat smoothness as variable on this 2-vCPU VM). Found: GNOME locked the
 session after 5 min idle and hid the presentation, so the renderer now holds a
 `org.gnome.SessionManager`/`org.freedesktop.ScreenSaver` idle+suspend inhibitor while the
-presentation window exists (verified via `GetInhibitors`). Display-mode/HiDPI changes
-(`gdctl set`) were attempted but the results are invalid because the session was locked.
+presentation window exists (verified via `GetInhibitors`). Display-mode changes
+with `gdctl set` during a live 30 FPS stream (unlocked session, 2026-10-19) passed:
+1512×949 -> 1920×1080 (exact fit, no bars) -> 2560×1600 at scale 2 (aspect kept, crisp
+text) -> back; no panic/render failure, render p50 29 FPS, p95 latency 7.7 ms with a
+transient 120 ms spike during a mode switch. A GNOME notification toast was seen over the
+fullscreen presentation (Do Not Disturb is not set by the Student).
 
 Next gate: desktop launcher/per-user installation and graphical-session autostart,
 then Ubuntu bootstrap/updater integration. Visual cursor/text/aspect QA and display
