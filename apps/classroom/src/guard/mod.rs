@@ -8,6 +8,8 @@
 pub mod dns;
 pub mod internet;
 pub mod rules;
+#[cfg(target_os = "linux")]
+pub mod linux;
 #[cfg(windows)]
 pub mod windows;
 
@@ -386,7 +388,17 @@ pub fn for_student(state_dir: &std::path::Path, teacher_ip: std::net::Ipv4Addr) 
     );
     Guard::new(state_dir, vec![Box::new(internet)], windows::is_elevated())
 }
-#[cfg(not(windows))]
+/// Linux: enforcement is delegated to the root Guard helper when it is installed.
+#[cfg(target_os = "linux")]
+pub fn for_student(state_dir: &std::path::Path, teacher_ip: std::net::Ipv4Addr) -> Guard {
+    let supported = linux::RemoteEnforcer::available();
+    Guard::new(
+        state_dir,
+        vec![Box::new(linux::RemoteEnforcer::new(teacher_ip))],
+        supported,
+    )
+}
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn for_student(state_dir: &std::path::Path, _teacher_ip: std::net::Ipv4Addr) -> Guard {
     Guard::new(state_dir, Vec::new(), false)
 }

@@ -52,6 +52,8 @@ chmod 755 "$STAGING/$NAME/ClassroomStudent"
 cp docs/28_UBUNTU_STUDENT.md "$STAGING/$NAME/README.md"
 cp scripts/install-student-linux.sh "$STAGING/$NAME/install.sh"
 chmod 755 "$STAGING/$NAME/install.sh"
+cp scripts/install-guard-linux.sh "$STAGING/$NAME/install-guard.sh"
+chmod 755 "$STAGING/$NAME/install-guard.sh"
 printf '%s\n' "$DEPENDENCIES" > "$STAGING/$NAME/linked-libraries.txt"
 python3 scripts/student-linux-build-info.py --target "$HOST" \
   --output "$STAGING/$NAME/build-info.json" --verify "$STAGING/$NAME/build-info.json"

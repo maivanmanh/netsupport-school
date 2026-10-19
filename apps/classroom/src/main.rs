@@ -310,6 +310,22 @@ fn main() -> Result<()> {
     if let Some(result) = macos_permissions::early_operation() {
         return result;
     }
+    #[cfg(target_os = "linux")]
+    {
+        let mut args = std::env::args_os().skip(1);
+        if args.next().is_some_and(|v| v == "--guard-helper") {
+            // Root systemd service: `--guard-helper --allow-uid <desktop uid>`.
+            let uid = match (args.next(), args.next()) {
+                (Some(flag), Some(uid)) if flag == "--allow-uid" => uid
+                    .to_str()
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .context("--allow-uid needs a numeric user id")?,
+                _ => anyhow::bail!("usage: --guard-helper --allow-uid <uid>"),
+            };
+            tracing_subscriber::fmt().with_writer(std::io::stderr).init();
+            return guard::linux::helper_main(uid);
+        }
+    }
     if env!("CARGO_BIN_NAME") == "ClassroomGuardService" {
         return guard_service::main();
     }
