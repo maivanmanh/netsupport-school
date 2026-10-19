@@ -17,10 +17,7 @@ void main() {
             'control_port': 47800,
             'settings': {
               'network': {'bind_ip': '10.0.68.200'},
-              'video': {
-                if (savedMode != null)
-                  'presentation_preserve_aspect': savedMode,
-              },
+              'video': {'presentation_preserve_aspect': ?savedMode},
             },
           };
         addTearDown(agent.dispose);

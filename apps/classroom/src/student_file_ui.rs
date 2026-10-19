@@ -312,7 +312,6 @@ impl FileWindow {
         c.fill_rect([0, HEADER - 1, WIDTH, 1], LINE);
         for (i, t) in rows(transfers).into_iter().enumerate() {
             let y = HEADER + i * ROW;
-            let finished = finished_path(&t.state).is_some();
             if hover == Some(Hit::Row(i)) {
                 c.fill_rect([0, y, WIDTH, ROW], HOVER_ROW);
             } else if i > 0 {

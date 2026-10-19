@@ -4,7 +4,6 @@ import 'live_activity.dart';
 import 'ai_sites_dialog.dart';
 import 'evidence_view.dart';
 import 'dart:io';
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
@@ -763,7 +762,7 @@ class _ConsoleState extends State<Console> with WindowListener {
         }
       }
       await agent.commandChecked('switch_source', selected, {
-        if (previewPath != null) 'preview_path': previewPath,
+        'preview_path': ?previewPath,
       });
     } catch (error) {
       if (!mounted) return;

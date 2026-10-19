@@ -351,6 +351,6 @@ class ShareAgent extends Agent {
     Iterable<String> selected = const [],
     Map<String, dynamic>? input,
   ]) async {
-    shareCalls.add({'action': action, if (input != null) 'input': input});
+    shareCalls.add({'action': action, 'input': ?input});
   }
 }

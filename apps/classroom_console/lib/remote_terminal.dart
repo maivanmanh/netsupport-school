@@ -566,8 +566,9 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
 
   KeyEventResult terminalKey(FocusNode node, KeyEvent event) {
     // xterm's hardware listener must not insert a character again on key-up.
-    if (Platform.isWindows && event is KeyUpEvent)
+    if (Platform.isWindows && event is KeyUpEvent) {
       return KeyEventResult.handled;
+    }
     final keyboard = HardwareKeyboard.instance;
     final copyModifier = Platform.isMacOS
         ? keyboard.isMetaPressed
@@ -644,8 +645,9 @@ class _RemoteTerminalWindowState extends State<RemoteTerminalWindow>
         );
       }
     } catch (e) {
-      if (mounted)
+      if (mounted) {
         setState(() => error = 'Không lưu được nội dung terminal: $e');
+      }
     } finally {
       if (mounted) setState(() => exporting = false);
     }

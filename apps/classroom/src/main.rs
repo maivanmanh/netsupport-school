@@ -29,7 +29,7 @@ use media_transport::{
     DepacketizedAccessUnit, H264Depacketizer, H264Packetizer, JitterBuffer, RtpPacket,
     H264_PAYLOAD_TYPE, RTP_VIDEO_CLOCK_HZ,
 };
-use platform::{infer_teacher_address, select_adapter, AdapterCandidate, SelectedAdapter};
+use platform::{select_adapter, AdapterCandidate, SelectedAdapter};
 use socket2::{Domain, Protocol, Socket, Type};
 use tracing::{info, warn};
 
@@ -2466,6 +2466,7 @@ fn run_student_media_loop(
     let mut renderer = if headless || observation.is_some() {
         None
     } else {
+        #[cfg_attr(not(windows), allow(unused_mut))] // set_preserve_aspect is Windows-only
         let mut renderer = PlatformRenderer::new_student_presentation(
             presentation.width,
             presentation.height,

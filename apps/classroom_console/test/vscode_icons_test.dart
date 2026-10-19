@@ -88,7 +88,7 @@ void main() {
     final asked = agent.iconRequests.values.expand((v) => v).toList()..sort();
     expect(asked, ['esbenp.prettier-vscode', 'ms-python.python']);
     // The icon is kept for the next time the window opens.
-    final saved = await store.list('vscode_icons');
+    final saved = store.list('vscode_icons');
     expect((saved['ms-python.python'] as Map)['png'], _png);
     await tester.pumpWidget(const SizedBox());
     agent.dispose();

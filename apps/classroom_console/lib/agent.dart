@@ -758,7 +758,7 @@ class Agent extends ChangeNotifier {
       {
         'center_x': bounds.center.dx,
         'center_y': bounds.center.dy,
-        if (previewPath != null) 'preview_path': previewPath,
+        'preview_path': ?previewPath,
       },
     );
     // Give immediate feedback during native engine startup. Repeated clicks

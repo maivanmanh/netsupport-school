@@ -483,8 +483,9 @@ class _TeacherSettingsDialogState extends State<TeacherSettingsDialog> {
   /// What the Teacher is actually doing right now (published by the agent).
   String? performanceInForce() {
     final p = widget.agent.state['performance'] as Map?;
-    if (p == null || p['active'] == null || p['active'] == 'normal')
+    if (p == null || p['active'] == null || p['active'] == 'normal') {
       return null;
+    }
     final name = p['active'] == 'minimal' ? 'Rất tiết kiệm' : 'Tiết kiệm';
     final why = p['reason'] == 'wifi' ? ' (do đang dùng Wi-Fi)' : '';
     final mbps = ((p['bitrate_kbps'] as num? ?? 0) / 1000).toStringAsFixed(1);

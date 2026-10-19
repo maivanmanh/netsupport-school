@@ -52,7 +52,7 @@ void main() {
       expect(hits, contains('/logo.png'));
       // Let the background store write finish.
       await Future<void>.delayed(const Duration(milliseconds: 100));
-      final saved = await store.list('favicons');
+      final saved = store.list('favicons');
       expect(saved.keys, ['127.0.0.1']);
       expect((saved['127.0.0.1'] as Map)['png'], isA<String>());
 

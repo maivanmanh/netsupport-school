@@ -302,7 +302,7 @@ class AlertAgent extends Agent {
         'ready': ready,
         'jobs': const [],
         'activity_monitoring': true,
-        if (alerts != null) 'new_alerts': alerts,
+        'new_alerts': ?alerts,
       },
     });
     notifyListeners();
