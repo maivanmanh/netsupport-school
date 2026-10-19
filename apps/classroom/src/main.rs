@@ -123,10 +123,10 @@ use capture_linux::LinuxCapture as PlatformCapture;
 #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 use capture_windows_dxgi::DxgiCapture as PlatformCapture;
 #[cfg(target_os = "linux")]
-use codec_linux::LinuxH264Decoder as PlatformH264Decoder;
+use codec_linux::{LinuxH264Decoder as PlatformH264Decoder, LinuxH264Encoder as PlatformH264Encoder};
 #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 use codec_windows_mf::MfH264Decoder as PlatformH264Decoder;
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 use codec_windows_mf::{MediaFoundationRuntime, MfH264Encoder as PlatformH264Encoder};
 #[cfg(target_os = "linux")]
 use renderer_linux::NativeRenderer as PlatformRenderer;
@@ -847,7 +847,7 @@ fn run_local_media_benchmark(
     display_index: u32,
     video: &classroom_config::VideoConfig,
 ) -> Result<()> {
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     let runtime = MediaFoundationRuntime::new().context("failed to initialize media runtime")?;
     let mut capture = PlatformCapture::new();
     capture
@@ -868,10 +868,10 @@ fn run_local_media_benchmark(
         bitrate: video.target_bitrate_kbps.saturating_mul(1_000),
         keyframe_interval_frames: video.max_fps.saturating_mul(video.keyframe_interval_ms) / 1_000,
     };
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     let mut encoder = PlatformH264Encoder::new(&runtime, codec_config)
         .context("failed to initialize native H.264 encoder")?;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     let mut encoder = PlatformH264Encoder::new(codec_config)
         .context("failed to initialize native H.264 encoder")?;
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -1315,12 +1315,12 @@ fn run_teacher_media_inner(
     stream_id: u64,
     cancelled: &AtomicBool,
 ) -> Result<TeacherMediaSummary> {
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     let runtime = MediaFoundationRuntime::new().context("failed to initialize media runtime")?;
     let mut codec_config = h264_config(&config.video);
     (codec_config.width, codec_config.height) = output_dimensions;
     let video_codec = stream_profile::session_codec(&config.video);
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     let mut encoder = {
         anyhow::ensure!(
             video_codec == media_core::VideoCodec::H264,
@@ -1329,7 +1329,7 @@ fn run_teacher_media_inner(
         PlatformH264Encoder::new(&runtime, codec_config)
             .context("failed to initialize native H.264 encoder")?
     };
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     let mut encoder = PlatformH264Encoder::with_codec(codec_config, video_codec)
         .with_context(|| format!("failed to initialize native {video_codec} encoder"))?;
     encoder.request_keyframe()?;

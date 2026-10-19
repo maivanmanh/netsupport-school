@@ -40,9 +40,10 @@ pub fn local_decodable(codec: VideoCodec) -> bool {
     }
 }
 
-/// This build can encode `codec` (Windows/macOS only; Linux is receive-only).
+/// This build can encode `codec` (Linux: software H.264 only).
 pub fn local_encodable(codec: VideoCodec) -> bool {
-    cfg!(any(windows, target_os = "macos")) && (codec == VideoCodec::H264 || hardware_encode(codec))
+    cfg!(any(windows, target_os = "macos", target_os = "linux"))
+        && (codec == VideoCodec::H264 || hardware_encode(codec))
 }
 
 fn allowed(observe: &ObserveConfig, codec: VideoCodec) -> bool {

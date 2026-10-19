@@ -11,7 +11,11 @@ mod mutter;
 mod scale;
 #[cfg(target_os = "linux")]
 mod linux_impl;
+#[cfg(target_os = "linux")]
+mod input;
 
+#[cfg(target_os = "linux")]
+pub use input::{keysym_for, RemoteInput};
 #[cfg(target_os = "linux")]
 pub use linux_impl::LinuxCapture;
 

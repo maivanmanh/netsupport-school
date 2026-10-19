@@ -20,6 +20,8 @@ pub struct Session {
     connection: Connection,
     session: OwnedObjectPath,
     pub node_id: u32,
+    /// D-Bus path of the stream (needed for absolute pointer motion).
+    pub stream: String,
     stopped: bool,
 }
 
@@ -83,7 +85,7 @@ impl Session {
                 .deserialize::<u32>()
                 .map_err(|e| fail("node id", e))?
         };
-        Ok(Self { connection, session, node_id, stopped: false })
+        Ok(Self { connection, session, node_id, stream: stream.to_string(), stopped: false })
     }
 
     pub fn stop(&mut self) {

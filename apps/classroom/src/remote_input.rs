@@ -25,6 +25,8 @@ pub struct Controller {
     buttons: HashSet<String>,
     bounds: Option<[f64; 4]>,
     display: Option<ControlDisplay>,
+    #[cfg(target_os = "linux")]
+    linux: Option<capture_linux::RemoteInput>,
 }
 impl Controller {
     pub fn enabled(&self) -> bool {
@@ -73,6 +75,10 @@ impl Controller {
         self.expire();
         if !self.enabled {
             return Ok(());
+        }
+        #[cfg(target_os = "linux")]
+        if true {
+            return self.apply_linux(m);
         }
         // Resolve live geometry before each pointer placement. Use the selected
         // display's stable OS identity, not repeated expensive capture discovery.
@@ -151,6 +157,88 @@ impl Controller {
         }
         Ok(())
     }
+    #[cfg(target_os = "linux")]
+    fn enable(&mut self, exclusive: bool) -> Result<()> {
+        self.release();
+        if exclusive {
+            anyhow::bail!("Exclusive input is supported only on Windows Students");
+        }
+        // Mutter RemoteDesktop moves the real Wayland pointer (enigo cannot).
+        let (width, height) = renderer_linux::screen_size()
+            .and_then(|(w, h)| Some((u32::try_from(w).ok()?, u32::try_from(h).ok()?)))
+            .context("Remote input needs a graphical session")?;
+        self.linux = Some(
+            capture_linux::RemoteInput::new(width, height)
+                .map_err(|e| anyhow::anyhow!("Remote input permission/init: {e}"))?,
+        );
+        self.enabled = true;
+        self.lease = Some(Instant::now());
+        info!(width, height, "Observe input mode enabled (Mutter RemoteDesktop)");
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn apply_linux(&mut self, m: &ObserveMessage) -> Result<()> {
+        let input = self.linux.as_ref().context("remote input not ready")?;
+        let fail = |e: String| anyhow::anyhow!(e);
+        match m.action.as_str() {
+            "move" => {
+                anyhow::ensure!(
+                    m.x.is_finite()
+                        && m.y.is_finite()
+                        && (0.0..=1.0).contains(&m.x)
+                        && (0.0..=1.0).contains(&m.y),
+                    "Invalid remote position"
+                );
+                input.move_to(m.x, m.y).map_err(fail)?;
+            }
+            "button" => {
+                let code = match m.key.as_str() {
+                    "left" => 0x110,
+                    "right" => 0x111,
+                    "middle" => 0x112,
+                    _ => anyhow::bail!("Invalid remote button"),
+                };
+                input.button(code, m.down).map_err(fail)?;
+                if m.down {
+                    self.buttons.insert(m.key.clone());
+                } else {
+                    self.buttons.remove(&m.key);
+                }
+            }
+            "key" => {
+                let sym = capture_linux::keysym_for(&m.key)
+                    .ok_or_else(|| anyhow::anyhow!("Unsupported remote key"))?;
+                // Characters outside the (US) keymap cannot be pressed as keys:
+                // use the desktop Unicode entry once per press, ignore the release.
+                if let Some(c) = m.key.chars().next().filter(|c| m.key.chars().count() == 1 && u32::from(*c) > 0x7e) {
+                    if m.down {
+                        input.unicode(c).map_err(fail)?;
+                    }
+                    return Ok(());
+                }
+                anyhow::ensure!(
+                    !m.down || self.keys.contains(&m.key) || self.keys.len() < 128,
+                    "Too many held remote keys"
+                );
+                input.key(sym, m.down).map_err(fail)?;
+                if m.down {
+                    self.keys.insert(m.key.clone());
+                } else {
+                    self.keys.remove(&m.key);
+                }
+            }
+            "scroll" => {
+                anyhow::ensure!(m.y.is_finite() && m.y.abs() <= 20.0, "Invalid scroll delta");
+                #[allow(clippy::cast_possible_truncation)]
+                input.scroll(m.y.round() as i32).map_err(fail)?;
+            }
+            _ => anyhow::bail!("Unknown remote input action"),
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "linux"))]
     fn enable(&mut self, exclusive: bool) -> Result<()> {
         self.release();
         let device = Enigo::new(&Settings::default())
@@ -202,6 +290,26 @@ impl Controller {
         false
     }
     pub fn release(&mut self) {
+        #[cfg(target_os = "linux")]
+        if let Some(input) = self.linux.as_ref() {
+            for k in self.keys.drain() {
+                if let Some(sym) = capture_linux::keysym_for(&k) {
+                    let _ = input.key(sym, false);
+                }
+            }
+            for b in self.buttons.drain() {
+                let code = match b.as_str() {
+                    "left" => 0x110,
+                    "right" => 0x111,
+                    _ => 0x112,
+                };
+                let _ = input.button(code, false);
+            }
+        }
+        #[cfg(target_os = "linux")]
+        {
+            self.linux = None;
+        }
         if let Some(d) = self.device.as_mut() {
             #[cfg(target_os = "macos")]
             {

@@ -8,11 +8,16 @@ use std::time::Instant;
 
 use media_core::{
     diagnostics::StageMetrics, CodecBackendKind, CodecDescriptor, DecodedFrame, DecodedPixelFormat,
-    EncodedAccessUnitRef, H264Config, MediaError, VideoCodec, VideoDecoder,
+    EncodedAccessUnit, EncodedAccessUnitRef, H264Config, MediaError, VideoCodec, VideoDecoder,
+    VideoEncoder, VideoFrameRef,
 };
 use openh264::{
     decoder::{Decoder, DecoderConfig, Flush},
-    formats::YUVSource,
+    encoder::{
+        BitRate, Encoder, EncoderConfig, FrameRate, FrameType, IntraFramePeriod, RateControlMode,
+        UsageType, VuiConfig,
+    },
+    formats::{BgraSliceU8, YUVBuffer, YUVSource},
     OpenH264API,
 };
 
@@ -145,5 +150,136 @@ impl VideoDecoder for LinuxH264Decoder {
             width: u32::try_from(width).unwrap_or_default(),
             height: u32::try_from(height).unwrap_or_default(),
         }])
+    }
+}
+
+/// Software H.264 encoder for Ubuntu Student sharing/Observe. No B-frames
+/// (`OpenH264` real-time profile), SPS/PPS prepended to every IDR, BT.601 limited
+/// range tagged in the SPS VUI so receivers convert colours consistently.
+pub struct LinuxH264Encoder {
+    encoder: Encoder,
+    config: H264Config,
+    yuv: YUVBuffer,
+    force_idr: bool,
+    epoch: Instant,
+    diagnostics: StageMetrics,
+}
+
+fn encoder_config(config: &H264Config) -> EncoderConfig {
+    EncoderConfig::new()
+        .bitrate(BitRate::from_bps(config.bitrate.max(100_000)))
+        .max_frame_rate(FrameRate::from_hz(config.frames_per_second.max(1) as f32))
+        .usage_type(UsageType::ScreenContentRealTime)
+        .rate_control_mode(RateControlMode::Bitrate)
+        .intra_frame_period(IntraFramePeriod::from_num_frames(config.keyframe_interval_frames))
+        .skip_frames(false)
+        .adaptive_quantization(false)
+        .background_detection(false)
+        .vui(VuiConfig::bt601())
+}
+
+fn create_encoder(config: &H264Config) -> Result<Encoder, MediaError> {
+    Encoder::with_api_config(OpenH264API::from_source(), encoder_config(config)).map_err(|error| {
+        MediaError::BackendUnavailable(format!("OpenH264 encoder initialization: {error}"))
+    })
+}
+
+impl LinuxH264Encoder {
+    /// # Errors
+    /// Rejects odd/oversized dimensions or encoder initialization failure.
+    pub fn new(config: H264Config) -> Result<Self, MediaError> {
+        Self::with_codec(config, VideoCodec::H264)
+    }
+
+    /// # Errors
+    /// Rejects H.265, odd/oversized dimensions, or encoder initialization failure.
+    pub fn with_codec(config: H264Config, codec: VideoCodec) -> Result<Self, MediaError> {
+        if codec != VideoCodec::H264 {
+            return Err(MediaError::BackendUnavailable(
+                "Ubuntu Student software encoder supports H.264 only".to_owned(),
+            ));
+        }
+        let (width, height) = (config.width as usize, config.height as usize);
+        validate_dimensions(width, height)?;
+        if width % 2 != 0 || height % 2 != 0 {
+            return Err(MediaError::Operation("H.264 dimensions must be even".to_owned()));
+        }
+        Ok(Self {
+            encoder: create_encoder(&config)?,
+            yuv: YUVBuffer::new(width, height),
+            config,
+            force_idr: true,
+            epoch: Instant::now(),
+            diagnostics: StageMetrics::default(),
+        })
+    }
+
+    #[must_use]
+    pub fn descriptor(&self) -> CodecDescriptor {
+        CodecDescriptor {
+            name: "OpenH264 software H.264 encoder (Ubuntu)".to_owned(),
+            kind: CodecBackendKind::Software,
+            asynchronous: false,
+        }
+    }
+}
+
+impl VideoEncoder for LinuxH264Encoder {
+    fn take_diagnostics(&mut self) -> StageMetrics {
+        std::mem::take(&mut self.diagnostics)
+    }
+
+    fn encode(
+        &mut self,
+        frame: VideoFrameRef<'_>,
+    ) -> Result<Option<EncodedAccessUnit>, MediaError> {
+        let (width, height) = (self.config.width as usize, self.config.height as usize);
+        if frame.width as usize != width
+            || frame.height as usize != height
+            || frame.bytes.len() < width * height * 4
+        {
+            return Err(MediaError::Operation(
+                "frame does not match the configured encoder size".to_owned(),
+            ));
+        }
+        let started = Instant::now();
+        self.yuv
+            .read_bgra8(BgraSliceU8::new(&frame.bytes[..width * height * 4], (width, height)));
+        self.diagnostics.record("openh264_bgra_to_yuv", started.elapsed());
+        if std::mem::take(&mut self.force_idr) {
+            self.encoder.force_intra_frame();
+        }
+        let started = Instant::now();
+        let bitstream = self
+            .encoder
+            .encode(&self.yuv)
+            .map_err(|error| MediaError::Operation(format!("OpenH264 encode: {error}")))?;
+        self.diagnostics.record("openh264_encode", started.elapsed());
+        let frame_type = bitstream.frame_type();
+        if matches!(frame_type, FrameType::Skip | FrameType::Invalid) {
+            return Ok(None);
+        }
+        Ok(Some(EncodedAccessUnit {
+            bytes: bitstream.to_vec(),
+            timestamp: frame.captured_at.saturating_duration_since(self.epoch),
+            is_keyframe: matches!(frame_type, FrameType::IDR | FrameType::I),
+        }))
+    }
+
+    fn set_bitrate(&mut self, bits_per_second: u32) -> Result<(), MediaError> {
+        if bits_per_second == self.config.bitrate {
+            return Ok(());
+        }
+        // Rate-control parameters of a running OpenH264 encoder are raw FFI
+        // options; recreating is safe and bitrate steps are seconds apart.
+        self.config.bitrate = bits_per_second;
+        self.encoder = create_encoder(&self.config)?;
+        self.force_idr = true;
+        Ok(())
+    }
+
+    fn request_keyframe(&mut self) -> Result<(), MediaError> {
+        self.force_idr = true;
+        Ok(())
     }
 }
