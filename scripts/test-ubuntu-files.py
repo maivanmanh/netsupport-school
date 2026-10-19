@@ -13,7 +13,7 @@ tag = 'files-' + time.strftime('%Y%m%d-%H%M%S')
 run = ROOT / 'target/ubuntu-lan-validation' / tag; run.mkdir(parents=True)
 work = run / 'work'; work.mkdir()
 (run / 'worker.py').write_text((ROOT / 'scripts/ubuntu-student-lan-worker.py').read_text())
-teacher = ROOT / 'target/Classroom Console.app/Contents/Helpers/Classroom Agent.app/Contents/MacOS/Classroom'
+teacher = Path(os.environ.get('TEACHER_BIN') or ROOT / 'target/Classroom Console.app/Contents/Helpers/Classroom Agent.app/Contents/MacOS/Classroom')
 results = {}
 
 _n = [0]

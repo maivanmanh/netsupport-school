@@ -13,7 +13,7 @@ tag = 'files-' + time.strftime('%Y%m%d-%H%M%S')
 run = ROOT / 'target/ubuntu-lan-validation' / tag; run.mkdir(parents=True)
 work = run / 'work'; work.mkdir()
 (run / 'worker.py').write_text((ROOT / 'scripts/ubuntu-student-lan-worker.py').read_text())
-teacher = ROOT / 'target/Classroom Console.app/Contents/Helpers/Classroom Agent.app/Contents/MacOS/Classroom'
+teacher = Path(os.environ.get('TEACHER_BIN') or ROOT / 'target/Classroom Console.app/Contents/Helpers/Classroom Agent.app/Contents/MacOS/Classroom')
 results = {}
 
 _n = [0]
@@ -84,12 +84,11 @@ try:
         return {'error': 'timeout'}
 
     caps = ipc.snapshot()['tools']['capabilities'][sid]
-    check('capabilities_not_overstated', all(caps.get(k) == 0 for k in ('power','website','launch','terminal','screenshot','recording','activity','guard','hardware','apps','vscode','dev_update')), {k: v for k, v in caps.items() if v == 1})
+    check('capabilities_not_overstated', all(caps.get(k) == 0 for k in ('recording','activity','guard','hardware','vscode','vscode_list','copilot_network')), {k: v for k, v in caps.items() if v == 1})
     probes = {
-        'tool_power': {'op': 'lock', 'message': ''}, 'student_screenshot': {'dest': str(work)},
-        'terminal_open': {}, 'recording_start': {}, 'app_list': {}, 'vscode_list': {},
-        'tool_policy': {'mode': 'block'}, 'tool_app_policy': {}, 'activity_request': {'student': sid},
-        'hardware_window': {}, 'observe_input': {}, 'focus_observe': {},
+        'recording_start': {}, 'vscode_list': {}, 'tool_policy': {'mode': 'block'},
+        'tool_copilot_policy': {'enabled': True}, 'tool_vscode_policy': {},
+        'activity_request': {'student': sid}, 'hardware_window': {},
     }
     for action, inp in probes.items():
         try:

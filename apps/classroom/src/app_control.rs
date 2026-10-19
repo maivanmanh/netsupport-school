@@ -1460,10 +1460,10 @@ mod windows_impl {
 #[cfg(windows)]
 pub use windows_impl::{applied_hash, early_operation, is_applied, list_apps, supported, Enforcer};
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 #[derive(Clone)]
 pub struct Enforcer;
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 impl Enforcer {
     pub fn start() -> Self {
         Self
@@ -1475,26 +1475,32 @@ impl Enforcer {
         Ok(())
     }
 }
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn applied_hash() -> String {
     String::new()
 }
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn supported() -> bool {
     false
 }
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn is_applied() -> bool {
     false
 }
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn early_operation() -> Option<i32> {
     None
 }
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn list_apps(_request: &ListRequest) -> AppReport {
     AppReport::default()
 }
+
+#[cfg(target_os = "linux")]
+#[path = "app_control_linux.rs"]
+mod linux_impl;
+#[cfg(target_os = "linux")]
+pub use linux_impl::{applied_hash, early_operation, is_applied, list_apps, supported, Enforcer};
 
 #[cfg(test)]
 mod tests {

@@ -1402,9 +1402,12 @@ pub(super) fn run(
                             let caps = tools_hub.snapshot()["capabilities"].clone();
                             let mut skipped = Vec::new();
                             recipients.retain(|id| {
-                                if caps[id]["guard"] == 1
-                                    && (command.action != "tool_copilot_policy" || caps[id]["copilot_network"] == 1)
-                                    && (command.action != "tool_app_policy" || caps[id]["apps"] == 1)
+                                // App control needs no elevated Guard service on Ubuntu
+                                // (user-level enforcement), so `apps` alone qualifies.
+                                if (command.action == "tool_app_policy" && caps[id]["apps"] == 1)
+                                    || (caps[id]["guard"] == 1
+                                        && (command.action != "tool_copilot_policy" || caps[id]["copilot_network"] == 1)
+                                        && (command.action != "tool_app_policy" || caps[id]["apps"] == 1))
                                 {
                                     true
                                 } else {
