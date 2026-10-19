@@ -49,6 +49,25 @@ impl Window {
         }
     }
 
+    /// Screen size in pixels (X11 only; Wayland reports a typical default).
+    pub fn screen_size(&self) -> (usize, usize) {
+        match self {
+            #[cfg(feature = "x11")]
+            Window::X11(w) => w.screen_size(),
+            #[cfg(feature = "wayland")]
+            Window::Wayland(_) => (1280, 720),
+        }
+    }
+
+    pub fn request_above(&mut self) {
+        match self {
+            #[cfg(feature = "x11")]
+            Window::X11(w) => w.request_above(),
+            #[cfg(feature = "wayland")]
+            Window::Wayland(_) => {}
+        }
+    }
+
     pub fn is_visible(&self) -> bool {
         match self {
             #[cfg(feature = "x11")]

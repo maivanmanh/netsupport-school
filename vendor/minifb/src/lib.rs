@@ -509,21 +509,35 @@ impl Window {
     pub fn outer_frame(&self) -> [isize; 4] {
         #[cfg(any(windows, target_os = "macos"))]
         { self.0.outer_frame() }
-        #[cfg(not(any(windows, target_os = "macos")))]
+        #[cfg(target_os = "linux")]
+        {
+            let (x, y) = self.0.get_position();
+            let (w, h) = self.0.get_size();
+            [x, y, w as isize, h as isize]
+        }
+        #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
         { [0, 0, 0, 0] }
     }
     /// Moves the outer frame's top-left corner (same space as `outer_frame`).
     pub fn set_outer_origin(&mut self, x: isize, y: isize) {
         #[cfg(any(windows, target_os = "macos"))]
         self.0.set_outer_origin(x, y);
-        #[cfg(not(any(windows, target_os = "macos")))]
+        #[cfg(target_os = "linux")]
+        self.0.set_position(x, y);
+        #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
         { let _ = (x, y); }
     }
     /// Usable area of the window's screen (no menu bar/Dock/taskbar), same space.
     pub fn work_area(&self) -> [isize; 4] {
         #[cfg(any(windows, target_os = "macos"))]
         { self.0.work_area() }
-        #[cfg(not(any(windows, target_os = "macos")))]
+        #[cfg(target_os = "linux")]
+        {
+            // Leave room for the GNOME top bar; panels are not exposed to X11 clients.
+            let (w, h) = self.0.screen_size();
+            [0, 32, w as isize, (h as isize - 32).max(1)]
+        }
+        #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
         { [0, 0, 1280, 720] }
     }
     /// Request the same close action as the native title-bar button.
@@ -533,6 +547,8 @@ impl Window {
     }
     /// Show without activating/focusing (a notification-style window).
     pub fn show_inactive(&mut self) {
+        #[cfg(target_os = "linux")]
+        self.0.set_visible(true);
         #[cfg(any(windows, target_os = "macos"))]
         self.0.show_inactive();
     }
@@ -581,6 +597,11 @@ impl Window {
         self.0.set_passive_overlay(alpha);
     }
     pub fn show_inactive_topmost(&mut self) {
+        #[cfg(target_os = "linux")]
+        {
+            self.0.set_visible(true);
+            self.0.request_above();
+        }
         #[cfg(windows)]
         self.0.show_inactive_topmost();
         #[cfg(target_os = "macos")]

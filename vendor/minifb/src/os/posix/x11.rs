@@ -529,6 +529,48 @@ impl Window {
         self.visible
     }
 
+    /// Size of the default screen in pixels.
+    pub fn screen_size(&self) -> (usize, usize) {
+        (self.d.screen_width, self.d.screen_height)
+    }
+
+    /// Asks the window manager (EWMH `_NET_WM_STATE_ABOVE`) to keep the window
+    /// above others. Used by notification-style windows; no focus change.
+    pub fn request_above(&mut self) {
+        // SAFETY: the display and XID are owned by this window; the atom names
+        // are NUL terminated and the event is fully initialized before sending.
+        unsafe {
+            let lib = &self.d.lib;
+            let display = self.d.display;
+            let root = (lib.XDefaultRootWindow)(display);
+            let state = (lib.XInternAtom)(display, b"_NET_WM_STATE\0".as_ptr() as *const _, 0);
+            let above = (lib.XInternAtom)(display, b"_NET_WM_STATE_ABOVE\0".as_ptr() as *const _, 0);
+            let mut event: xlib::XEvent = std::mem::zeroed();
+            let mut data = xlib::ClientMessageData::new();
+            data.set_long(0, 1); // _NET_WM_STATE_ADD
+            data.set_long(1, above as std::os::raw::c_long);
+            data.set_long(3, 1); // normal application source
+            event.client_message = xlib::XClientMessageEvent {
+                type_: xlib::ClientMessage,
+                serial: 0,
+                send_event: 1,
+                display,
+                window: self.handle,
+                message_type: state,
+                format: 32,
+                data,
+            };
+            (lib.XSendEvent)(
+                display,
+                root,
+                0,
+                xlib::SubstructureRedirectMask | xlib::SubstructureNotifyMask,
+                &mut event,
+            );
+            (lib.XFlush)(display);
+        }
+    }
+
     unsafe fn alloc_image(
         d: &DisplayInfo,
         width: usize,

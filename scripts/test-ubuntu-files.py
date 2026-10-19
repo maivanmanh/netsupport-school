@@ -99,6 +99,7 @@ try:
     check('push_accepted', a.get('ok'), a.get('error'))
     j = job(a['job_id'])
     check('push_complete', all(t['status'] == 'complete' for t in (j['targets'] if isinstance(j['targets'], list) else j['targets'].values())), json.dumps(j)[:300])
+    time.sleep(1); subprocess.run(['prlctl', 'capture', VM, '--file', str(run / 'after-push.png')], capture_output=True)
     for n in files:
         check('push_hash_' + n, vsha(f'{dest}/{n}') == sha(work / n))
 
