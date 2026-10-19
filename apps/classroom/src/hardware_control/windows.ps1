@@ -189,13 +189,19 @@ try {
         } else {
             $targets = @($present | Where-Object { $_.Class -eq 'Camera' -or ($_.Class -eq 'Image' -and @((Get-PnpDeviceProperty -InstanceId $_.InstanceId -KeyName DEVPKEY_Device_CompatibleIds -ErrorAction SilentlyContinue).Data) -match 'USB\\Class_0E') -or ($_.Class -eq 'AudioEndpoint' -and $_.InstanceId -match '^SWD\\MMDEVAPI\\\{0\.0\.1\.') })
         }
+        $disabledNow = $false
         foreach ($d in $targets) {
             $problem = (Get-PnpDeviceProperty -InstanceId $d.InstanceId -KeyName DEVPKEY_Device_ProblemCode).Data
             if ($problem -eq 22) { continue } # Preserve devices disabled by owner.
             Journal $group 'pnp' $d.InstanceId
             $d | Disable-PnpDevice -Confirm:$false
             if ((Get-PnpDeviceProperty -InstanceId $d.InstanceId -KeyName DEVPKEY_Device_ProblemCode).Data -ne 22) { throw ('Device did not disable: ' + $d.FriendlyName) }
+            $disabledNow = $true
         }
+        # A disabled camera is still streamed to apps that already opened it through
+        # the Windows Camera Frame Server. Stopping it (demand-start, restarts on the
+        # next open, which is then refused) ends those streams immediately.
+        if ($disabledNow -and $group -eq 'camera_microphone') { foreach ($n in 'FrameServerMonitor','FrameServer') { try { Stop-Service -Name $n -Force -ErrorAction Stop } catch { } } }
         return @{status='applied'; error=''}
     }
     foreach ($group in @('usb_storage','wifi','bluetooth','usb_tethering','camera_microphone')) {
