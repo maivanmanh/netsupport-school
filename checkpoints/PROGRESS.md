@@ -5430,3 +5430,23 @@ Owner reports Windows 10 lab PCs (Defender real-time) delete the unzipped Studen
 - Verified: cross-build for x86_64-pc-windows-gnu succeeds; strings in both exes no longer contain EncodedCommand/Bypass/ExecutionPolicy/FromBase64String and do contain VS_VERSION_INFO; `cargo test --workspace` passes.
 - NOT verified: runtime behaviour on Windows (VM 192.168.1.16 unreachable during this change) — specifically that the hardware reconciler still runs with `-Command`; the MSVC `embed-resource` path was not built; whether Defender stops flagging the build is unknown. Still unsigned; the bootstrap `.bat` still uses `Invoke-Expression`.
 - Next: on a Windows machine run the hardware apply/clear from the Teacher; capture the Defender threat name when a lab PC is available; submit the released ZIP to Microsoft as a software developer; consider an OV code-signing certificate; a folder exclusion (`Add-MpPreference -ExclusionPath`) remains the dependable workaround.
+
+## 2026-10-19 — Cleanup, hardware-policy fixes, Hardware/Terminal window quit (VM-verified)
+
+- `26670d0` cargo fmt (formatting only); `fb883e9` compiler/analyzer warnings cleared
+  (flutter analyze clean, 168 Flutter tests and `cargo test --workspace` pass). Remaining
+  Rust warnings are Windows-only dead code on macOS and vendored `minifb`.
+- `ade4947` Hardware policy state save failed on Windows PowerShell 5.1:
+  `[IO.File]::Replace(..., $null)` passed an empty backup path ("path is not of a legal form").
+  Now `[NullString]::Value`. Reproduced and confirmed on the Windows 11 ARM VM (192.168.1.16).
+- `fbff213` Camera block now stops FrameServer/FrameServerMonitor right after a camera is
+  disabled so already-open streams end. Runtime-verified on the VM: an open camera app lost
+  video about 10 s after Apply (reconcile cadence); no reboot needed.
+- `de33fa9` macOS: Hardware Control and Terminal child windows now quit with their last
+  window (previously left a second Dock icon). Owner-verified.
+- `483f3cf` antivirus-heuristic reduction (plain -Command, no ExecutionPolicy Bypass, version
+  resource) is deployed on the VM; version info confirmed. Whether it stops Defender removals
+  in the lab is still unproven.
+- Not done: USB storage still does not dismount (open handles stay usable until restart; needs
+  an owner decision on forced dismount); microphone cut-off on open capture not tested;
+  media measurements, black one-shot screenshot, ARM recovery time still open.
