@@ -83,6 +83,7 @@ rusqlite = { version = "0.40", default-features = false, features = ["bundled"] 
 windows-service = "0.8"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+capture-linux = { path = "../../crates/capture-linux" }
 codec-linux = { path = "../../crates/codec-linux" }
 renderer-linux = { path = "../../crates/renderer-linux" }
 minifb = { version = "0.28.0", default-features = false, features = ["x11"] }

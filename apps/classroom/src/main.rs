@@ -118,7 +118,9 @@ use renderer_macos::NativeRenderer as PlatformRenderer;
 #[cfg(windows)]
 use renderer_windows::NativeRenderer as PlatformRenderer;
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(target_os = "linux")]
+use capture_linux::LinuxCapture as PlatformCapture;
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 use capture_windows_dxgi::DxgiCapture as PlatformCapture;
 #[cfg(target_os = "linux")]
 use codec_linux::LinuxH264Decoder as PlatformH264Decoder;
@@ -2164,9 +2166,9 @@ async fn run_student_media(
         std::sync::Arc::clone(&presenting),
     );
     let mut restart_requested = false;
-    // Linux is receive-only: do not register a capture/Observe endpoint.
+    // Thumbnails on Linux come from Mutter ScreenCast (see capture-linux).
     let monitor =
-        (cfg!(any(windows, target_os = "macos")) && config.monitoring.enabled).then(|| {
+        (cfg!(any(windows, target_os = "macos", target_os = "linux")) && config.monitoring.enabled).then(|| {
             monitoring::student(
                 SocketAddrV4::new(teacher_ip, config.network.control_port + 1),
                 registration.instance_id.clone(),

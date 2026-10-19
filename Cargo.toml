@@ -2,6 +2,7 @@
 members = [
     "apps/classroom",
     "crates/app-core",
+    "crates/capture-linux",
     "crates/capture-macos-sck",
     "crates/classroom-config",
     "crates/classroom-store",

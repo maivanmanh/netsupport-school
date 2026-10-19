@@ -1,0 +1,19 @@
+[package]
+name = "capture-linux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+media-core = { path = "../media-core" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# GNOME/Mutter ScreenCast (no portal prompt for the logged-in user's own session)
+# delivers frames through PipeWire. Requires libpipewire at runtime (Ubuntu Desktop).
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
+pipewire = "0.8"
+tracing.workspace = true
+
+[lints]
+workspace = true
