@@ -2366,6 +2366,18 @@ pub fn student(
                                     };
                                 }
                             }
+                            // Capabilities advertise these as unavailable off Windows/macOS
+                            // (e.g. Ubuntu): enforce that here, not only in the Teacher UI.
+                            "launch" | "website" | "power"
+                                if !cfg!(any(windows, target_os = "macos")) =>
+                            {
+                                inbox.event(
+                                    &p.id,
+                                    "error",
+                                    "Not supported on this Student platform",
+                                    0,
+                                );
+                            }
                             "launch" | "website" => launch::run(p, Arc::clone(&inbox)),
                             "power" => power::run(p, Arc::clone(&inbox)),
                             "policy" => {

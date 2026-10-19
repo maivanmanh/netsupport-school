@@ -5462,3 +5462,13 @@ Risks: no real GNOME/Wayland-session fullscreen test (VM sits at GDM login after
 restart; owner login or autologin needed), content was low-motion, not 1080p/wired.
 Next: log into the VM desktop, run harness without `--xvfb`, visual QA, then per-user
 launcher/autostart.
+
+## Ubuntu Student feature sweep (2026-10-19)
+
+Verified at runtime on Ubuntu 26.04 ARM64 with the Mac Teacher: GNOME fullscreen, display-mode
+changes, idle inhibitor during real streaming, file transfer both ways, collect, cancel, error
+paths, unsupported-action handling. Fixed: Student-side enforcement of unsupported
+terminal/launch/website/power. Build-verified on Linux only (the Mac target dir has a
+rustc-version mismatch, so the macOS/Windows Student/Teacher were not rebuilt; changes are
+cfg-gated and do not alter those paths). Not done: launcher/autostart, updater, heavy-motion
+1080p, observe/monitoring/capture backends.

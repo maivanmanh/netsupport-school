@@ -186,6 +186,21 @@ text) -> back; no panic/render failure, render p50 29 FPS, p95 latency 7.7 ms wi
 transient 120 ms spike during a mode switch. A GNOME notification toast was seen over the
 fullscreen presentation (Do Not Disturb is not set by the Student).
 
+Feature sweep (2026-10-19, Mac Teacher -> Ubuntu 26.04 Student): the Student advertises only
+`fs` (file transfer); every other capability is 0. File transfer passed: remote listing,
+push of text/Vietnamese+space filename/20 MB binary (SHA-256 verified on the VM), pull back
+(SHA-256), filtered collect, unwritable destination error, unreadable file not leaked,
+large-transfer cancel with no partial file. Unsupported Teacher actions (power, screenshot,
+recording, app/vscode/activity lists, internet/app policy, hardware, observe) fail cleanly
+and the Student stays alive. Found and fixed: the Student did not enforce its own
+capabilities, so a Teacher `terminal_start` made it spawn a terminal worker that connected
+to the Teacher, and `launch`/`website`/`power` were not refused. They are now rejected on
+non-Windows/macOS Students (`remote_terminal::start`, tools dispatch); re-verified with a
+rebuilt binary. Monitoring thumbnails and Observe stay unsupported (`thumbnail: null`).
+Scripts: `scripts/test-ubuntu-files.py`, `scripts/test-ubuntu-unsupported.py`,
+`scripts/ubuntu-feature-probe.py`. Note: the harness runs the extracted package directory, so
+re-extract the tar.gz after each build or it tests a stale binary.
+
 Next gate: desktop launcher/per-user installation and graphical-session autostart,
 then Ubuntu bootstrap/updater integration. Visual cursor/text/aspect QA and display
 mode changes remain pending. Linux x86_64 runtime,

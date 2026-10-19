@@ -45,6 +45,12 @@ pub fn start(
     compatibility: bool,
     authorization: &str,
 ) -> anyhow::Result<Worker> {
+    // Capability is advertised as unavailable on this platform (e.g. Ubuntu):
+    // never spawn a shell just because a Teacher sent the request.
+    anyhow::ensure!(
+        available(),
+        "Remote Terminal is not supported on this Student platform"
+    );
     let policy: trust::Policy = serde_json::from_str(authorization)?;
     policy.validate(address.ip())?;
     anyhow::ensure!(
