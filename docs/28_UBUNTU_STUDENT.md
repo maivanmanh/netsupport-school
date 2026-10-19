@@ -224,6 +224,32 @@ Notes: GNOME shows a screen-recording indicator while thumbnails/Observe capture
 primary display is captured. HiDPI scale > 1 pointer mapping is unverified. The Linux
 package now needs `libpipewire-0.3-0` at runtime (present on Ubuntu Desktop).
 
+## Install on a lab PC (2026-10-19)
+
+After `tar -xzf Classroom-Student-Ubuntu-<arch>.tar.gz && cd Classroom-Student-Ubuntu-<arch>`:
+
+```sh
+./install.sh --teacher-ip 10.0.55.200 --interface enp3s0   # per user, no root: ~/.local/share/Classroom,
+                                                           # autostart entry, app launcher, starts now
+sudo ./install-guard.sh --uid $(id -u)                     # optional, root: Internet control helper
+./install.sh --uninstall                                   # keeps ~/.config/Classroom settings
+sudo ./install-guard.sh --uninstall
+```
+
+Re-running `install.sh` replaces the binary (stops only that installation's process first).
+Dev-update from the Teacher replaces `~/.local/share/Classroom/ClassroomStudent` in place. The
+Guard helper is a root-owned copy in `/usr/local/lib/classroom`; reinstall it after updating.
+
+### Added after the first feature table
+
+| Feature | Status | Evidence / limit |
+| --- | --- | --- |
+| Install / autostart / launcher | Done | `install.sh` tested (install, reinstall over a running Student, desktop-file-validate); a real logout/login or reboot was not run |
+| File-transfer and notification windows | Done | progress and "Saved to Desktop" dialog, bottom-right, above other windows; Reply resizes the message dialog |
+| VS Code extensions | Done, best effort | `vscode_list` from `~/.vscode/extensions`; policy writes `extensions.allowed` + `chat.disableAIFeatures` into `~/.config/Code/User/settings.json` (also snap/Flatpak), read-only, user values kept, cleared again on unblock. The Student can undo it and VS Code honouring the user-level setting was not observed in the UI |
+| Guard: Internet (allow-only / block-only / block-all) | Done with `install-guard.sh` | root systemd helper + nftables; DNS proxy learns permitted addresses; Teacher/LAN always reachable; rules vanish when the Student disconnects or crashes. Tested with curl against example.com / wikipedia.org. Copilot network block: not run. DoT (853) is not covered |
+| Hardware control, Recording, Activity | Not implemented | no USB/Wi-Fi/Bluetooth/camera on the test VM to verify a hardware policy; recording/activity are Windows-only today |
+
 Next gate: desktop launcher/per-user installation and graphical-session autostart,
 then Ubuntu bootstrap/updater integration. Visual cursor/text/aspect QA and display
 mode changes remain pending. Linux x86_64 runtime,
