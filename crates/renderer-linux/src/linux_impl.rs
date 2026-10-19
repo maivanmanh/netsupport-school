@@ -7,7 +7,7 @@ use media_core::{DecodedFrameRef, MediaError, PointerOverlay, Renderer};
 use minifb::{ScaleMode, Window, WindowOptions};
 use x11_dl::xlib;
 
-use crate::surface::Surface;
+use crate::{inhibit::IdleInhibitor, surface::Surface};
 
 #[derive(Debug)]
 pub struct NativeRenderer {
@@ -17,6 +17,7 @@ pub struct NativeRenderer {
     last_event_pump: Instant,
     presented_window_size: (usize, usize),
     presentation_failed: bool,
+    _idle_inhibitor: Option<IdleInhibitor>,
 }
 
 impl NativeRenderer {
@@ -90,6 +91,15 @@ impl NativeRenderer {
             presentation,
             last_event_pump: Instant::now(),
             presentation_failed: false,
+            _idle_inhibitor: if fullscreen {
+                let inhibitor = IdleInhibitor::acquire();
+                if inhibitor.is_none() {
+                    eprintln!("native Linux renderer: desktop idle/lock inhibition unavailable");
+                }
+                inhibitor
+            } else {
+                None
+            },
         })
     }
 

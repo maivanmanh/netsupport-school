@@ -111,6 +111,7 @@ def main():
     parser.add_argument('--xvfb', action='store_true', help='no logged-in desktop: use an owned Xvfb')
     parser.add_argument('--teacher-ip', default='10.211.55.2')
     parser.add_argument('--control-port', type=int, default=49000)
+    parser.add_argument('--display-index', type=int, default=0, help='Teacher capture display index')
     parser.add_argument('--fps', type=int, default=5, help='Teacher max FPS; 5 keeps the functional profile')
     parser.add_argument('--soak-seconds', type=int, default=180)
     parser.add_argument('--teacher-binary', type=Path, default=ROOT / 'target/Classroom Console.app/Contents/Helpers/Classroom Agent.app/Contents/MacOS/Classroom')
@@ -187,7 +188,7 @@ def main():
         launched = time.time()
         command = [str(teacher), '--role', 'teacher', '--teacher-agent',
                    '--config', str(config),
-                   '--bind-ip', args.teacher_ip, '--interface', 'bridge100',
+                   '--display-index', str(args.display_index), '--bind-ip', args.teacher_ip, '--interface', 'bridge100',
                    '--control-port', str(args.control_port),
                    '--media-port', str(args.control_port + 10),
                    '--feedback-port', str(args.control_port + 11),

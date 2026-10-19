@@ -6,7 +6,9 @@ let duration = Double(CommandLine.arguments.dropFirst().first ?? "480") ?? 480
 let auditPath = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : nil
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
-let bounds = NSScreen.screens.first?.visibleFrame
+// Prefer the owner's extended virtual display so the laptop stays usable.
+let screen = NSScreen.screens.first { $0.localizedName.contains("Virtual") } ?? NSScreen.screens.first
+let bounds = screen?.visibleFrame
     ?? NSRect(x: 80, y: 80, width: 1000, height: 700)
 let window = NSWindow(contentRect: bounds,
                       styleMask: [.titled, .closable], backing: .buffered, defer: false)

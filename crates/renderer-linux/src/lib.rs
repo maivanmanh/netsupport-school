@@ -7,6 +7,8 @@
 mod surface;
 
 #[cfg(target_os = "linux")]
+mod inhibit;
+#[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
 mod linux_impl;
 

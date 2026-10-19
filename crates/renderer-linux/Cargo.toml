@@ -13,6 +13,8 @@ media-core = { path = "../media-core" }
 # experimental native Wayland path. Fullscreen requests use EWMH.
 minifb = { version = "0.28.0", default-features = false, features = ["x11"] }
 x11-dl = "2.21"
+# Idle/lock inhibition while presenting (GNOME SessionManager / freedesktop).
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
 
 [lints]
 workspace = true

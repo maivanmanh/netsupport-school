@@ -172,6 +172,16 @@ Not covered: real GNOME session (26.04 is Wayland-only; fullscreen/ABOVE through
 XWayland), visual QA, display changes. Harness flags: `--xvfb`, `--fps`,
 `--student-source`, `--student-interface`.
 
+Real GNOME (Wayland/XWayland) session on 26.04 (2026-10-19): Student fullscreen covers
+the panel, hides the cursor, keeps aspect (letterbox), text/colours verified by screenshot
+at 1512×949; 30 FPS decode/render with render p95 ≈ 6 ms in the best run (one earlier
+run showed render p95 40–100 ms with 10 % replaced frames; not reproduced, cause not
+isolated — treat smoothness as variable on this 2-vCPU VM). Found: GNOME locked the
+session after 5 min idle and hid the presentation, so the renderer now holds a
+`org.gnome.SessionManager`/`org.freedesktop.ScreenSaver` idle+suspend inhibitor while the
+presentation window exists (verified via `GetInhibitors`). Display-mode/HiDPI changes
+(`gdctl set`) were attempted but the results are invalid because the session was locked.
+
 Next gate: desktop launcher/per-user installation and graphical-session autostart,
 then Ubuntu bootstrap/updater integration. Visual cursor/text/aspect QA and display
 mode changes remain pending. Linux x86_64 runtime,
