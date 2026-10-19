@@ -194,11 +194,13 @@ class _HardwareControlWindowState extends State<HardwareControlWindow> {
             ? InlineNotice(error!)
             : null,
         footer: busy ? const LinearProgressIndicator() : null,
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 900),
-            child: ListView(
-              padding: const EdgeInsets.fromLTRB(24, 20, 24, 28),
+        // The scroll view spans the whole window so its scrollbar sits on the
+        // right edge; the content column is centred through padding instead.
+        child: LayoutBuilder(
+          builder: (context, box) {
+            final side = ((box.maxWidth - 900) / 2).clamp(0.0, 1e9) + 24;
+            return ListView(
+              padding: EdgeInsets.fromLTRB(side, 20, side, 28),
               children: [
                 Row(
                   children: [
@@ -248,8 +250,8 @@ class _HardwareControlWindowState extends State<HardwareControlWindow> {
                   ),
                 ),
               ],
-            ),
-          ),
+            );
+          },
         ),
       );
     },
